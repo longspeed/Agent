@@ -1,64 +1,49 @@
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
+from supabase import create_client
 
-DB_FILE = Path(__file__).parent / "reviews.db"
+from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 
+TABLE = "reviews"
 
-def _connect():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+_client = None
 
 
-def init_db():
-    with _connect() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS reviews (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                row_index INTEGER NOT NULL,
-                name TEXT,
-                email TEXT,
-                thread_id TEXT,
-                customer_reply TEXT,
-                draft_reply TEXT,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL
-            )
-        """)
+def _get_client():
+    global _client
+    if _client is None:
+        _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    return _client
 
 
 def add_review(row_index, name, email, thread_id, customer_reply, draft_reply):
-    with _connect() as conn:
-        cur = conn.execute(
-            """INSERT INTO reviews (row_index, name, email, thread_id, customer_reply, draft_reply, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
-            (row_index, name, email, thread_id, customer_reply, draft_reply,
-             datetime.now(timezone.utc).isoformat()),
-        )
-        return cur.lastrowid
+    result = _get_client().table(TABLE).insert({
+        "row_index": row_index,
+        "name": name,
+        "email": email,
+        "thread_id": thread_id,
+        "customer_reply": customer_reply,
+        "draft_reply": draft_reply,
+        "status": "pending",
+    }).execute()
+    return result.data[0]["id"]
 
 
 def list_pending_reviews():
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC"
-        ).fetchall()
-        return [dict(row) for row in rows]
+    result = (
+        _get_client().table(TABLE)
+        .select("*")
+        .eq("status", "pending")
+        .order("created_at")
+        .execute()
+    )
+    return result.data
 
 
 def get_review(review_id):
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
-        return dict(row) if row else None
+    result = _get_client().table(TABLE).select("*").eq("id", review_id).execute()
+    return result.data[0] if result.data else None
 
 
 def mark_sent(review_id, sent_body):
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE reviews SET status = 'sent', draft_reply = ? WHERE id = ?",
-            (sent_body, review_id),
-        )
-
-
-init_db()
+    _get_client().table(TABLE).update(
+        {"status": "sent", "draft_reply": sent_body}
+    ).eq("id", review_id).execute()

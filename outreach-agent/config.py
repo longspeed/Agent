@@ -21,6 +21,9 @@ APP_SECRET_KEY = os.environ["APP_SECRET_KEY"]
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")  # only needed for the lead sourcing agent
 
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+
 # Name, Email, Company, Status, ThreadID, SentAt, EmailBody, LeadReason, EmailConfidence (first tab)
 SHEET_RANGE = "A:I"
 SCOPES = [

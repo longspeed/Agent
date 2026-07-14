@@ -76,6 +76,25 @@ Fill in:
 - `APP_SECRET_KEY` — random key used to sign dashboard login sessions, e.g.
   `python -c "import secrets; print(secrets.token_hex(32))"`. Changing it
   logs everyone out.
+- `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` — from your Supabase project's
+  Settings > API page (`SUPABASE_SERVICE_KEY` is the **service_role** key,
+  not the anon key — this runs server-side only and needs write access).
+  Before running the app, create the reviews table by pasting this into
+  the Supabase SQL editor:
+
+  ```sql
+  create table reviews (
+    id bigint generated always as identity primary key,
+    row_index integer not null,
+    name text,
+    email text,
+    thread_id text,
+    customer_reply text,
+    draft_reply text,
+    status text not null default 'pending',
+    created_at timestamptz not null default now()
+  );
+  ```
 
 ## 6. Run
 
