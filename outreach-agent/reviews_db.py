@@ -1,6 +1,6 @@
 from supabase import create_client
 
-from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from config import SUPABASE_URL, SUPABASE_SECRET_KEY
 
 TABLE = "reviews"
 
@@ -10,7 +10,7 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        _client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     return _client
 
 
