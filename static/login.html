@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in — Agent Hub</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F0E0C; --bg-elevated:#17150F; --bg-floating:#1E1B14;
+    --border:#2A2620; --border-hover:#3A342A;
+    --text:#F5F1E8; --text-secondary:#A69C8A; --text-muted:#726B5A;
+    --accent:#E8622C; --accent-hover:#F4753E; --accent-dim:rgba(232,98,44,0.12);
+  }
+  html{background:var(--bg);}
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);}
+  .font-display{font-family:'Fraunces',serif;}
+  .card-shadow{box-shadow:0 1px 2px rgba(0,0,0,0.5), 0 8px 24px -8px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.02);}
+  .ease-spring{transition-timing-function:cubic-bezier(.22,1,.36,1);}
+  .noise{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");opacity:0.035;}
+  .btn-primary{background:var(--accent); color:#0F0E0C;}
+  .btn-primary:hover{background:var(--accent-hover);}
+  .btn-primary:active{transform:scale(0.98);}
+  .btn-primary:disabled{opacity:0.5; cursor:not-allowed;}
+  .field{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
+  .field:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);}
+</style>
+</head>
+<body class="min-h-screen antialiased flex items-center justify-center">
+
+<div class="fixed inset-0 noise pointer-events-none"></div>
+<div class="fixed inset-0 pointer-events-none" style="background:radial-gradient(ellipse 800px 500px at 15% -10%, rgba(232,98,44,0.10), transparent), radial-gradient(ellipse 600px 400px at 90% 10%, rgba(76,134,168,0.08), transparent);"></div>
+
+<div class="relative w-full max-w-sm px-6">
+  <div class="flex items-center gap-2.5 justify-center mb-8">
+    <div class="w-7 h-7 rounded-md flex items-center justify-center" style="background:var(--accent);">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 12L20 4L14 20L11 13L4 12Z" stroke="#0F0E0C" stroke-width="2" stroke-linejoin="round"/></svg>
+    </div>
+    <span class="font-display text-lg tracking-tight" style="letter-spacing:-0.02em;">Agent Hub</span>
+  </div>
+
+  <form id="login-form" class="rounded-2xl p-7 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+    <h1 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Sign in</h1>
+    <p class="text-sm mb-6" style="color:var(--text-secondary);">Enter the password to reach your agents.</p>
+    <input id="password" type="password" autofocus required autocomplete="current-password"
+      class="field w-full rounded-lg px-4 py-2.5 text-sm mb-3 ease-spring transition-colors duration-150"
+      placeholder="Password">
+    <p id="login-error" class="hidden text-xs mb-3" style="color:var(--accent);">Wrong password.</p>
+    <button type="submit" class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
+      <span class="btn-label">Sign in</span>
+    </button>
+  </form>
+</div>
+
+<script>
+  const form = document.getElementById('login-form');
+  const errorEl = document.getElementById('login-error');
+  const submitBtn = form.querySelector('button[type=submit]');
+  const next = new URLSearchParams(window.location.search).get('next') || '/';
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errorEl.classList.add('hidden');
+    submitBtn.disabled = true;
+    try {
+      const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('password').value }),
+      });
+      if (!res.ok) {
+        errorEl.textContent = 'Wrong password.';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+      window.location.href = next;
+    } catch (e) {
+      errorEl.textContent = 'Something went wrong — try again.';
+      errorEl.classList.remove('hidden');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+</script>
+
+</body>
+</html>

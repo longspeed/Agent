@@ -1,0 +1,17 @@
+# secrets
+outreach-agent/.env
+outreach-agent/credentials.json
+outreach-agent/token.json
+
+# local data / generated artifacts
+outreach-agent/reviews.db
+outreach-agent/email_preview.txt
+temporary screenshots/
+.claude/scheduled_tasks.lock
+
+# python
+__pycache__/
+*.pyc
+
+# node
+node_modules/

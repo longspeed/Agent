@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outreach Agent — Agent Hub</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F0E0C; --bg-elevated:#17150F; --bg-floating:#1E1B14;
+    --border:#2A2620; --border-hover:#3A342A;
+    --text:#F5F1E8; --text-secondary:#A69C8A; --text-muted:#726B5A;
+    --accent:#E8622C; --accent-hover:#F4753E; --accent-dim:rgba(232,98,44,0.12);
+    --gold:#D8A93B; --gold-dim:rgba(216,169,59,0.14);
+    --green:#4C9A6A; --green-dim:rgba(76,154,106,0.14);
+    --steel:#4C86A8; --steel-dim:rgba(76,134,168,0.14);
+  }
+  html{background:var(--bg);}
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);}
+  .font-display{font-family:'Fraunces',serif;}
+  .card-shadow{box-shadow:0 1px 2px rgba(0,0,0,0.5), 0 8px 24px -8px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.02);}
+  .ease-spring{transition-timing-function:cubic-bezier(.22,1,.36,1);}
+  .noise{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");opacity:0.035;}
+  textarea{font-family:'Inter',sans-serif;}
+  .btn-primary{background:var(--accent); color:#0F0E0C;}
+  .btn-primary:hover{background:var(--accent-hover);}
+  .btn-primary:active{transform:scale(0.98);}
+  .btn-primary:disabled{opacity:0.5; cursor:not-allowed;}
+  .btn-ghost{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
+  .btn-ghost:hover{border-color:var(--border-hover); background:#221F17;}
+  .btn-ghost:active{transform:scale(0.98);}
+  .spin{animation:spin 0.7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;}
+</style>
+</head>
+<body class="min-h-screen antialiased">
+
+<div class="fixed inset-0 noise pointer-events-none"></div>
+
+<div id="app-nav"></div>
+
+<main class="max-w-5xl mx-auto px-6 pt-10 pb-24 relative">
+
+  <div class="flex flex-wrap items-end justify-between gap-4 mb-8">
+    <div>
+      <h1 class="font-display text-3xl mb-1.5" style="letter-spacing:-0.02em;">Campaign overview</h1>
+      <p class="text-sm" style="color:var(--text-secondary);">Live status pulled from your Google Sheet.</p>
+    </div>
+    <button id="send-batch-btn" class="btn-primary rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
+      <span class="btn-label">Send pending batch</span>
+    </button>
+  </div>
+
+  <div id="send-result" class="hidden mb-8 rounded-xl px-4 py-3 text-sm" style="background:var(--bg-elevated); border:1px solid var(--border);"></div>
+
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-12">
+    <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+      <div class="text-2xl font-display mb-1" id="stat-pending">—</div>
+      <div class="text-xs" style="color:var(--text-secondary);">Pending</div>
+    </div>
+    <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+      <div class="text-2xl font-display mb-1" id="stat-sent">—</div>
+      <div class="text-xs" style="color:var(--text-secondary);">Sent</div>
+    </div>
+    <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+      <div class="text-2xl font-display mb-1" id="stat-replied">—</div>
+      <div class="text-xs" style="color:var(--text-secondary);">Replied</div>
+    </div>
+    <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+      <div class="text-2xl font-display mb-1" id="stat-review" style="color:var(--accent);">—</div>
+      <div class="text-xs" style="color:var(--text-secondary);">Awaiting review</div>
+    </div>
+  </div>
+
+  <section class="mb-16">
+    <h2 class="font-display text-xl mb-4" style="letter-spacing:-0.01em;">Campaigns</h2>
+    <div class="rounded-2xl overflow-hidden card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left" style="border-bottom:1px solid var(--border);">
+              <th class="px-5 py-3 font-medium" style="color:var(--text-muted);">Name</th>
+              <th class="px-5 py-3 font-medium" style="color:var(--text-muted);">Email</th>
+              <th class="px-5 py-3 font-medium" style="color:var(--text-muted);">Company</th>
+              <th class="px-5 py-3 font-medium" style="color:var(--text-muted);">Status</th>
+              <th class="px-5 py-3 font-medium" style="color:var(--text-muted);">Sent at</th>
+              <th class="px-5 py-3 font-medium" style="color:var(--text-muted);">Replied?</th>
+            </tr>
+          </thead>
+          <tbody id="campaigns-body">
+            <tr><td colspan="6" class="px-5 py-8 text-center" style="color:var(--text-muted);">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-display text-xl flex items-center gap-2.5" style="letter-spacing:-0.01em;">
+        Needs review
+        <span id="review-count-badge" class="badge" style="background:var(--accent-dim); color:var(--accent);">0</span>
+      </h2>
+      <button id="check-replies-btn" class="btn-ghost rounded-lg px-3.5 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">
+        <span class="btn-label">Check for replies now</span>
+      </button>
+    </div>
+    <div id="reviews-list" class="space-y-4">
+      <div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Loading…</div>
+    </div>
+  </section>
+
+</main>
+
+<template id="review-card-template">
+  <div class="review-card rounded-2xl p-6 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="font-medium text-sm rc-name"></div>
+        <div class="text-xs rc-email" style="color:var(--text-muted);"></div>
+      </div>
+      <span class="badge" style="background:var(--accent-dim); color:var(--accent);">Needs review</span>
+    </div>
+    <div class="mb-4">
+      <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Their reply</div>
+      <div class="rc-customer-reply text-sm rounded-lg px-4 py-3 leading-relaxed whitespace-pre-wrap" style="background:var(--bg-floating); color:var(--text-secondary); border-left:2px solid var(--border-hover);"></div>
+    </div>
+    <div class="mb-4">
+      <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Your reply</div>
+      <textarea class="rc-draft w-full text-sm rounded-lg px-4 py-3 leading-relaxed resize-y focus-visible:outline-none focus:ring-2" rows="6" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);"></textarea>
+    </div>
+    <div class="flex items-center justify-end gap-3">
+      <span class="rc-status text-xs" style="color:var(--green);"></span>
+      <button class="rc-send btn-primary rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">Send reply</button>
+    </div>
+  </div>
+</template>
+
+<script src="/static/nav.js"></script>
+<script>
+  renderNav('Outreach Agent');
+
+  const fmtDate = (iso) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+
+  async function pollJob(jobId, intervalMs = 1000) {
+    while (true) {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (!res.ok) throw new Error('Job not found');
+      const job = await res.json();
+      if (job.status !== 'running') return job;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+
+  const statusStyle = {
+    Pending: { bg: 'var(--gold-dim)', fg: 'var(--gold)' },
+    Sent: { bg: 'var(--steel-dim)', fg: 'var(--steel)' },
+    Replied: { bg: 'var(--green-dim)', fg: 'var(--green)' },
+  };
+
+  function badge(status) {
+    const s = statusStyle[status] || statusStyle.Pending;
+    return `<span class="badge" style="background:${s.bg}; color:${s.fg};">${status}</span>`;
+  }
+
+  function setLoading(btn, loading, loadingText) {
+    btn.disabled = loading;
+    const label = btn.querySelector('.btn-label');
+    if (loading) {
+      btn.dataset.original = label.textContent;
+      label.innerHTML = `<svg class="spin inline-block align-[-2px]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9" opacity="0.25"/><path d="M21 12a9 9 0 00-9-9"/></svg> ${loadingText}`;
+    } else {
+      label.textContent = btn.dataset.original || label.textContent;
+    }
+  }
+
+  let campaignsCache = [];
+  async function loadCampaigns() {
+    const body = document.getElementById('campaigns-body');
+    try {
+      const campaigns = await fetch('/api/outreach/campaigns').then(r => r.json());
+      campaignsCache = campaigns;
+      document.getElementById('stat-pending').textContent = campaigns.filter(c => c.status === 'Pending').length;
+      document.getElementById('stat-sent').textContent = campaigns.filter(c => c.status === 'Sent').length;
+      document.getElementById('stat-replied').textContent = campaigns.filter(c => c.status === 'Replied').length;
+
+      if (!campaigns.length) {
+        body.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center" style="color:var(--text-muted);">No contacts in the sheet yet.</td></tr>`;
+        return;
+      }
+      body.innerHTML = campaigns.map(c => `
+        <tr class="ease-spring transition-colors duration-150 hover:bg-white/[0.02]" style="border-bottom:1px solid var(--border);">
+          <td class="px-5 py-3.5">${esc(c.name) || '—'}</td>
+          <td class="px-5 py-3.5" style="color:var(--text-secondary);">${esc(c.email) || '—'}</td>
+          <td class="px-5 py-3.5" style="color:var(--text-secondary);">${esc(c.company) || '—'}</td>
+          <td class="px-5 py-3.5">${badge(c.status)}</td>
+          <td class="px-5 py-3.5" style="color:var(--text-muted);">${esc(fmtDate(c.sentAt))}</td>
+          <td class="px-5 py-3.5">${c.status === 'Sent' ? `
+            <button class="check-reply-btn btn-ghost rounded-md px-2.5 py-1 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-row="${c.row}">Check</button>
+            <span class="check-reply-result text-xs ml-1"></span>
+          ` : '<span style="color:var(--text-muted);">—</span>'}</td>
+        </tr>
+      `).join('');
+    } catch (e) {
+      body.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center" style="color:var(--text-muted);">Couldn't load campaigns.</td></tr>`;
+    }
+  }
+
+  document.getElementById('campaigns-body').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.check-reply-btn');
+    if (!btn) return;
+    const row = btn.dataset.row;
+    const resultEl = btn.nextElementSibling;
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = '…';
+    try {
+      const res = await fetch(`/api/outreach/campaigns/${row}/check-reply`, { method: 'POST' });
+      if (!res.ok) throw new Error('Failed');
+      const data = await res.json();
+      resultEl.textContent = data.replied ? 'Replied ✓' : 'No reply yet';
+      resultEl.style.color = data.replied ? 'var(--green)' : 'var(--text-muted)';
+    } catch (e) {
+      resultEl.textContent = 'Check failed';
+      resultEl.style.color = 'var(--accent)';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  function renderReview(r) {
+    const tpl = document.getElementById('review-card-template').content.cloneNode(true);
+    const card = tpl.querySelector('.review-card');
+    card.dataset.id = r.id;
+    tpl.querySelector('.rc-name').textContent = r.name || 'Unknown';
+    tpl.querySelector('.rc-email').textContent = r.email || '';
+    tpl.querySelector('.rc-customer-reply').textContent = r.customer_reply || '';
+    tpl.querySelector('.rc-draft').value = r.draft_reply || '';
+
+    const sendBtn = tpl.querySelector('.rc-send');
+    const statusEl = tpl.querySelector('.rc-status');
+    sendBtn.addEventListener('click', async () => {
+      const draft = tpl.querySelector('.rc-draft')?.value ?? card.querySelector('.rc-draft').value;
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Sending…';
+      try {
+        const res = await fetch(`/api/outreach/replies/${r.id}/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: card.querySelector('.rc-draft').value }),
+        });
+        if (!res.ok) throw new Error('Failed');
+        statusEl.textContent = 'Sent ✓';
+        card.style.opacity = '0.5';
+        sendBtn.textContent = 'Sent';
+        setTimeout(() => { card.remove(); updateReviewCount(); }, 900);
+      } catch (e) {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send reply';
+        statusEl.style.color = 'var(--accent)';
+        statusEl.textContent = 'Failed to send — try again';
+      }
+    });
+
+    return card;
+  }
+
+  function updateReviewCount() {
+    const count = document.querySelectorAll('.review-card').length;
+    document.getElementById('review-count-badge').textContent = count;
+    document.getElementById('stat-review').textContent = count;
+  }
+
+  async function loadReviews() {
+    const list = document.getElementById('reviews-list');
+    try {
+      const reviews = await fetch('/api/outreach/replies').then(r => r.json());
+      list.innerHTML = '';
+      if (!reviews.length) {
+        list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Nothing needs review right now.</div>`;
+      } else {
+        reviews.forEach(r => list.appendChild(renderReview(r)));
+      }
+      updateReviewCount();
+    } catch (e) {
+      list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Couldn't load reviews.</div>`;
+    }
+  }
+
+  document.getElementById('send-batch-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('send-batch-btn');
+    const resultEl = document.getElementById('send-result');
+    const pendingCount = campaignsCache.filter(c => c.status === 'Pending').length;
+    if (pendingCount === 0) {
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--text-secondary)';
+      resultEl.textContent = 'No pending contacts to send to.';
+      return;
+    }
+    if (!confirm(`Send a real outreach email to ${pendingCount} pending contact${pendingCount === 1 ? '' : 's'}?`)) return;
+
+    setLoading(btn, true, 'Sending…');
+    resultEl.classList.add('hidden');
+    try {
+      const { job_id } = await fetch('/api/outreach/campaigns/send', { method: 'POST' }).then(r => r.json());
+      const job = await pollJob(job_id);
+      if (job.status === 'error') throw new Error(job.error);
+      const data = job.result;
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--green)';
+      resultEl.textContent = data.total === 0
+        ? 'No pending contacts to send to.'
+        : `Sent ${data.sent} of ${data.total} emails.` + (data.failed?.length ? ` ${data.failed.length} failed.` : '');
+      await loadCampaigns();
+    } catch (e) {
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--accent)';
+      resultEl.textContent = 'Failed to send batch.';
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  document.getElementById('check-replies-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('check-replies-btn');
+    setLoading(btn, true, 'Checking…');
+    try {
+      const { job_id } = await fetch('/api/outreach/replies/check', { method: 'POST' }).then(r => r.json());
+      const job = await pollJob(job_id);
+      if (job.status === 'error') throw new Error(job.error);
+      await Promise.all([loadReviews(), loadCampaigns()]);
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  loadCampaigns();
+  loadReviews();
+</script>
+
+</body>
+</html>

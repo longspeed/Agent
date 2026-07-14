@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lead Sourcing Agent — Agent Hub</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F0E0C; --bg-elevated:#17150F; --bg-floating:#1E1B14;
+    --border:#2A2620; --border-hover:#3A342A;
+    --text:#F5F1E8; --text-secondary:#A69C8A; --text-muted:#726B5A;
+    --accent:#E8622C; --accent-hover:#F4753E; --accent-dim:rgba(232,98,44,0.12);
+    --gold:#D8A93B; --gold-dim:rgba(216,169,59,0.14);
+    --green:#4C9A6A; --green-dim:rgba(76,154,106,0.14);
+    --steel:#4C86A8; --steel-dim:rgba(76,134,168,0.14);
+  }
+  html{background:var(--bg);}
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);}
+  .font-display{font-family:'Fraunces',serif;}
+  .card-shadow{box-shadow:0 1px 2px rgba(0,0,0,0.5), 0 8px 24px -8px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.02);}
+  .ease-spring{transition-timing-function:cubic-bezier(.22,1,.36,1);}
+  .noise{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");opacity:0.035;}
+  textarea, input{font-family:'Inter',sans-serif;}
+  .field{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
+  .field:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);}
+  .btn-primary{background:var(--accent); color:#0F0E0C;}
+  .btn-primary:hover{background:var(--accent-hover);}
+  .btn-primary:active{transform:scale(0.98);}
+  .btn-primary:disabled{opacity:0.5; cursor:not-allowed;}
+  .btn-ghost{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
+  .btn-ghost:hover{border-color:var(--border-hover); background:#221F17;}
+  .btn-ghost:active{transform:scale(0.98);}
+  .btn-ghost:disabled{opacity:0.5; cursor:not-allowed;}
+  .spin{animation:spin 0.7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;}
+</style>
+</head>
+<body class="min-h-screen antialiased">
+
+<div class="fixed inset-0 noise pointer-events-none"></div>
+
+<div id="app-nav"></div>
+
+<main class="max-w-5xl mx-auto px-6 pt-10 pb-24 relative">
+
+  <div class="mb-8">
+    <h1 class="font-display text-3xl mb-1.5" style="letter-spacing:-0.02em;">Find new leads</h1>
+    <p class="text-sm" style="color:var(--text-secondary);">
+      Describe who you're looking for — it searches the web, qualifies matches, and adds
+      them to your outreach sheet as <strong style="color:var(--text);">New Lead</strong>, ready for your review.
+    </p>
+  </div>
+
+  <form id="search-form" class="rounded-2xl p-6 card-shadow mb-6" style="background:var(--bg-elevated); border:1px solid var(--border);">
+    <label for="query" class="block text-xs font-medium mb-2" style="color:var(--text-muted);">Target description</label>
+    <textarea id="query" required rows="3" placeholder="e.g. seed-stage fintech startup founders in the US"
+      class="field w-full rounded-lg px-4 py-3 text-sm mb-4 ease-spring transition-colors duration-150 resize-y"></textarea>
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <label for="limit" class="block text-xs font-medium mb-2" style="color:var(--text-muted);">Max leads</label>
+        <input id="limit" type="number" min="1" max="25" value="10"
+          class="field w-24 rounded-lg px-3 py-2 text-sm ease-spring transition-colors duration-150">
+      </div>
+      <button type="submit" id="search-btn" class="btn-primary rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
+        <span class="btn-label">Find leads</span>
+      </button>
+    </div>
+  </form>
+
+  <div id="search-result" class="hidden mb-10 rounded-xl px-4 py-3 text-sm" style="background:var(--bg-elevated); border:1px solid var(--border);"></div>
+
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-display text-xl flex items-center gap-2.5" style="letter-spacing:-0.01em;">
+        New leads to review
+        <span id="leads-count-badge" class="badge" style="background:var(--accent-dim); color:var(--accent);">0</span>
+      </h2>
+    </div>
+    <div id="leads-list" class="space-y-4">
+      <div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Loading…</div>
+    </div>
+  </section>
+
+</main>
+
+<template id="lead-card-template">
+  <div class="lead-card rounded-2xl p-6 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+    <div class="flex items-start justify-between mb-3 gap-4">
+      <div>
+        <div class="font-medium text-sm lc-name"></div>
+        <div class="text-xs lc-company" style="color:var(--text-muted);"></div>
+      </div>
+      <span class="lc-confidence-badge badge"></span>
+    </div>
+    <p class="text-sm leading-relaxed mb-3 lc-reason" style="color:var(--text-secondary);"></p>
+    <div class="text-xs mb-4 lc-email" style="color:var(--text-muted);"></div>
+    <div class="flex items-center justify-end gap-3">
+      <span class="lc-status text-xs" style="color:var(--green);"></span>
+      <button class="lc-discard btn-ghost rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">Discard</button>
+      <button class="lc-approve btn-primary rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">Approve</button>
+    </div>
+  </div>
+</template>
+
+<script src="/static/nav.js"></script>
+<script>
+  renderNav('Lead Agent');
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+
+  async function pollJob(jobId, intervalMs = 1500) {
+    while (true) {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (!res.ok) throw new Error('Job not found');
+      const job = await res.json();
+      if (job.status !== 'running') return job;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+
+  function setLoading(btn, loading, loadingText) {
+    btn.disabled = loading;
+    const label = btn.querySelector('.btn-label');
+    if (loading) {
+      btn.dataset.original = label.textContent;
+      label.innerHTML = `<svg class="spin inline-block align-[-2px]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9" opacity="0.25"/><path d="M21 12a9 9 0 00-9-9"/></svg> ${loadingText}`;
+    } else {
+      label.textContent = btn.dataset.original || label.textContent;
+    }
+  }
+
+  function confidenceBadge(confidence) {
+    if (confidence === 'found') return { text: 'Email found', bg: 'var(--green-dim)', fg: 'var(--green)' };
+    return { text: 'Email guessed', bg: 'var(--gold-dim)', fg: 'var(--gold)' };
+  }
+
+  function renderLead(lead) {
+    const tpl = document.getElementById('lead-card-template').content.cloneNode(true);
+    const card = tpl.querySelector('.lead-card');
+    card.dataset.row = lead.row;
+    tpl.querySelector('.lc-name').textContent = lead.name || 'Unknown';
+    tpl.querySelector('.lc-company').textContent = lead.company || '';
+    tpl.querySelector('.lc-reason').textContent = lead.reason || '';
+    tpl.querySelector('.lc-email').textContent = lead.email || '';
+
+    const badge = confidenceBadge(lead.emailConfidence);
+    const badgeEl = tpl.querySelector('.lc-confidence-badge');
+    badgeEl.textContent = badge.text;
+    badgeEl.style.background = badge.bg;
+    badgeEl.style.color = badge.fg;
+
+    const statusEl = tpl.querySelector('.lc-status');
+    const approveBtn = tpl.querySelector('.lc-approve');
+    const discardBtn = tpl.querySelector('.lc-discard');
+
+    async function act(action, btn, successText) {
+      approveBtn.disabled = true;
+      discardBtn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = '…';
+      try {
+        const res = await fetch(`/api/leads/${lead.row}/${action}`, { method: 'POST' });
+        if (!res.ok) throw new Error('Failed');
+        statusEl.textContent = successText;
+        card.style.opacity = '0.5';
+        setTimeout(() => { card.remove(); updateLeadsCount(); }, 700);
+      } catch (e) {
+        approveBtn.disabled = false;
+        discardBtn.disabled = false;
+        btn.textContent = original;
+        statusEl.style.color = 'var(--accent)';
+        statusEl.textContent = 'Failed — try again';
+      }
+    }
+
+    approveBtn.addEventListener('click', () => act('approve', approveBtn, 'Approved ✓'));
+    discardBtn.addEventListener('click', () => act('discard', discardBtn, 'Discarded'));
+
+    return card;
+  }
+
+  function updateLeadsCount() {
+    document.getElementById('leads-count-badge').textContent = document.querySelectorAll('.lead-card').length;
+  }
+
+  async function loadLeads() {
+    const list = document.getElementById('leads-list');
+    try {
+      const leadsData = await fetch('/api/leads').then(r => r.json());
+      list.innerHTML = '';
+      if (!leadsData.length) {
+        list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">No leads waiting for review. Try a search above.</div>`;
+      } else {
+        leadsData.forEach(l => list.appendChild(renderLead(l)));
+      }
+      updateLeadsCount();
+    } catch (e) {
+      list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Couldn't load leads.</div>`;
+    }
+  }
+
+  document.getElementById('search-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('search-btn');
+    const resultEl = document.getElementById('search-result');
+    const query = document.getElementById('query').value.trim();
+    const limit = Number(document.getElementById('limit').value) || 10;
+    if (!query) return;
+
+    setLoading(btn, true, 'Searching…');
+    resultEl.classList.add('hidden');
+    try {
+      const { job_id } = await fetch('/api/leads/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, limit }),
+      }).then(r => r.json());
+      const job = await pollJob(job_id);
+      if (job.status === 'error') throw new Error(job.error);
+      const data = job.result;
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--green)';
+      resultEl.textContent = `Found ${data.found}, added ${data.added} new lead${data.added === 1 ? '' : 's'}` +
+        (data.skipped_duplicates ? ` (${data.skipped_duplicates} already in your sheet).` : '.');
+      await loadLeads();
+    } catch (e) {
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--accent)';
+      resultEl.textContent = `Search failed: ${esc(e.message || 'unknown error')}`;
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  loadLeads();
+</script>
+
+</body>
+</html>
