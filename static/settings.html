@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings — Agent Hub</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F0E0C; --bg-elevated:#17150F; --bg-floating:#1E1B14;
+    --border:#2A2620; --border-hover:#3A342A;
+    --text:#F5F1E8; --text-secondary:#A69C8A; --text-muted:#726B5A;
+    --accent:#E8622C; --accent-hover:#F4753E; --accent-dim:rgba(232,98,44,0.12);
+    --ok:#7BB662; --ok-dim:rgba(123,182,98,0.12);
+  }
+  html{background:var(--bg);}
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);}
+  .font-display{font-family:'Fraunces',serif;}
+  .card-shadow{box-shadow:0 1px 2px rgba(0,0,0,0.5), 0 8px 24px -8px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.02);}
+  .ease-spring{transition-timing-function:cubic-bezier(.22,1,.36,1);}
+  .noise{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");opacity:0.035;}
+  .btn-primary{background:var(--accent); color:#0F0E0C;}
+  .btn-primary:hover{background:var(--accent-hover);}
+  .btn-primary:active{transform:scale(0.98);}
+  .btn-primary:disabled{opacity:0.5; cursor:not-allowed;}
+  .btn-ghost{border:1px solid var(--border); color:var(--text-secondary);}
+  .btn-ghost:hover{border-color:var(--border-hover); color:var(--text);}
+  .btn-ghost:active{transform:scale(0.98);}
+  .field{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
+  .field:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);}
+  .card{background:var(--bg-elevated); border:1px solid var(--border);}
+</style>
+</head>
+<body class="min-h-screen antialiased">
+
+<div class="fixed inset-0 noise pointer-events-none"></div>
+<div class="fixed inset-0 pointer-events-none" style="background:radial-gradient(ellipse 800px 500px at 15% -10%, rgba(232,98,44,0.10), transparent), radial-gradient(ellipse 600px 400px at 90% 10%, rgba(76,134,168,0.08), transparent);"></div>
+
+<div id="app-nav"></div>
+
+<main class="relative max-w-3xl mx-auto px-6 py-10">
+  <h1 class="font-display text-2xl mb-1" style="letter-spacing:-0.02em;">Settings</h1>
+  <p class="text-sm mb-8" style="color:var(--text-secondary);">Signed in as <span id="me-email" style="color:var(--text);">…</span></p>
+
+  <div id="flash" class="hidden rounded-lg px-4 py-3 text-sm mb-6" style="border:1px solid var(--border);"></div>
+
+  <!-- Onboarding checklist -->
+  <section id="onboarding" class="hidden card rounded-2xl p-6 card-shadow mb-6">
+    <h2 class="font-display text-lg mb-4" style="letter-spacing:-0.01em;">Finish setting up</h2>
+    <ol class="space-y-2 text-sm" style="color:var(--text-secondary);">
+      <li id="step-google" class="flex items-center gap-2.5"><span class="step-dot"></span>Connect your Google account (Gmail + Sheets)</li>
+      <li id="step-sheet" class="flex items-center gap-2.5"><span class="step-dot"></span>Pick the Google Sheet that holds your leads</li>
+      <li id="step-calendar" class="flex items-center gap-2.5"><span class="step-dot"></span>Add your calendar booking link</li>
+    </ol>
+  </section>
+
+  <!-- Google connection -->
+  <section class="card rounded-2xl p-6 card-shadow mb-6">
+    <div class="flex items-center justify-between gap-4 flex-wrap">
+      <div>
+        <h2 class="font-display text-lg mb-1" style="letter-spacing:-0.01em;">Google account</h2>
+        <p id="google-status" class="text-sm" style="color:var(--text-secondary);">Checking…</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <a id="google-connect" href="/api/google/connect"
+           class="btn-primary rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
+          Connect Google
+        </a>
+        <button id="google-disconnect" class="hidden btn-ghost rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent);">
+          Disconnect
+        </button>
+      </div>
+    </div>
+    <p class="text-xs mt-4" style="color:var(--text-muted);">Outreach emails are sent from this Gmail; your lead sheet is read and updated with its permission. The token is stored encrypted.</p>
+  </section>
+
+  <!-- Outreach settings -->
+  <form id="settings-form" class="card rounded-2xl p-6 card-shadow mb-6">
+    <h2 class="font-display text-lg mb-5" style="letter-spacing:-0.01em;">Outreach settings</h2>
+    <div class="grid gap-4">
+      <div class="text-sm">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Lead sheet</span>
+        <div class="flex items-center justify-between gap-3 rounded-lg px-4 py-2.5" style="background:var(--bg-floating); border:1px solid var(--border);">
+          <span id="sheet-current-label" class="truncate" style="color:var(--text-muted);">No sheet selected</span>
+          <button type="button" id="sheet-browse-btn" class="btn-ghost shrink-0 rounded-md px-3 py-1.5 text-xs font-medium ease-spring transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent);">Choose sheet</button>
+        </div>
+        <div id="sheet-picker" class="hidden rounded-lg p-3 mt-2" style="background:var(--bg-floating); border:1px solid var(--border);">
+          <div id="sheet-picker-status" class="text-xs mb-2" style="color:var(--text-muted);"></div>
+          <div id="sheet-picker-list" class="max-h-56 overflow-y-auto space-y-1"></div>
+        </div>
+        <button type="button" id="sheet-manual-toggle" class="text-xs mt-2 ease-spring transition-colors duration-150" style="color:var(--text-muted);">Or paste a Sheet ID/URL manually</button>
+        <input id="google_sheet_id" type="text" class="hidden field w-full rounded-lg px-4 py-2.5 text-sm mt-2 ease-spring transition-colors duration-150"
+          placeholder="Paste a Sheet ID or the full Sheets URL">
+      </div>
+      <label class="text-sm">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Sender first name (signs your emails)</span>
+        <input id="sender_name" type="text" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="Alex">
+      </label>
+      <label class="text-sm">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Calendar booking link</span>
+        <input id="calendar_booking_link" type="url" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="https://cal.com/you/15min">
+      </label>
+      <label class="text-sm">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Meeting purpose (one sentence used in every email)</span>
+        <input id="meeting_purpose" type="text" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="a quick intro call to see if there's a fit to work together">
+      </label>
+      <label class="text-sm">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Notification email (batch summaries & reply alerts)</span>
+        <input id="notify_email" type="email" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="you@company.com">
+      </label>
+    </div>
+    <div class="flex items-center gap-3 mt-6">
+      <button type="submit" class="btn-primary rounded-lg px-5 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">Save settings</button>
+      <span id="save-status" class="text-xs" style="color:var(--text-muted);"></span>
+    </div>
+  </form>
+
+  <!-- Usage -->
+  <section class="card rounded-2xl p-6 card-shadow">
+    <h2 class="font-display text-lg mb-1" style="letter-spacing:-0.01em;">Usage</h2>
+    <p class="text-xs mb-5" style="color:var(--text-muted);">Metered against this account across all time.</p>
+    <div class="grid grid-cols-2 gap-4 max-w-sm">
+      <div class="rounded-xl p-4" style="background:var(--bg-floating); border:1px solid var(--border);">
+        <div id="usage-llm" class="font-display text-2xl" style="letter-spacing:-0.02em;">—</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">LLM tokens</div>
+      </div>
+      <div class="rounded-xl p-4" style="background:var(--bg-floating); border:1px solid var(--border);">
+        <div id="usage-search" class="font-display text-2xl" style="letter-spacing:-0.02em;">—</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">Web searches</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/nav.js"></script>
+<script>
+  renderNav('Settings');
+
+  const $ = (id) => document.getElementById(id);
+  const FIELDS = ['google_sheet_id', 'sender_name', 'calendar_booking_link', 'meeting_purpose', 'notify_email'];
+  const esc = (s) => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
+  let sheetsCache = [];
+  let googleConnected = false;
+
+  function flash(text, ok) {
+    const el = $('flash');
+    el.textContent = text;
+    el.style.background = ok ? 'var(--ok-dim)' : 'var(--accent-dim)';
+    el.style.color = ok ? 'var(--ok)' : 'var(--accent)';
+    el.classList.remove('hidden');
+  }
+
+  function stepDone(li, done) {
+    const dot = li.querySelector('.step-dot');
+    dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:9999px;flex:none;background:${done ? 'var(--ok)' : 'var(--border-hover)'};`;
+    li.style.color = done ? 'var(--text-muted)' : 'var(--text-secondary)';
+    li.style.textDecoration = done ? 'line-through' : 'none';
+  }
+
+  function setSheetLabel(id) {
+    if (!id) { $('sheet-current-label').textContent = 'No sheet selected'; return; }
+    const match = sheetsCache.find(s => s.id === id);
+    $('sheet-current-label').textContent = match ? match.name : `Sheet ID: ${id}`;
+  }
+
+  async function load() {
+    const me = await (await fetch('/api/me')).json();
+    $('me-email').textContent = me.email;
+    googleConnected = me.googleConnected;
+
+    // Google connection card
+    $('google-status').textContent = me.googleConnected
+      ? 'Connected — Gmail and Sheets are authorized.'
+      : 'Not connected yet.';
+    $('google-connect').textContent = me.googleConnected ? 'Reconnect' : 'Connect Google';
+    $('google-disconnect').classList.toggle('hidden', !me.googleConnected);
+
+    // Settings form
+    for (const f of FIELDS) $(f).value = me.settings[f] || '';
+    setSheetLabel(me.settings.google_sheet_id || '');
+    $('sheet-browse-btn').disabled = !me.googleConnected;
+    $('sheet-browse-btn').title = me.googleConnected ? '' : 'Connect Google first';
+
+    // Onboarding checklist (hidden once everything is done)
+    const sheetOk = !!(me.settings.google_sheet_id || '').trim();
+    const calOk = !!(me.settings.calendar_booking_link || '').trim();
+    $('onboarding').classList.toggle('hidden', me.onboarded);
+    stepDone($('step-google'), me.googleConnected);
+    stepDone($('step-sheet'), sheetOk);
+    stepDone($('step-calendar'), calOk);
+
+    // Usage
+    const usage = await (await fetch('/api/usage')).json();
+    $('usage-llm').textContent = ((usage.llm || {}).quantity || 0).toLocaleString();
+    $('usage-search').textContent = ((usage.search || {}).quantity || 0).toLocaleString();
+  }
+
+  $('settings-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {};
+    for (const f of FIELDS) body[f] = $(f).value.trim();
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    $('save-status').textContent = res.ok ? 'Saved.' : 'Save failed — try again.';
+    setTimeout(() => { $('save-status').textContent = ''; }, 2500);
+    if (res.ok) load();
+  });
+
+  async function loadGoogleSheetsList() {
+    const status = $('sheet-picker-status');
+    const list = $('sheet-picker-list');
+    if (!googleConnected) {
+      status.textContent = 'Connect Google first (above) to browse your Sheets.';
+      list.innerHTML = '';
+      return;
+    }
+    status.textContent = 'Loading your Google Sheets…';
+    list.innerHTML = '';
+    try {
+      const res = await fetch('/api/google/sheets');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        status.textContent = data.detail || 'Could not load your sheets — try pasting the ID manually.';
+        return;
+      }
+      sheetsCache = await res.json();
+      if (!sheetsCache.length) {
+        status.textContent = 'No spreadsheets found in your Google Drive.';
+        return;
+      }
+      status.textContent = `${sheetsCache.length} spreadsheet${sheetsCache.length === 1 ? '' : 's'} found — pick one:`;
+      list.innerHTML = sheetsCache.map(s => `
+        <button type="button" class="sheet-option w-full text-left rounded-md px-3 py-2 text-sm ease-spring transition-colors duration-150 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent);" data-id="${esc(s.id)}">${esc(s.name)}</button>
+      `).join('');
+    } catch (e) {
+      status.textContent = 'Could not load your sheets — try pasting the ID manually.';
+    }
+  }
+
+  $('sheet-browse-btn').addEventListener('click', async () => {
+    const picker = $('sheet-picker');
+    const wasHidden = picker.classList.contains('hidden');
+    picker.classList.toggle('hidden');
+    if (wasHidden) await loadGoogleSheetsList();
+  });
+
+  $('sheet-picker-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.sheet-option');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    $('google_sheet_id').value = id;
+    setSheetLabel(id);
+    $('sheet-picker').classList.add('hidden');
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ google_sheet_id: id }),
+    });
+    flash(res.ok ? `Lead sheet set to "${btn.textContent.trim()}".` : 'Could not save — try again.', res.ok);
+    if (res.ok) load();
+  });
+
+  $('sheet-manual-toggle').addEventListener('click', () => {
+    $('google_sheet_id').classList.toggle('hidden');
+  });
+
+  $('google-disconnect').addEventListener('click', async () => {
+    await fetch('/api/google/disconnect', { method: 'POST' });
+    load();
+  });
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('connected')) flash('Google account connected.', true);
+  if (params.get('google_error')) flash(`Google connection failed: ${params.get('google_error')}`, false);
+  if (params.get('connected') || params.get('google_error')) {
+    history.replaceState(null, '', '/settings');
+  }
+
+  load();
+</script>
+
+</body>
+</html>

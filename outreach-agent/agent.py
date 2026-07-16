@@ -2,7 +2,8 @@ import time
 
 import requests
 
-from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, CALENDAR_BOOKING_LINK, MEETING_PURPOSE, SENDER_NAME
+import usage
+from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_RETRIES = 4
@@ -64,16 +65,33 @@ def _chat(system, user_prompt):
             time.sleep(wait)
             continue
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        data = response.json()
+        # Meter the pooled OpenRouter key against whichever account is active.
+        tokens = (data.get("usage") or {}).get("total_tokens") or 1
+        usage.record("llm", tokens, OPENROUTER_MODEL)
+        return data["choices"][0]["message"]["content"].strip()
 
 
-def generate_outreach_email(name, company):
+def _sender_context(account):
+    return {
+        "sender_name": account.get("sender_name") or "the team",
+        "meeting_purpose": account.get("meeting_purpose")
+        or "a quick intro call to see if there's a fit to work together",
+        "calendar_link": (account.get("calendar_booking_link") or "").strip(),
+    }
+
+
+def generate_outreach_email(account, name, company):
+    ctx = _sender_context(account)
+    if not ctx["calendar_link"]:
+        raise RuntimeError("Set a calendar booking link in Settings before sending outreach")
+
     user_prompt = (
         f"Recipient: {name}"
         + (f" at {company}" if company else "")
-        + f"\nSender: {SENDER_NAME}"
-        + f"\nReason for the meeting: {MEETING_PURPOSE}"
-        + f"\nScheduling link to include as the call-to-action: {CALENDAR_BOOKING_LINK}"
+        + f"\nSender: {ctx['sender_name']}"
+        + f"\nReason for the meeting: {ctx['meeting_purpose']}"
+        + f"\nScheduling link to include as the call-to-action: {ctx['calendar_link']}"
         + "\n\nWrite the email."
     )
 
@@ -84,10 +102,11 @@ def generate_outreach_email(name, company):
     return subject, body.strip()
 
 
-def draft_reply(original_email, customer_reply):
+def draft_reply(account, original_email, customer_reply):
+    ctx = _sender_context(account)
     user_prompt = (
-        f"Sender: {SENDER_NAME}\n"
-        f"Scheduling link: {CALENDAR_BOOKING_LINK}\n\n"
+        f"Sender: {ctx['sender_name']}\n"
+        f"Scheduling link: {ctx['calendar_link']}\n\n"
         f"Our original outreach email:\n{original_email}\n\n"
         f"Customer's reply:\n{customer_reply}\n\n"
         "Draft our reply."

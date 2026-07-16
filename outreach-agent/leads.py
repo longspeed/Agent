@@ -63,7 +63,7 @@ def _email_confidence(email_guess, results):
     return "guessed"
 
 
-def find_leads(target_description, limit=10):
+def find_leads(account, target_description, limit=10):
     queries = _expand_queries(target_description)
 
     all_results = []
@@ -76,7 +76,7 @@ def find_leads(target_description, limit=10):
 
     candidates = _extract_candidates(target_description, all_results)
 
-    existing = sheets.get_all_rows()
+    existing = sheets.get_all_rows(account)
     existing_emails = {row[sheets.COL_EMAIL].strip().lower() for _, row in existing if row[sheets.COL_EMAIL].strip()}
     existing_names_companies = {
         (row[sheets.COL_NAME].strip().lower(), row[sheets.COL_COMPANY].strip().lower())
@@ -111,7 +111,7 @@ def find_leads(target_description, limit=10):
         ])
         existing_emails.add(email_guess.lower())
 
-    sheets.append_rows(new_rows)
+    sheets.append_rows(account, new_rows)
 
     return {
         "found": len(candidates),

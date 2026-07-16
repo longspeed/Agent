@@ -151,8 +151,15 @@
     const cardEl = document.getElementById('outreach-stats');
     const heroEl = document.getElementById('hero-stats');
     try {
+      const campaignsRes = await fetch('/api/outreach/campaigns');
+      if (campaignsRes.status === 409) {
+        const notConnected = `<span>Connect your Google account in <a href="/settings" style="color:var(--accent);">Settings</a> to get started.</span>`;
+        cardEl.innerHTML = notConnected;
+        heroEl.innerHTML = notConnected;
+        return;
+      }
       const [campaigns, replies] = await Promise.all([
-        fetch('/api/outreach/campaigns').then(r => r.json()),
+        campaignsRes.json(),
         fetch('/api/outreach/replies').then(r => r.json()),
       ]);
       const pending = campaigns.filter(c => c.status === 'Pending').length;
@@ -186,7 +193,12 @@
   async function loadLeadsStats() {
     const el = document.getElementById('leads-stats');
     try {
-      const leadsData = await fetch('/api/leads').then(r => r.json());
+      const res = await fetch('/api/leads');
+      if (res.status === 409) {
+        el.innerHTML = `<span>Connect your Google account in <a href="/settings" style="color:var(--accent);">Settings</a> to get started.</span>`;
+        return;
+      }
+      const leadsData = await res.json();
       el.innerHTML = leadsData.length
         ? `<span><strong style="color:var(--accent)">${leadsData.length}</strong> new lead${leadsData.length === 1 ? '' : 's'} to review</span>`
         : `<span>No leads waiting — run a search to find some.</span>`;

@@ -4,19 +4,23 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).parent
-load_dotenv()
+load_dotenv(BASE_DIR / ".env")
+load_dotenv()  # also pick up a repo-root .env if one exists
+
+# Google silently includes any scope the user has already granted this OAuth
+# client (e.g. openid/userinfo.email from a prior "Sign in with Google")
+# alongside whatever a given flow explicitly requested. oauthlib treats that
+# scope superset as a hard error by default instead of the harmless thing it
+# is — this must be set before any Flow is constructed.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
+# App-level config only. Anything that differs per customer (Gmail token,
+# sheet id, sender name, calendar link, notify email) lives on their row in
+# the Supabase `accounts` table, not here.
 
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-oss-20b:free")
-NOTIFY_EMAIL = os.environ["NOTIFY_EMAIL"]
-GOOGLE_SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
-CALENDAR_BOOKING_LINK = os.environ["CALENDAR_BOOKING_LINK"]
-SENDER_NAME = os.environ.get("SENDER_NAME", "the team")
-MEETING_PURPOSE = os.environ.get(
-    "MEETING_PURPOSE", "a quick intro call to see if there's a fit to work together"
-)
 
-APP_PASSWORD = os.environ["APP_PASSWORD"]
 APP_SECRET_KEY = os.environ["APP_SECRET_KEY"]
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")  # only needed for the lead sourcing agent
@@ -29,6 +33,21 @@ SHEET_RANGE = "A:I"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/gmail.modify",
+    # Read-only file listing (name + id only, no file contents) — lets
+    # customers pick their lead sheet from a list instead of pasting an ID.
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
 ]
+# The OAuth *client* (this app's identity with Google) is shared; each
+# account runs its own consent flow against it and stores its own token.
 CREDENTIALS_FILE = str(BASE_DIR / "credentials.json")
-TOKEN_FILE = str(BASE_DIR / "token.json")
+GOOGLE_OAUTH_REDIRECT_URI = os.environ.get(
+    "GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8000/api/google/callback"
+)
+# Separate, lower-privilege flow used for "Sign in with Google" (identity
+# only) — distinct from GOOGLE_OAUTH_REDIRECT_URI above, which is the
+# post-login "connect Gmail + Sheets" flow. Both must be registered as
+# authorized redirect URIs on the same OAuth client.
+GOOGLE_LOGIN_REDIRECT_URI = os.environ.get(
+    "GOOGLE_LOGIN_REDIRECT_URI", "http://localhost:8000/auth/google/callback"
+)
+LOGIN_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"]

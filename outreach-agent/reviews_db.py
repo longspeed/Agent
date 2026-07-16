@@ -1,3 +1,6 @@
+"""Review queue in Supabase, scoped per account. Every query filters on
+account_id — combined with RLS on the table, one tenant can never see
+another's reviews."""
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SECRET_KEY
@@ -14,8 +17,9 @@ def _get_client():
     return _client
 
 
-def add_review(row_index, name, email, thread_id, customer_reply, draft_reply):
+def add_review(account_id, row_index, name, email, thread_id, customer_reply, draft_reply):
     result = _get_client().table(TABLE).insert({
+        "account_id": account_id,
         "row_index": row_index,
         "name": name,
         "email": email,
@@ -27,10 +31,11 @@ def add_review(row_index, name, email, thread_id, customer_reply, draft_reply):
     return result.data[0]["id"]
 
 
-def list_pending_reviews():
+def list_pending_reviews(account_id):
     result = (
         _get_client().table(TABLE)
         .select("*")
+        .eq("account_id", account_id)
         .eq("status", "pending")
         .order("created_at")
         .execute()
@@ -38,12 +43,18 @@ def list_pending_reviews():
     return result.data
 
 
-def get_review(review_id):
-    result = _get_client().table(TABLE).select("*").eq("id", review_id).execute()
+def get_review(account_id, review_id):
+    result = (
+        _get_client().table(TABLE)
+        .select("*")
+        .eq("account_id", account_id)
+        .eq("id", review_id)
+        .execute()
+    )
     return result.data[0] if result.data else None
 
 
-def mark_sent(review_id, sent_body):
+def mark_sent(account_id, review_id, sent_body):
     _get_client().table(TABLE).update(
         {"status": "sent", "draft_reply": sent_body}
-    ).eq("id", review_id).execute()
+    ).eq("account_id", account_id).eq("id", review_id).execute()

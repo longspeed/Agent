@@ -4,126 +4,174 @@ Reads customers from a Google Sheet, sends each a personalized outreach email
 via Gmail, notifies you when the batch is done, and watches for replies —
 drafting an AI response you review and send yourself.
 
+The app is multi-tenant: each customer signs up (with a password, or via
+"Continue with Google"), connects their own Gmail/Sheets via an in-browser
+"Connect Google" button, picks their own sheet, and sees only their own
+data. The steps below set up the shared app once; individual customers
+onboard themselves through the web UI.
+
+Note the login flow is separate from the Gmail/Sheets connection flow —
+"Continue with Google" only proves who you are (email identity, no Gmail
+access granted); customers still connect Gmail from Settings afterward, and
+it doesn't have to be the same Google account they signed in with.
+
 ## 1. Install dependencies
 
 ```
 pip install -r requirements.txt
 ```
 
-## 2. Google Cloud setup (Gmail + Sheets access)
+## 2. Google Cloud setup (the app's shared OAuth client)
 
 1. Go to https://console.cloud.google.com/ and create a new project.
-2. Enable the **Gmail API** and **Google Sheets API** for it (APIs & Services > Library).
+2. Enable the **Gmail API**, **Google Sheets API**, and **Google Drive API**
+   for it (APIs & Services > Library). Drive is read-only (file names/ids
+   only, never contents) and only powers the "choose your sheet from a
+   list" picker in Settings.
 3. Go to APIs & Services > Credentials > Create Credentials > OAuth client ID.
-   - Application type: **Desktop app**
-   - If prompted, configure the OAuth consent screen first (External is fine for personal use; add your own email as a test user).
-4. Download the credentials JSON and save it as `credentials.json` in this folder.
+   - Application type: **Web application**
+   - Add **both** `http://localhost:8000/api/google/callback` (Gmail/Sheets
+     connect) and `http://localhost:8000/auth/google/callback` ("Sign in
+     with Google") as **Authorized redirect URIs** — plus your production
+     callback URLs when you deploy; set `GOOGLE_OAUTH_REDIRECT_URI` and
+     `GOOGLE_LOGIN_REDIRECT_URI` in `.env` to match.
+   - If prompted, configure the OAuth consent screen first (External; while
+     the consent screen is in "Testing" status, every customer's Google
+     account must be added as a test user).
+4. Download the credentials JSON and save it as `credentials.json` in this
+   folder. This is the *app's* identity with Google — customers each grant it
+   access to their own account, and their tokens are stored encrypted in the
+   database (no `token.json` on disk).
 
-## 3. Create the Google Sheet
+## 3. Supabase setup
 
-In the **first tab** of the spreadsheet (any tab name is fine — the code
-always targets the first tab), add this header row:
+Create a project at https://supabase.com/ and run this in the SQL editor
+(skip if the migration `multi_tenant_schema` has already been applied):
 
-| Name | Email | Company | Status | ThreadID | SentAt | EmailBody |
-|------|-------|---------|--------|----------|--------|-----------|
+```sql
+create extension if not exists pgcrypto;
 
-Add one row per customer you want to reach out to (Name, Email, Company only —
-leave Status/ThreadID/SentAt/EmailBody blank, the scripts fill those in).
+create table public.accounts (
+    id uuid primary key default gen_random_uuid(),
+    email text not null unique,
+    password_hash text not null,
+    google_token text,
+    google_sheet_id text,
+    sender_name text not null default 'the team',
+    meeting_purpose text not null default 'a quick intro call to see if there''s a fit to work together',
+    calendar_booking_link text,
+    notify_email text,
+    created_at timestamptz not null default now()
+);
 
-Copy the Sheet's ID from its URL:
-`https://docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit`
+create table public.reviews (
+    id bigint generated always as identity primary key,
+    account_id uuid not null references public.accounts(id) on delete cascade,
+    row_index integer not null,
+    name text not null default '',
+    email text not null default '',
+    thread_id text not null default '',
+    customer_reply text not null default '',
+    draft_reply text not null default '',
+    status text not null default 'pending',
+    created_at timestamptz not null default now()
+);
+create index reviews_account_status_idx on public.reviews (account_id, status);
+
+create table public.usage_events (
+    id bigint generated always as identity primary key,
+    account_id uuid not null references public.accounts(id) on delete cascade,
+    kind text not null,
+    detail text not null default '',
+    quantity integer not null default 1,
+    created_at timestamptz not null default now()
+);
+create index usage_events_account_idx on public.usage_events (account_id, created_at);
+
+alter table public.accounts enable row level security;
+alter table public.reviews enable row level security;
+alter table public.usage_events enable row level security;
+```
+
+RLS is enabled with no policies: the publishable/anon key can read nothing,
+and the backend (which uses the secret key and bypasses RLS) scopes every
+query by `account_id`.
 
 ## 4. OpenRouter API key
 
 Sign up at https://openrouter.ai/ and create an API key
 (https://openrouter.ai/settings/keys). The default model in `.env.example`,
-`openai/gpt-oss-20b:free`, is a free model — no payment needed
-to get started. Free models have rate limits (roughly 20 requests/min, 200/day
-as of mid-2026), which is plenty for outreach batches of normal size. You can
-swap `OPENROUTER_MODEL` for any other model ID from
-https://openrouter.ai/models if you want higher quality or fewer limits later.
+`openai/gpt-oss-20b:free`, is a free model — no payment needed to get
+started. This key is shared by all accounts; per-account consumption is
+recorded in `usage_events` (see the Usage panel in Settings).
 
-## 5. Google Calendar booking link
-
-The outreach email's call-to-action is a link where the customer picks a
-meeting time themselves — Google Calendar books it automatically, no code
-needed:
-
-1. Open https://calendar.google.com/
-2. Click **Create** > **Appointment schedule**
-3. Set your available hours/days and meeting length
-4. Save, then click **"Share this booking page"** and copy the link
-
-## 6. Configure environment
+## 5. Configure environment
 
 ```
 cp .env.example .env
 ```
 
 Fill in:
-- `OPENROUTER_API_KEY` — your OpenRouter API key from step 4
+- `OPENROUTER_API_KEY` — from step 4
 - `OPENROUTER_MODEL` — leave as the default free model, or swap for another
-- `NOTIFY_EMAIL` — where you want batch/reply notifications sent
-- `GOOGLE_SHEET_ID` — from step 3
-- `CALENDAR_BOOKING_LINK` — from step 5
-- `SENDER_NAME` — the first name the emails are signed with
-- `MEETING_PURPOSE` — one sentence on why you want the meeting, e.g.
-  "a quick call to see if [product] could help with [pain point]" — this is
-  what the AI uses to write a specific, non-generic email instead of filler
-- `APP_PASSWORD` — password for the web dashboard (`server.py`) login screen.
-  Anyone with this password can trigger real sends from the dashboard, so
-  pick something you wouldn't mind rotating.
-- `APP_SECRET_KEY` — random key used to sign dashboard login sessions, e.g.
+- `APP_SECRET_KEY` — random key used to sign login sessions and encrypt
+  stored Google tokens, e.g.
   `python -c "import secrets; print(secrets.token_hex(32))"`. Changing it
-  logs everyone out.
+  logs everyone out and invalidates stored Google tokens.
+- `TAVILY_API_KEY` — only needed for the lead sourcing agent
 - `SUPABASE_URL` / `SUPABASE_SECRET_KEY` — from your Supabase project's
-  Settings > API Keys page (`SUPABASE_SECRET_KEY` is the **secret** key,
-  not the publishable key — this runs server-side only and needs write
-  access). Before running the app, create the reviews table by pasting
-  this into the Supabase SQL editor:
-
-  ```sql
-  create table reviews (
-    id bigint generated always as identity primary key,
-    row_index integer not null,
-    name text,
-    email text,
-    thread_id text,
-    customer_reply text,
-    draft_reply text,
-    status text not null default 'pending',
-    created_at timestamptz not null default now()
-  );
-  ```
+  Settings > API Keys page (the **secret** key, not the publishable one)
+- `GOOGLE_OAUTH_REDIRECT_URI` / `GOOGLE_LOGIN_REDIRECT_URI` — must both match
+  redirect URIs registered on the OAuth client in step 2
 
 ## 6. Run
 
-Send outreach to all pending rows:
+From the repo root:
+
 ```
-python send_outreach.py
+python -m uvicorn server:app --port 8000
 ```
 
-The first run opens a browser window for Google OAuth consent — sign in with
-the Google account you want to send from. This creates `token.json` so you
-won't need to log in again.
+Each customer then onboards themselves at `http://localhost:8000/signup`:
 
-Watch for replies (checks every 5 minutes; Ctrl+C to stop):
+1. Create an account (email + password)
+2. On the Settings page, click **Connect Google** and grant Gmail + Sheets +
+   Drive (read-only) access
+3. Click **Choose sheet** to pick their lead sheet from a list of their
+   Google Sheets (a manual ID/URL paste is still available as a fallback)
+4. Fill in sender name, calendar booking link, meeting purpose, and
+   notification email
+5. Use the Outreach and Leads pages as before — everything they see and send
+   is scoped to their own account
+
+The sheet needs this header row in its **first tab**:
+
+| Name | Email | Company | Status | ThreadID | SentAt | EmailBody | LeadReason | EmailConfidence |
+|------|-------|---------|--------|----------|--------|-----------|------------|-----------------|
+
+### CLI (optional, per account)
+
+The batch scripts also run standalone, scoped to one account by email:
+
 ```
-python watch_replies.py
+python send_outreach.py you@company.com
+python watch_replies.py you@company.com --once
+python watch_replies.py you@company.com        # poll every 5 minutes
 ```
 
-Or check once and exit:
-```
-python watch_replies.py --once
-```
-
-When a customer replies, you'll get an email with their reply plus an
-AI-drafted response. Review it and send it yourself from Gmail — this tool
-never sends replies automatically.
+When a customer replies, the account's notification email gets the reply plus
+an AI-drafted response. Review it in the dashboard and send it from there —
+this tool never sends replies automatically.
 
 ## Notes
 
-- Re-running `send_outreach.py` only sends to rows with an empty `Status`
-  column, so it's safe to add new rows to the sheet and re-run anytime.
-- `watch_replies.py` only checks rows with `Status = Sent`; once a reply is
+- Re-running the send only targets rows with an empty `Status` column, so
+  it's safe to add new rows to the sheet and re-run anytime.
+- Reply-watching only checks rows with `Status = Sent`; once a reply is
   detected the row is marked `Replied` and won't be checked again.
+- Google tokens are encrypted at rest with a key derived from
+  `APP_SECRET_KEY`; an account can disconnect Google from Settings at any
+  time.
+- Accounts that connected Google before the Drive scope was added won't have
+  it on their stored token; the sheet picker will prompt them to click
+  **Reconnect** once to grant it (their outreach/leads data is unaffected).

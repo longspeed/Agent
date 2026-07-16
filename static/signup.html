@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sign in — Agent Hub</title>
+<title>Create account — Agent Hub</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -45,9 +45,9 @@
   </div>
 
   <div class="rounded-2xl p-7 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
-  <form id="login-form">
-    <h1 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Sign in</h1>
-    <p class="text-sm mb-6" style="color:var(--text-secondary);">Sign in to reach your agents.</p>
+  <form id="signup-form">
+    <h1 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Create your account</h1>
+    <p class="text-sm mb-6" style="color:var(--text-secondary);">You'll connect Gmail and a Google Sheet right after.</p>
 
     <a href="/auth/google/login" class="flex items-center justify-center gap-2.5 w-full rounded-lg px-4 py-2.5 text-sm font-medium mb-5 ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="background:#F5F1E8; color:#1F1D19; --tw-ring-color:var(--accent);">
       <svg width="16" height="16" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.9c1.7-1.57 2.7-3.88 2.7-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.9-2.26c-.8.54-1.83.86-3.06.86-2.35 0-4.34-1.59-5.05-3.72H.9v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.95 10.7A5.4 5.4 0 0 1 3.67 9c0-.59.1-1.17.28-1.7V4.97H.9A9 9 0 0 0 0 9c0 1.45.35 2.83.9 4.03l3.05-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.51.46 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .9 4.97L3.95 7.3C4.66 5.17 6.65 3.58 9 3.58z"/></svg>
@@ -63,33 +63,32 @@
     <input id="email" type="email" autofocus required autocomplete="email"
       class="field w-full rounded-lg px-4 py-2.5 text-sm mb-3 ease-spring transition-colors duration-150"
       placeholder="you@company.com">
-    <input id="password" type="password" required autocomplete="current-password"
+    <input id="password" type="password" required minlength="8" autocomplete="new-password"
       class="field w-full rounded-lg px-4 py-2.5 text-sm mb-3 ease-spring transition-colors duration-150"
-      placeholder="Password">
-    <p id="login-error" class="hidden text-xs mb-3" style="color:var(--accent);"></p>
+      placeholder="Password (8+ characters)">
+    <p id="signup-error" class="hidden text-xs mb-3" style="color:var(--accent);"></p>
     <button type="submit" class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
-      <span class="btn-label">Sign in</span>
+      <span class="btn-label">Create account</span>
     </button>
     <p class="text-xs mt-5 text-center" style="color:var(--text-muted);">
-      No account yet?
-      <a href="/signup" class="link-accent font-medium ease-spring transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 rounded" style="--tw-ring-color:var(--accent);">Create one</a>
+      Already have an account?
+      <a href="/login" class="link-accent font-medium ease-spring transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 rounded" style="--tw-ring-color:var(--accent);">Sign in</a>
     </p>
   </form>
   </div>
 </div>
 
 <script>
-  const form = document.getElementById('login-form');
-  const errorEl = document.getElementById('login-error');
+  const form = document.getElementById('signup-form');
+  const errorEl = document.getElementById('signup-error');
   const submitBtn = form.querySelector('button[type=submit]');
-  const next = new URLSearchParams(window.location.search).get('next') || '/';
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     errorEl.classList.add('hidden');
     submitBtn.disabled = true;
     try {
-      const res = await fetch('/login', {
+      const res = await fetch('/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -99,11 +98,12 @@
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        errorEl.textContent = data.detail || 'Wrong email or password.';
+        errorEl.textContent = data.detail || 'Could not create the account.';
         errorEl.classList.remove('hidden');
         return;
       }
-      window.location.href = next;
+      // Straight into onboarding: connect Google + pick a sheet.
+      window.location.href = '/settings';
     } catch (e) {
       errorEl.textContent = 'Something went wrong — try again.';
       errorEl.classList.remove('hidden');
@@ -116,7 +116,7 @@
   if (googleError) {
     errorEl.textContent = `Google sign-in failed (${googleError}). Try again.`;
     errorEl.classList.remove('hidden');
-    history.replaceState(null, '', '/login');
+    history.replaceState(null, '', '/signup');
   }
 </script>
 

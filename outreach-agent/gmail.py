@@ -5,19 +5,16 @@ from googleapiclient.discovery import build
 
 from google_auth import get_credentials
 
-_service = None
+def _get_service(account):
+    # Deliberately not cached: credentials differ per account, and
+    # send_outreach.py calls this concurrently from a thread pool where the
+    # underlying httplib2.Http connection isn't safe to share across threads.
+    return build("gmail", "v1", credentials=get_credentials(account))
 
 
-def _get_service():
-    global _service
-    if _service is None:
-        _service = build("gmail", "v1", credentials=get_credentials())
-    return _service
-
-
-def send_email(to, subject, body):
-    """Sends a new email. Returns the Gmail thread id."""
-    service = _get_service()
+def send_email(account, to, subject, body):
+    """Sends a new email from the account's connected Gmail. Returns the thread id."""
+    service = _get_service(account)
     message = MIMEText(body)
     message["to"] = to
     message["subject"] = subject
@@ -34,9 +31,9 @@ def _header(headers, name):
     return ""
 
 
-def send_reply(thread_id, to, body):
+def send_reply(account, thread_id, to, body):
     """Sends body as a reply within thread_id, threaded via In-Reply-To/References."""
-    service = _get_service()
+    service = _get_service(account)
     thread = service.users().threads().get(userId="me", id=thread_id, format="metadata",
                                              metadataHeaders=["Subject", "Message-ID"]).execute()
     messages = thread.get("messages", [])
@@ -75,11 +72,11 @@ def _extract_body(payload):
     return ""
 
 
-def get_latest_reply(thread_id):
+def get_latest_reply(account, thread_id):
     """Returns the body text of the newest message in the thread if there's
     more than one message (i.e. someone replied to our outreach email),
     otherwise returns None."""
-    service = _get_service()
+    service = _get_service(account)
     thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
     messages = thread.get("messages", [])
     if len(messages) < 2:

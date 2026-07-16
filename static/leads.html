@@ -193,7 +193,13 @@
   async function loadLeads() {
     const list = document.getElementById('leads-list');
     try {
-      const leadsData = await fetch('/api/leads').then(r => r.json());
+      const res = await fetch('/api/leads');
+      if (res.status === 409) {
+        const detail = (await res.json()).detail || 'Connect your Google account to get started.';
+        list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">${esc(detail)} <a href="/settings" style="color:var(--accent);">Go to Settings</a></div>`;
+        return;
+      }
+      const leadsData = await res.json();
       list.innerHTML = '';
       if (!leadsData.length) {
         list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">No leads waiting for review. Try a search above.</div>`;

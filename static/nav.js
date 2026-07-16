@@ -6,6 +6,7 @@ function renderNav(breadcrumb) {
   header.className = 'sticky top-0 z-20 border-b';
   header.style.cssText = 'border-color:var(--border); background:rgba(15,14,12,0.75); backdrop-filter:blur(12px);';
 
+  const settingsLink = `<a href="/settings" class="text-xs font-medium ease-spring transition-colors duration-150 hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-muted); --tw-ring-color:var(--accent);">Settings</a>`;
   const logoutBtn = `<button id="nav-logout-btn" class="text-xs font-medium ease-spring transition-colors duration-150 hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-muted); --tw-ring-color:var(--accent);">Log out</button>`;
 
   header.innerHTML = breadcrumb ? `
@@ -18,7 +19,7 @@ function renderNav(breadcrumb) {
         <span style="color:var(--border-hover);">/</span>
         <span class="font-display text-base" style="letter-spacing:-0.01em;">${breadcrumb}</span>
       </div>
-      ${logoutBtn}
+      <div class="flex items-center gap-5">${settingsLink}${logoutBtn}</div>
     </div>` : `
     <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
       <div class="flex items-center gap-2.5">
@@ -29,6 +30,7 @@ function renderNav(breadcrumb) {
       </div>
       <nav class="flex items-center gap-5 text-sm" style="color:var(--text-secondary);">
         <span style="color:var(--text);">Home</span>
+        ${settingsLink}
         ${logoutBtn}
       </nav>
     </div>`;

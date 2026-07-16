@@ -1,5 +1,6 @@
 import requests
 
+import usage
 from config import TAVILY_API_KEY
 
 API_URL = "https://api.tavily.com/search"
@@ -21,5 +22,6 @@ def tavily_search(query, max_results=5):
         timeout=30,
     )
     response.raise_for_status()
+    usage.record("search", 1, query)
     results = response.json().get("results", [])
     return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")} for r in results]
