@@ -28,6 +28,10 @@
   .btn-primary:disabled{opacity:0.5; cursor:not-allowed;}
   .btn-ghost{border:1px solid var(--border); color:var(--text-secondary);}
   .btn-ghost:hover{border-color:var(--border-hover); color:var(--text);}
+  .step-dot{width:18px; height:18px; border-radius:9999px; flex:none; display:flex; align-items:center; justify-content:center; border:1.5px solid var(--border-hover); background:transparent; transition:background-color 250ms cubic-bezier(.22,1,.36,1), border-color 250ms cubic-bezier(.22,1,.36,1), transform 250ms cubic-bezier(.22,1,.36,1);}
+  .step-dot svg{opacity:0; transform:scale(0.5); transition:opacity 200ms cubic-bezier(.22,1,.36,1), transform 200ms cubic-bezier(.22,1,.36,1);}
+  .step-dot.done{background:var(--ok); border-color:var(--ok); transform:scale(1.05);}
+  .step-dot.done svg{opacity:1; transform:scale(1);}
   .btn-ghost:active{transform:scale(0.98);}
   .field{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
   .field:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);}
@@ -51,9 +55,9 @@
   <section id="onboarding" class="hidden card rounded-2xl p-6 card-shadow mb-6">
     <h2 class="font-display text-lg mb-4" style="letter-spacing:-0.01em;">Finish setting up</h2>
     <ol class="space-y-2 text-sm" style="color:var(--text-secondary);">
-      <li id="step-google" class="flex items-center gap-2.5"><span class="step-dot"></span>Connect your Google account (Gmail + Sheets)</li>
-      <li id="step-sheet" class="flex items-center gap-2.5"><span class="step-dot"></span>Pick the Google Sheet that holds your leads</li>
-      <li id="step-calendar" class="flex items-center gap-2.5"><span class="step-dot"></span>Add your calendar booking link</li>
+      <li id="step-google" class="flex items-center gap-2.5"><span class="step-dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0F0E0C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>Connect your Google account (Gmail + Sheets)</li>
+      <li id="step-sheet" class="flex items-center gap-2.5"><span class="step-dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0F0E0C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>Pick the Google Sheet that holds your leads</li>
+      <li id="step-calendar" class="flex items-center gap-2.5"><span class="step-dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0F0E0C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>Add your calendar booking link</li>
     </ol>
   </section>
 
@@ -154,8 +158,7 @@
   }
 
   function stepDone(li, done) {
-    const dot = li.querySelector('.step-dot');
-    dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:9999px;flex:none;background:${done ? 'var(--ok)' : 'var(--border-hover)'};`;
+    li.querySelector('.step-dot').classList.toggle('done', done);
     li.style.color = done ? 'var(--text-muted)' : 'var(--text-secondary)';
     li.style.textDecoration = done ? 'line-through' : 'none';
   }
