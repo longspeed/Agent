@@ -204,7 +204,11 @@
       animateCount(document.getElementById('stat-replied'), campaigns.filter(c => c.status === 'Replied').length);
 
       if (!campaigns.length) {
-        body.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center" style="color:var(--text-muted);">No contacts in the sheet yet.</td></tr>`;
+        body.innerHTML = `
+          <tr><td colspan="6" class="px-5 py-10 text-center" style="color:var(--text-muted);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="mx-auto mb-2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg>
+            <span class="text-sm">No contacts in the sheet yet — add one to get started.</span>
+          </td></tr>`;
         return;
       }
       body.innerHTML = campaigns.map(c => `
@@ -297,7 +301,14 @@
       const reviews = await fetch('/api/outreach/replies').then(r => r.json());
       list.innerHTML = '';
       if (!reviews.length) {
-        list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Nothing needs review right now.</div>`;
+        list.innerHTML = `
+          <div class="rounded-xl p-8 text-center" style="background:var(--bg-elevated); border:1px dashed var(--border);">
+            <div class="w-10 h-10 mx-auto mb-3 rounded-lg flex items-center justify-center" style="background:var(--green-dim);">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </div>
+            <p class="text-sm font-medium mb-1">All caught up</p>
+            <p class="text-xs" style="color:var(--text-muted);">Nothing needs review right now — replies will show up here.</p>
+          </div>`;
       } else {
         reviews.forEach(r => list.appendChild(renderReview(r)));
       }

@@ -202,7 +202,14 @@
       const leadsData = await res.json();
       list.innerHTML = '';
       if (!leadsData.length) {
-        list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">No leads waiting for review. Try a search above.</div>`;
+        list.innerHTML = `
+          <div class="rounded-xl p-8 text-center" style="background:var(--bg-elevated); border:1px dashed var(--border);">
+            <div class="w-10 h-10 mx-auto mb-3 rounded-lg flex items-center justify-center" style="background:var(--accent-dim);">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            </div>
+            <p class="text-sm font-medium mb-1">No leads waiting</p>
+            <p class="text-xs" style="color:var(--text-muted);">Describe who you're targeting above and run a search.</p>
+          </div>`;
       } else {
         leadsData.forEach(l => list.appendChild(renderLead(l)));
       }
