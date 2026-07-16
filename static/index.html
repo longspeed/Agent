@@ -23,6 +23,10 @@
   .card-shadow-hover:hover{box-shadow:0 1px 2px rgba(0,0,0,0.5), 0 16px 40px -12px rgba(0,0,0,0.6), 0 0 0 1px var(--border-hover), 0 0 32px -8px var(--accent-dim);}
   .ease-spring{transition-timing-function:cubic-bezier(.22,1,.36,1);}
   .noise{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");opacity:0.035;}
+
+  @keyframes blur-fade-up{from{opacity:0; transform:translateY(8px); filter:blur(4px);}to{opacity:1; transform:translateY(0); filter:blur(0);}}
+  .blur-fade-in{animation:blur-fade-up 500ms cubic-bezier(.22,1,.36,1) both;}
+  @media (prefers-reduced-motion: reduce){.blur-fade-in{animation:none;}}
 </style>
 </head>
 <body class="min-h-screen antialiased">
@@ -35,40 +39,40 @@
 <main class="max-w-6xl mx-auto px-6 relative">
 
   <section class="pt-20 pb-10 max-w-2xl">
-    <div class="inline-flex items-center gap-2 text-xs font-medium px-2.5 py-1 rounded-full mb-6" style="background:var(--accent-dim); color:var(--accent);">
+    <div class="blur-fade-in inline-flex items-center gap-2 text-xs font-medium px-2.5 py-1 rounded-full mb-6" style="background:var(--accent-dim); color:var(--accent);">
       <span class="w-1.5 h-1.5 rounded-full" style="background:var(--accent);"></span>
       Autonomous agents
     </div>
-    <h1 class="font-display text-5xl leading-[1.05] mb-5" style="letter-spacing:-0.03em;">
+    <h1 class="blur-fade-in font-display text-5xl leading-[1.05] mb-5" style="letter-spacing:-0.03em; animation-delay:60ms;">
       Outreach that<br>runs itself.
     </h1>
-    <p class="text-base leading-[1.7] mb-8" style="color:var(--text-secondary);">
+    <p class="blur-fade-in text-base leading-[1.7] mb-8" style="color:var(--text-secondary); animation-delay:120ms;">
       Agent Hub writes and sends your cold emails, watches your inbox for replies,
       and hands you a drafted response the moment someone writes back. You just
       hit approve.
     </p>
-    <div id="hero-stats" class="flex flex-wrap items-center gap-x-8 gap-y-3 text-sm" style="color:var(--text-muted);">
+    <div id="hero-stats" class="blur-fade-in flex flex-wrap items-center gap-x-8 gap-y-3 text-sm" style="color:var(--text-muted); animation-delay:180ms;">
       <span>Loading live stats…</span>
     </div>
   </section>
 
   <section class="pb-14 max-w-4xl">
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-5">
-      <div class="flex gap-3.5">
+      <div class="blur-fade-in flex gap-3.5" style="animation-delay:240ms;">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">1</div>
         <div>
           <h3 class="text-sm font-medium mb-1">It writes the email</h3>
           <p class="text-xs leading-relaxed" style="color:var(--text-muted);">A personalized note per contact — no templates to babysit, no fill-in-the-blank filler.</p>
         </div>
       </div>
-      <div class="flex gap-3.5">
+      <div class="blur-fade-in flex gap-3.5" style="animation-delay:300ms;">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">2</div>
         <div>
           <h3 class="text-sm font-medium mb-1">It sends & listens</h3>
           <p class="text-xs leading-relaxed" style="color:var(--text-muted);">The email goes out, then it quietly watches that Gmail thread for a reply.</p>
         </div>
       </div>
-      <div class="flex gap-3.5">
+      <div class="blur-fade-in flex gap-3.5" style="animation-delay:360ms;">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">3</div>
         <div>
           <h3 class="text-sm font-medium mb-1">You just approve</h3>
@@ -81,8 +85,8 @@
   <section class="pb-24">
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
 
-      <a href="/outreach" class="group block rounded-2xl p-6 card-shadow card-shadow-hover ease-spring transition-transform duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2"
-         style="background:var(--bg-elevated); border:1px solid var(--border); --tw-ring-color:var(--accent);">
+      <a href="/outreach" class="blur-fade-in group block rounded-2xl p-6 card-shadow card-shadow-hover ease-spring transition-transform duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2"
+         style="background:var(--bg-elevated); border:1px solid var(--border); --tw-ring-color:var(--accent); animation-delay:420ms;">
         <div class="flex items-start justify-between mb-5">
           <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:var(--accent-dim);">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -106,8 +110,8 @@
         </div>
       </a>
 
-      <a href="/leads" class="group block rounded-2xl p-6 card-shadow card-shadow-hover ease-spring transition-transform duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2"
-         style="background:var(--bg-elevated); border:1px solid var(--border); --tw-ring-color:var(--accent);">
+      <a href="/leads" class="blur-fade-in group block rounded-2xl p-6 card-shadow card-shadow-hover ease-spring transition-transform duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2"
+         style="background:var(--bg-elevated); border:1px solid var(--border); --tw-ring-color:var(--accent); animation-delay:480ms;">
         <div class="flex items-start justify-between mb-5">
           <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:var(--accent-dim);">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
