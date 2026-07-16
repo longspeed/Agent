@@ -199,9 +199,9 @@
       }
       const campaigns = await res.json();
       campaignsCache = campaigns;
-      document.getElementById('stat-pending').textContent = campaigns.filter(c => c.status === 'Pending').length;
-      document.getElementById('stat-sent').textContent = campaigns.filter(c => c.status === 'Sent').length;
-      document.getElementById('stat-replied').textContent = campaigns.filter(c => c.status === 'Replied').length;
+      animateCount(document.getElementById('stat-pending'), campaigns.filter(c => c.status === 'Pending').length);
+      animateCount(document.getElementById('stat-sent'), campaigns.filter(c => c.status === 'Sent').length);
+      animateCount(document.getElementById('stat-replied'), campaigns.filter(c => c.status === 'Replied').length);
 
       if (!campaigns.length) {
         body.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center" style="color:var(--text-muted);">No contacts in the sheet yet.</td></tr>`;
@@ -288,7 +288,7 @@
   function updateReviewCount() {
     const count = document.querySelectorAll('.review-card').length;
     document.getElementById('review-count-badge').textContent = count;
-    document.getElementById('stat-review').textContent = count;
+    animateCount(document.getElementById('stat-review'), count);
   }
 
   async function loadReviews() {

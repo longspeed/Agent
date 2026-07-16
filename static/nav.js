@@ -43,3 +43,22 @@ function renderNav(breadcrumb) {
     window.location.href = '/login';
   });
 }
+
+// Animates a stat number counting up from 0 to `target` (ease-out cubic).
+// Respects prefers-reduced-motion by jumping straight to the final value.
+function animateCount(el, target, { duration = 700, prefix = '', suffix = '', locale = false } = {}) {
+  if (!el) return;
+  const format = (n) => prefix + (locale ? n.toLocaleString() : n) + suffix;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    el.textContent = format(target);
+    return;
+  }
+  const start = performance.now();
+  function tick(now) {
+    const t = Math.min((now - start) / duration, 1);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = format(Math.round(target * eased));
+    if (t < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}

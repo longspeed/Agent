@@ -168,20 +168,26 @@
       const needsReview = replies.length;
 
       cardEl.innerHTML = `
-        <span><strong style="color:var(--text)">${pending}</strong> pending</span>
-        <span><strong style="color:var(--text)">${sentOrReplied}</strong> sent</span>
-        <span><strong style="color:var(--accent)">${needsReview}</strong> awaiting review</span>
+        <span><strong id="stat-card-pending" style="color:var(--text)">0</strong> pending</span>
+        <span><strong id="stat-card-sent" style="color:var(--text)">0</strong> sent</span>
+        <span><strong id="stat-card-review" style="color:var(--accent)">0</strong> awaiting review</span>
       `;
+      animateCount(document.getElementById('stat-card-pending'), pending);
+      animateCount(document.getElementById('stat-card-sent'), sentOrReplied);
+      animateCount(document.getElementById('stat-card-review'), needsReview);
 
       if (sentOrReplied === 0) {
         heroEl.innerHTML = `<span>No campaigns sent yet — add a contact to get started.</span>`;
       } else {
         const replyRate = Math.round((repliedCount / sentOrReplied) * 100);
         heroEl.innerHTML = `
-          <span><strong class="font-display text-lg" style="color:var(--text);">${sentOrReplied}</strong> emails sent</span>
-          <span><strong class="font-display text-lg" style="color:var(--text);">${repliedCount}</strong> replies received</span>
-          <span><strong class="font-display text-lg" style="color:var(--accent);">${replyRate}%</strong> reply rate</span>
+          <span><strong id="stat-hero-sent" class="font-display text-lg" style="color:var(--text);">0</strong> emails sent</span>
+          <span><strong id="stat-hero-replied" class="font-display text-lg" style="color:var(--text);">0</strong> replies received</span>
+          <span><strong id="stat-hero-rate" class="font-display text-lg" style="color:var(--accent);">0%</strong> reply rate</span>
         `;
+        animateCount(document.getElementById('stat-hero-sent'), sentOrReplied);
+        animateCount(document.getElementById('stat-hero-replied'), repliedCount);
+        animateCount(document.getElementById('stat-hero-rate'), replyRate, { suffix: '%' });
       }
     } catch (e) {
       cardEl.innerHTML = '<span>Stats unavailable</span>';

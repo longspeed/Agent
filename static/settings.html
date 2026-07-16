@@ -194,8 +194,8 @@
 
     // Usage
     const usage = await (await fetch('/api/usage')).json();
-    $('usage-llm').textContent = ((usage.llm || {}).quantity || 0).toLocaleString();
-    $('usage-search').textContent = ((usage.search || {}).quantity || 0).toLocaleString();
+    animateCount($('usage-llm'), (usage.llm || {}).quantity || 0, { locale: true });
+    animateCount($('usage-search'), (usage.search || {}).quantity || 0, { locale: true });
   }
 
   $('settings-form').addEventListener('submit', async (e) => {
