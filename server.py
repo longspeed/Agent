@@ -217,15 +217,30 @@ def get_usage(request: Request):
     return accounts_db.usage_summary(request.state.account_id)
 
 
+def _google_error_reason(exc: HttpError) -> str:
+    details = exc.error_details
+    if details and isinstance(details, list) and details[0].get("reason"):
+        return details[0]["reason"]
+    return ""
+
+
 @app.get("/api/google/sheets")
 def list_google_sheets(request: Request):
     account = _account(request)
     try:
         return drive.list_spreadsheets(account)
     except HttpError as e:
+        reason = _google_error_reason(e)
+        if reason == "accessNotConfigured":
+            # The app's Google Cloud project hasn't enabled the Drive API —
+            # an app-wide setup gap, not something any one account can fix.
+            raise HTTPException(
+                status_code=409,
+                detail="The Google Drive API isn't enabled for this app yet — an admin needs to enable it in Google Cloud Console.",
+            )
         if e.status_code in (401, 403):
-            # Accounts connected before Drive access was added don't have
-            # this scope on their stored token yet — re-consent grants it.
+            # Actual missing-scope case: the stored token predates the
+            # Drive scope being added — re-consent grants it.
             raise HTTPException(
                 status_code=409,
                 detail="Reconnect Google (Settings → Reconnect) to grant access to your Sheets list.",
