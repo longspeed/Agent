@@ -310,6 +310,13 @@
   document.getElementById('send-batch-btn').addEventListener('click', async () => {
     const btn = document.getElementById('send-batch-btn');
     const resultEl = document.getElementById('send-result');
+
+    // Re-fetch instead of trusting campaignsCache, which may still be empty
+    // if this click landed before the page's initial load finished.
+    setLoading(btn, true, 'Checking…');
+    await loadCampaigns();
+    setLoading(btn, false);
+
     const pendingCount = campaignsCache.filter(c => c.status === 'Pending').length;
     if (pendingCount === 0) {
       resultEl.classList.remove('hidden');
