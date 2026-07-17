@@ -1,0 +1,38 @@
+"""Fail-closed email verification for outreach recipients.
+
+The app uses NeverBounce's single-address endpoint when configured. A source
+mention or a pattern-derived address is not treated as verification: only a
+provider result of ``valid`` can enter a sendable campaign.
+"""
+import requests
+
+from config import NEVERBOUNCE_API_KEY
+import usage
+
+API_URL = "https://api.neverbounce.com/v4/single/check"
+
+
+def is_configured() -> bool:
+    return bool(NEVERBOUNCE_API_KEY)
+
+
+def verify(email: str) -> str:
+    """Return ``verified``, ``invalid``, or ``unverified``.
+
+    Network/provider errors deliberately return ``unverified``. It is safer to
+    hold a lead for review than to convert a transient API failure into a send.
+    """
+    if not email or not is_configured():
+        return "unverified"
+    try:
+        response = requests.get(
+            API_URL,
+            params={"key": NEVERBOUNCE_API_KEY, "email": email},
+            timeout=20,
+        )
+        response.raise_for_status()
+        usage.record("email_verification", 1, email)
+        result = (response.json().get("result") or "").lower()
+        return "verified" if result == "valid" else "invalid"
+    except requests.RequestException:
+        return "unverified"

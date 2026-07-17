@@ -138,6 +138,12 @@
       </div>
     </div>
   </section>
+
+  <section class="card rounded-2xl p-6 card-shadow mt-6">
+    <h2 class="font-display text-lg mb-1" style="letter-spacing:-0.01em;">Pilot plan</h2>
+    <p id="plan-summary" class="text-sm" style="color:var(--text-secondary);">Loading plan details…</p>
+    <p class="text-xs mt-3" style="color:var(--text-muted);">This is a pricing placeholder while checkout is being validated with early customers.</p>
+  </section>
 </main>
 
 <script src="/static/nav.js"></script>
@@ -200,6 +206,9 @@
     const usage = await (await fetch('/api/usage')).json();
     animateCount($('usage-llm'), (usage.llm || {}).quantity || 0, { locale: true });
     animateCount($('usage-search'), (usage.search || {}).quantity || 0, { locale: true });
+
+    const plan = await (await fetch('/api/plan')).json();
+    $('plan-summary').textContent = `$${plan.price_monthly_usd}/month · up to ${plan.daily_send_limit} verified emails per inbox every 24 hours · ${plan.lead_searches_per_hour} lead searches per hour.`;
   }
 
   $('settings-form').addEventListener('submit', async (e) => {

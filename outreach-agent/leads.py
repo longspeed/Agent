@@ -1,6 +1,7 @@
 import json
 
 from agent import _chat
+import email_verification
 import search
 import sheets
 
@@ -104,10 +105,13 @@ def find_leads(account, target_description, limit=10):
         if not email_guess:
             continue
 
-        confidence = _email_confidence(email_guess, all_results)
+        source_confidence = _email_confidence(email_guess, all_results)
+        verification = email_verification.verify(email_guess)
         new_rows.append([
-            name, email_guess, company, "New Lead", "", "", "",
-            (c.get("reason") or "").strip(), confidence,
+            name, email_guess, company,
+            "Ready for review" if verification == "verified" else "Needs verification",
+            "", "", "",
+            (c.get("reason") or "").strip(), verification,
         ])
         existing_emails.add(email_guess.lower())
 
@@ -117,4 +121,6 @@ def find_leads(account, target_description, limit=10):
         "found": len(candidates),
         "added": len(new_rows),
         "skipped_duplicates": skipped_duplicates,
+        "verified": sum(row[sheets.COL_EMAIL_CONFIDENCE] == "verified" for row in new_rows),
+        "needs_verification": sum(row[sheets.COL_EMAIL_CONFIDENCE] != "verified" for row in new_rows),
     }

@@ -15,6 +15,8 @@ from pydantic import BaseModel
 import accounts_db
 import auth
 import drive
+import email_verification
+import email_verification
 import gmail
 import google_auth
 import leads
@@ -217,6 +219,19 @@ def get_usage(request: Request):
     return accounts_db.usage_summary(request.state.account_id)
 
 
+@app.get("/api/plan")
+def get_plan(request: Request):
+    """Validation-plan pricing and hard product limits."""
+    _account(request)
+    return {
+        "name": "Pilot",
+        "price_monthly_usd": 49,
+        "daily_send_limit": sheets.DAILY_SEND_LIMIT,
+        "lead_searches_per_hour": 10,
+        "note": "Human-approved, verified-email outreach. Checkout is coming next.",
+    }
+
+
 def _google_error_reason(exc: HttpError) -> str:
     details = exc.error_details
     if details and isinstance(details, list) and details[0].get("reason"):
@@ -327,16 +342,74 @@ def list_campaigns(request: Request):
             "company": row[sheets.COL_COMPANY],
             "status": row[sheets.COL_STATUS] or "Pending",
             "sentAt": row[sheets.COL_SENT_AT],
+            "verification": row[sheets.COL_EMAIL_CONFIDENCE] or "unverified",
         }
         for row_index, row in rows
         if row[sheets.COL_EMAIL].strip()
     ]
 
 
+def _campaign_preview(account: dict) -> dict:
+    readiness = sheets.campaign_readiness(account)
+    return {
+        "eligible": len(readiness["eligible"]),
+        "eligible_total": readiness["eligible_total"],
+        "needs_verification": len(readiness["unverified"]),
+        "sent_today": readiness["sent_today"],
+        "daily_limit": readiness["daily_limit"],
+        "remaining_today": readiness["remaining_today"],
+        "capped": readiness["capped"],
+        "verification_configured": email_verification.is_configured(),
+    }
+
+
+@app.get("/api/outreach/campaigns/preview")
+def campaign_preview(request: Request):
+    return _campaign_preview(_account(request))
+
+
+class SendCampaignBody(BaseModel):
+    confirmed: bool = False
+
+
 @app.post("/api/outreach/campaigns/send", status_code=202)
-def send_campaigns(request: Request):
+def send_campaigns(request: Request, payload: SendCampaignBody):
     account = _account(request)
+    preview = _campaign_preview(account)
+    if not payload.confirmed:
+        raise HTTPException(status_code=400, detail="Review the batch and confirm before sending.")
+    if not preview["verification_configured"]:
+        raise HTTPException(status_code=409, detail="Email verification is not configured. Add NEVERBOUNCE_API_KEY before sending.")
+    if not preview["eligible"]:
+        raise HTTPException(status_code=409, detail="No verified recipients are available to send today. Verify pending emails or wait for the daily limit to reset.")
     return {"job_id": start_job(account["id"], lambda: send_outreach.main(account))}
+
+
+@app.post("/api/outreach/campaigns/verify", status_code=202)
+def verify_pending_emails(request: Request):
+    account = _account(request)
+    if not email_verification.is_configured():
+        raise HTTPException(status_code=409, detail="Email verification is not configured. Add NEVERBOUNCE_API_KEY first.")
+    candidates = [
+        (row_index, row) for row_index, row in sheets.get_all_rows(account)
+        if row[sheets.COL_EMAIL].strip() and (
+            not row[sheets.COL_STATUS].strip() or row[sheets.COL_STATUS].strip() == "Needs verification"
+        ) and not sheets.is_verified(row)
+    ]
+
+    def run():
+        verified = invalid = 0
+        for row_index, row in candidates:
+            state = email_verification.verify(row[sheets.COL_EMAIL].strip())
+            if state == "verified":
+                sheets.update_row(account, row_index, status="", email_confidence=state)
+                verified += 1
+            elif state == "invalid":
+                sheets.update_row(account, row_index, status="Needs verification", email_confidence=state)
+                invalid += 1
+        return {"checked": len(candidates), "verified": verified, "needs_verification": len(candidates) - verified, "invalid": invalid}
+
+    return {"job_id": start_job(account["id"], run)}
 
 
 @app.post("/api/outreach/replies/check", status_code=202)
@@ -411,13 +484,17 @@ def list_leads(request: Request):
             "emailConfidence": row[sheets.COL_EMAIL_CONFIDENCE],
         }
         for row_index, row in sheets.get_all_rows(account)
-        if row[sheets.COL_STATUS] == "New Lead"
+        if row[sheets.COL_STATUS] in ("Ready for review", "Needs verification")
     ]
 
 
 @app.post("/api/leads/{row}/approve")
 def approve_lead(request: Request, row: int):
-    sheets.update_row(_account(request), row, status="")
+    account = _account(request)
+    lead = next((data for index, data in sheets.get_all_rows(account) if index == row), None)
+    if not lead or lead[sheets.COL_STATUS] != "Ready for review" or not sheets.is_verified(lead):
+        raise HTTPException(status_code=409, detail="Only provider-verified leads can be approved for outreach.")
+    sheets.update_row(account, row, status="")
     return {"ok": True}
 
 

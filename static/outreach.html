@@ -51,12 +51,20 @@
       <h1 class="font-display text-3xl mb-1.5" style="letter-spacing:-0.02em;">Campaign overview</h1>
       <p class="text-sm" style="color:var(--text-secondary);">Live status pulled from your Google Sheet.</p>
     </div>
-    <button id="send-batch-btn" class="btn-primary rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
-      <span class="btn-label">Send pending batch</span>
-    </button>
+    <div class="flex items-center gap-3">
+      <button id="verify-pending-btn" class="btn-ghost rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">
+        <span class="btn-label">Verify pending emails</span>
+      </button>
+      <button id="send-batch-btn" class="btn-primary rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
+        <span class="btn-label">Review batch</span>
+      </button>
+    </div>
   </div>
 
   <div id="send-result" class="hidden mb-8 rounded-xl px-4 py-3 text-sm" style="background:var(--bg-elevated); border:1px solid var(--border);"></div>
+  <section id="campaign-safety" class="rounded-xl px-4 py-3 text-sm mb-8" style="background:var(--bg-elevated); border:1px solid var(--border); color:var(--text-secondary);">
+    Checking verification and daily-send safety…
+  </section>
 
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-12">
     <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
@@ -189,6 +197,27 @@
   }
 
   let campaignsCache = [];
+  let campaignPreview = null;
+  async function loadCampaignSafety() {
+    const el = document.getElementById('campaign-safety');
+    try {
+      const res = await fetch('/api/outreach/campaigns/preview');
+      if (!res.ok) throw new Error('Could not load campaign safety');
+      campaignPreview = await res.json();
+      if (!campaignPreview.verification_configured) {
+        el.style.color = 'var(--accent)';
+        el.textContent = 'Sending is locked until email verification is configured. Add NEVERBOUNCE_API_KEY on the server, then verify pending emails.';
+        return;
+      }
+      el.style.color = campaignPreview.needs_verification ? 'var(--gold)' : 'var(--text-secondary)';
+      el.textContent = `${campaignPreview.eligible} verified recipient${campaignPreview.eligible === 1 ? '' : 's'} can send today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
+        (campaignPreview.needs_verification ? ` · ${campaignPreview.needs_verification} held for verification` : '') +
+        (campaignPreview.capped ? ` · ${campaignPreview.capped} held by the daily cap` : '');
+    } catch (e) {
+      el.style.color = 'var(--accent)';
+      el.textContent = 'Could not load campaign safety.';
+    }
+  }
   async function loadCampaigns() {
     const body = document.getElementById('campaigns-body');
     try {
@@ -326,22 +355,26 @@
     // Re-fetch instead of trusting campaignsCache, which may still be empty
     // if this click landed before the page's initial load finished.
     setLoading(btn, true, 'Checking…');
-    await loadCampaigns();
+    await Promise.all([loadCampaigns(), loadCampaignSafety()]);
     setLoading(btn, false);
 
-    const pendingCount = campaignsCache.filter(c => c.status === 'Pending').length;
-    if (pendingCount === 0) {
+    const sendCount = campaignPreview?.eligible || 0;
+    if (sendCount === 0) {
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--text-secondary)';
-      resultEl.textContent = 'No pending contacts to send to.';
+      resultEl.textContent = 'No verified contacts are available to send today.';
       return;
     }
-    if (!confirm(`Send a real outreach email to ${pendingCount} pending contact${pendingCount === 1 ? '' : 's'}?`)) return;
+    if (!confirm(`Send a real outreach email to ${sendCount} verified contact${sendCount === 1 ? '' : 's'}? This batch is capped at ${campaignPreview.daily_limit} emails per inbox in 24 hours.`)) return;
 
     setLoading(btn, true, 'Sending…');
     resultEl.classList.add('hidden');
     try {
-      const { job_id } = await fetch('/api/outreach/campaigns/send', { method: 'POST' }).then(r => r.json());
+      const res = await fetch('/api/outreach/campaigns/send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to start batch');
+      const { job_id } = await res.json();
       const job = await pollJob(job_id);
       if (job.status === 'error') throw new Error(job.error);
       const data = job.result;
@@ -354,7 +387,31 @@
     } catch (e) {
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--accent)';
-      resultEl.textContent = 'Failed to send batch.';
+      resultEl.textContent = e.message || 'Failed to send batch.';
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  document.getElementById('verify-pending-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('verify-pending-btn');
+    const resultEl = document.getElementById('send-result');
+    setLoading(btn, true, 'Verifying…');
+    try {
+      const res = await fetch('/api/outreach/campaigns/verify', { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Verification failed');
+      const { job_id } = await res.json();
+      const job = await pollJob(job_id);
+      if (job.status === 'error') throw new Error(job.error);
+      const data = job.result;
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--green)';
+      resultEl.textContent = `Verified ${data.verified} of ${data.checked} pending email${data.checked === 1 ? '' : 's'}.`;
+      await Promise.all([loadCampaigns(), loadCampaignSafety()]);
+    } catch (e) {
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--accent)';
+      resultEl.textContent = e.message || 'Verification failed.';
     } finally {
       setLoading(btn, false);
     }
@@ -374,6 +431,7 @@
   });
 
   loadCampaigns();
+  loadCampaignSafety();
   loadReviews();
 </script>
 

@@ -34,15 +34,19 @@ def _send_one(account, row_index, name, email, company):
 
 
 def main(account):
+    readiness = sheets.campaign_readiness(account)
     pending = [
         (row_index, row[sheets.COL_NAME].strip(), row[sheets.COL_EMAIL].strip(), row[sheets.COL_COMPANY].strip())
-        for row_index, row in sheets.get_pending_rows(account)
+        for row_index, row in readiness["eligible"]
     ]
-    pending = [p for p in pending if p[2]]  # p[2] = email
 
     if not pending:
-        print("No pending rows to send.")
-        return {"sent": 0, "total": 0, "failed": []}
+        return {
+            "sent": 0, "total": 0, "failed": [],
+            "unverified": len(readiness["unverified"]),
+            "daily_limit": readiness["daily_limit"],
+            "remaining_today": readiness["remaining_today"],
+        }
 
     sent = []
     failed = []
@@ -79,6 +83,9 @@ def main(account):
         "sent": len(sent),
         "total": len(pending),
         "failed": [{"email": email, "error": err} for email, err in failed],
+        "unverified": len(readiness["unverified"]),
+        "daily_limit": readiness["daily_limit"],
+        "remaining_today": max(0, readiness["remaining_today"] - len(sent)),
     }
 
 

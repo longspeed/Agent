@@ -53,7 +53,7 @@
     <h1 class="font-display text-3xl mb-1.5" style="letter-spacing:-0.02em;">Find new leads</h1>
     <p class="text-sm" style="color:var(--text-secondary);">
       Describe who you're looking for — it searches the web, qualifies matches, and adds
-      them to your outreach sheet as <strong style="color:var(--text);">New Lead</strong>, ready for your review.
+      them to your outreach sheet. Only provider-verified email addresses can be approved for outreach.
     </p>
   </div>
 
@@ -138,8 +138,9 @@
   }
 
   function confidenceBadge(confidence) {
-    if (confidence === 'found') return { text: 'Email found', bg: 'var(--green-dim)', fg: 'var(--green)' };
-    return { text: 'Email guessed', bg: 'var(--gold-dim)', fg: 'var(--gold)' };
+    if (confidence === 'verified') return { text: 'Verified email', bg: 'var(--green-dim)', fg: 'var(--green)' };
+    if (confidence === 'invalid') return { text: 'Email not deliverable', bg: 'var(--accent-dim)', fg: 'var(--accent)' };
+    return { text: 'Needs verification', bg: 'var(--gold-dim)', fg: 'var(--gold)' };
   }
 
   function renderLead(lead) {
@@ -160,6 +161,12 @@
     const statusEl = tpl.querySelector('.lc-status');
     const approveBtn = tpl.querySelector('.lc-approve');
     const discardBtn = tpl.querySelector('.lc-discard');
+    if (lead.emailConfidence !== 'verified') {
+      approveBtn.disabled = true;
+      approveBtn.title = 'Only provider-verified emails can enter outreach.';
+      statusEl.style.color = 'var(--gold)';
+      statusEl.textContent = 'Held from sending';
+    }
 
     async function act(action, btn, successText) {
       approveBtn.disabled = true;
@@ -168,7 +175,7 @@
       btn.textContent = '…';
       try {
         const res = await fetch(`/api/leads/${lead.row}/${action}`, { method: 'POST' });
-        if (!res.ok) throw new Error('Failed');
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed');
         statusEl.textContent = successText;
         card.style.opacity = '0.5';
         setTimeout(() => { card.remove(); updateLeadsCount(); }, 700);
@@ -241,8 +248,8 @@
       const data = job.result;
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--green)';
-      resultEl.textContent = `Found ${data.found}, added ${data.added} new lead${data.added === 1 ? '' : 's'}` +
-        (data.skipped_duplicates ? ` (${data.skipped_duplicates} already in your sheet).` : '.');
+      resultEl.textContent = `Found ${data.found}, added ${data.added} lead${data.added === 1 ? '' : 's'} (${data.verified || 0} verified, ${data.needs_verification || 0} held for verification).` +
+        (data.skipped_duplicates ? ` ${data.skipped_duplicates} already existed.` : '');
       await loadLeads();
     } catch (e) {
       resultEl.classList.remove('hidden');

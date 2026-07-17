@@ -24,11 +24,18 @@ OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-oss-20b:free")
 APP_SECRET_KEY = os.environ["APP_SECRET_KEY"]
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")  # only needed for the lead sourcing agent
+# NeverBounce is optional at boot, but sending is fail-closed until an address
+# has been verified through it. Keeping the key server-side prevents customers
+# from exposing a vendor credential in the browser.
+NEVERBOUNCE_API_KEY = os.environ.get("NEVERBOUNCE_API_KEY", "")
+DAILY_SEND_LIMIT = int(os.environ.get("DAILY_SEND_LIMIT", "25"))
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
 
-# Name, Email, Company, Status, ThreadID, SentAt, EmailBody, LeadReason, EmailConfidence (first tab)
+# Name, Email, Company, Status, ThreadID, SentAt, EmailBody, LeadReason, EmailConfidence (first tab).
+# EmailConfidence is now a verification state: "verified", "unverified", or
+# "invalid". Only "verified" addresses are eligible to send.
 SHEET_RANGE = "A:I"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
