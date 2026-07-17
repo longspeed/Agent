@@ -37,8 +37,14 @@ def verify(email: str) -> str:
             # NeverBounce returns 200 with no "result" field on auth failure
             # or credit exhaustion, not just on a real invalid-address verdict.
             # Treat that as retryable, not a permanent invalid classification.
+            print(
+                f"email_verification: no 'result' in NeverBounce response "
+                f"(status={payload.get('status')!r}, message={payload.get('message')!r}) "
+                f"-- likely auth failure or credit exhaustion, not an invalid address"
+            )
             return "unverified"
         result = (payload.get("result") or "").lower()
         return "verified" if result == "valid" else "invalid"
-    except requests.RequestException:
+    except requests.RequestException as e:
+        print(f"email_verification: NeverBounce request failed: {e}")
         return "unverified"
