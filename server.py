@@ -16,10 +16,10 @@ import accounts_db
 import auth
 import drive
 import email_verification
-import email_verification
 import gmail
 import google_auth
 import leads
+import ratelimit
 import reviews_db
 import send_outreach
 import sheets
@@ -126,7 +126,9 @@ class CredentialsBody(BaseModel):
 
 
 @app.post("/signup", status_code=201)
-def signup_submit(payload: CredentialsBody):
+def signup_submit(request: Request, payload: CredentialsBody):
+    if not ratelimit.check(f"signup:{request.client.host}", limit=5, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
     email = payload.email.strip().lower()
     if "@" not in email or "." not in email.partition("@")[2]:
         raise HTTPException(status_code=400, detail="Enter a valid email address")
@@ -140,7 +142,9 @@ def signup_submit(payload: CredentialsBody):
 
 
 @app.post("/login")
-def login_submit(payload: CredentialsBody):
+def login_submit(request: Request, payload: CredentialsBody):
+    if not ratelimit.check(f"login:{request.client.host}", limit=10, window_seconds=300):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again in a few minutes.")
     account = accounts_db.get_account_by_email(payload.email.strip().lower())
     if account and not account.get("password_hash"):
         raise HTTPException(status_code=401, detail='This account signs in with Google — use "Continue with Google."')
@@ -375,6 +379,8 @@ class SendCampaignBody(BaseModel):
 @app.post("/api/outreach/campaigns/send", status_code=202)
 def send_campaigns(request: Request, payload: SendCampaignBody):
     account = _account(request)
+    if not ratelimit.check(f"batch-send:{account['id']}", limit=5, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many send batches this hour. Try again later.")
     preview = _campaign_preview(account)
     if not payload.confirmed:
         raise HTTPException(status_code=400, detail="Review the batch and confirm before sending.")
@@ -467,6 +473,8 @@ class LeadSearchBody(BaseModel):
 @app.post("/api/leads/search", status_code=202)
 def search_leads(request: Request, payload: LeadSearchBody):
     account = _account(request)
+    if not ratelimit.check(f"leads-search:{account['id']}", limit=10, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many lead searches this hour. Try again later.")
     limit = max(1, min(payload.limit, 25))
     return {"job_id": start_job(account["id"], lambda: leads.find_leads(account, payload.query, limit))}
 
