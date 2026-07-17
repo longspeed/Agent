@@ -45,6 +45,57 @@ per-account usage by kind — the raw data this would build on already exists.
 **Depends on:** Auth hardening (P2) probably lands first — no point billing accounts
 that can be created via a brute-forceable signup.
 
+### Log email_verification failures / surface NeverBounce credit exhaustion
+**What:** `email_verification.py` has no logging. Two independent /autoplan
+outside-voice reviews (CEO phase + Eng phase, 2026-07-17) converged
+separately on the same underlying risk: `NEVERBOUNCE_API_KEY` is a single
+server-wide credential shared across all tenants in this multi-tenant app,
+and NeverBounce meters credits, not per-tenant. When credits run out, every
+account's `verify()` calls silently fall back to `"unverified"` — identical
+to the "not configured" state this plan is trying to fix — with zero signal
+to the operator about which tenant burned the pool or that it happened.
+**Why:** Without a log line (or NeverBounce's balance-check endpoint), a
+credit-exhaustion event is indistinguishable from "these leads are bad" or
+"the feature was never turned on," during exactly the live-send week this
+is meant to unblock.
+**Pros:** Cheap observability win; closes a gap two independent reviews
+found from different code paths.
+**Cons:** None identified.
+**Context:** No `logging` import or print statement anywhere in
+`outreach-agent/email_verification.py`. Consider also polling NeverBounce's
+balance endpoint and moving to per-account keys before onboarding a second
+real paying customer.
+**Effort:** XS (human) → XS (CC + gstack)
+**Priority:** P2
+**Depends on:** Nothing.
+
+### Batch/parallelize email_verification calls in lead discovery
+**What:** `leads.py:109` calls `email_verification.verify()` synchronously,
+one HTTP call per candidate, 20s timeout each, no concurrency or backoff.
+**Why:** A `limit=10` lead search can add up to ~200s of latency to one
+request in the worst case (found by /autoplan's eng-phase outside voice,
+2026-07-17).
+**Pros:** Meaningfully faster lead searches at moderate limits.
+**Cons:** Adds concurrency complexity to a currently simple, easy-to-reason-
+about loop; NeverBounce rate limits would need checking before parallelizing.
+**Context:** `outreach-agent/leads.py:109`, inside `find_leads()`.
+**Effort:** S (human) → S (CC + gstack)
+**Priority:** P3
+**Depends on:** Nothing blocking; lower priority than the misclassification
+fix above since latency (not correctness) is the cost.
+
+### Unit tests for email_verification.py response parsing
+**What:** Add tests covering `verify()`'s branches: valid, invalid, timeout,
+malformed/no-result response, missing key.
+**Why:** This module gates whether real emails get sent to real people —
+worth locking down given it's fail-closed by design and easy to regress.
+**Pros:** Catches regressions in the fail-closed logic before they ship.
+**Cons:** Repo has zero test infrastructure today (confirmed via `/health`,
+2026-07-16) — this would be the first test in the project.
+**Effort:** S (human) → S (CC + gstack)
+**Priority:** P3
+**Depends on:** Picking a test framework for the repo (not scoped here).
+
 ### Cleanup: stale reviews.db
 **What:** Remove `outreach-agent/reviews.db` (old SQLite file).
 **Why:** Dead since the migration to Supabase Postgres (see commit `8481239`).

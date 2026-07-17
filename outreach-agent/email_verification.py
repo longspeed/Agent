@@ -32,7 +32,13 @@ def verify(email: str) -> str:
         )
         response.raise_for_status()
         usage.record("email_verification", 1, email)
-        result = (response.json().get("result") or "").lower()
+        payload = response.json()
+        if "result" not in payload:
+            # NeverBounce returns 200 with no "result" field on auth failure
+            # or credit exhaustion, not just on a real invalid-address verdict.
+            # Treat that as retryable, not a permanent invalid classification.
+            return "unverified"
+        result = (payload.get("result") or "").lower()
         return "verified" if result == "valid" else "invalid"
     except requests.RequestException:
         return "unverified"
