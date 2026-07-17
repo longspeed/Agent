@@ -202,6 +202,12 @@
     const el = document.getElementById('campaign-safety');
     try {
       const res = await fetch('/api/outreach/campaigns/preview');
+      if (res.status === 409) {
+        const detail = (await res.json()).detail || 'Connect your Google account to get started.';
+        el.style.color = 'var(--text-secondary)';
+        el.innerHTML = `${esc(detail)} <a href="/settings" style="color:var(--accent);">Go to Settings</a>`;
+        return;
+      }
       if (!res.ok) throw new Error('Could not load campaign safety');
       campaignPreview = await res.json();
       if (!campaignPreview.verification_configured) {
