@@ -1,7 +1,7 @@
 """Polls Gmail for replies to previously-sent outreach emails for one account.
-When a reply is found, drafts a response with the LLM and notifies the account
-owner with the draft for manual review/sending -- this script never sends the
-reply itself.
+When a reply is found, drafts a response with the LLM and queues it in the
+app's review list -- this script never sends the reply itself, and never
+emails the account owner about it (the /outreach page is the review surface).
 
 Run once to check immediately:      python watch_replies.py <account-email> --once
 Run continuously (checks every 5 min): python watch_replies.py <account-email>
@@ -17,7 +17,6 @@ import gmail
 import reviews_db
 import sheets
 import usage
-from notify import notify
 
 CHECK_INTERVAL_MINUTES = 5
 
@@ -49,14 +48,7 @@ def check_for_replies(account):
             account["id"], row_index, name, email, thread_id, reply_text, draft
         )
         new_reviews.append(reviews_db.get_review(account["id"], review_id))
-
-        notify(
-            account,
-            f"{name} replied - draft response ready",
-            f"{name} ({email}) replied to your outreach. A draft response is "
-            f"ready for review in the app: check the Outreach Agent page.",
-        )
-        print(f"Reply detected from {name}, notification sent.")
+        print(f"Reply detected from {name}, queued for review in the app.")
 
     return new_reviews
 
