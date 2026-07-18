@@ -21,13 +21,18 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-oss-20b:free")
 
+# Local-dev-only alternative backend: a CLIProxyAPI instance running on this
+# machine, fronting a personal Claude/Kimi OAuth login instead of a metered
+# OpenRouter key. Unset in every real deployment — when unset, _chat() calls
+# OpenRouter exactly as before. Never point this at anything but localhost;
+# CLIProxyAPI's auth is tied to whatever machine is running it.
+CLIPROXY_BASE_URL = os.environ.get("CLIPROXY_BASE_URL", "")
+CLIPROXY_API_KEY = os.environ.get("CLIPROXY_API_KEY", "")
+CLIPROXY_MODEL = os.environ.get("CLIPROXY_MODEL", "claude-haiku-4-5-20251001")
+
 APP_SECRET_KEY = os.environ["APP_SECRET_KEY"]
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")  # only needed for the lead sourcing agent
-# NeverBounce is optional at boot, but sending is fail-closed until an address
-# has been verified through it. Keeping the key server-side prevents customers
-# from exposing a vendor credential in the browser.
-NEVERBOUNCE_API_KEY = os.environ.get("NEVERBOUNCE_API_KEY", "")
 DAILY_SEND_LIMIT = int(os.environ.get("DAILY_SEND_LIMIT", "25"))
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]

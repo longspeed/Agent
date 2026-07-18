@@ -16,3 +16,6 @@ __pycache__/
 # node
 node_modules/
 .gstack/
+
+# local-only tooling (separate repo, not part of this project)
+CLIProxyAPI/

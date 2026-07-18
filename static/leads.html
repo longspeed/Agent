@@ -52,8 +52,11 @@
   <div class="mb-8">
     <h1 class="font-display text-3xl mb-1.5" style="letter-spacing:-0.02em;">Find new leads</h1>
     <p class="text-sm" style="color:var(--text-secondary);">
-      Describe who you're looking for — it searches the web, qualifies matches, and adds
-      them to your outreach sheet. Only provider-verified email addresses can be approved for outreach.
+      Describe who you're looking for — it searches the web, tries to identify named people,
+      and infers their email where it can. Addresses land here unverified: check each one
+      yourself, then mark it "verified" in the EmailConfidence column of your sheet to make it
+      eligible for outreach. Most searches turn up a handful of leads, not a full list — narrower
+      descriptions with identifiable people (not just companies) tend to work best.
     </p>
   </div>
 
@@ -163,7 +166,7 @@
     const discardBtn = tpl.querySelector('.lc-discard');
     if (lead.emailConfidence !== 'verified') {
       approveBtn.disabled = true;
-      approveBtn.title = 'Only provider-verified emails can enter outreach.';
+      approveBtn.title = 'Mark this email "verified" in the sheet\'s EmailConfidence column first, then reload.';
       statusEl.style.color = 'var(--gold)';
       statusEl.textContent = 'Held from sending';
     }
@@ -247,9 +250,12 @@
       if (job.status === 'error') throw new Error(job.error);
       const data = job.result;
       resultEl.classList.remove('hidden');
-      resultEl.style.color = 'var(--green)';
-      resultEl.textContent = `Found ${data.found}, added ${data.added} lead${data.added === 1 ? '' : 's'} (${data.verified || 0} verified, ${data.needs_verification || 0} held for verification).` +
-        (data.skipped_duplicates ? ` ${data.skipped_duplicates} already existed.` : '');
+      const gap = data.found - data.added - (data.skipped_duplicates || 0);
+      resultEl.style.color = data.added ? 'var(--green)' : 'var(--gold)';
+      resultEl.textContent = `Found ${data.found}, added ${data.added} lead${data.added === 1 ? '' : 's'}.` +
+        (data.skipped_duplicates ? ` ${data.skipped_duplicates} already existed.` : '') +
+        (gap > 0 ? ` ${gap} dropped — no named person or no inferable email.` : '') +
+        (data.added === 0 ? ' Try a description that names a role or title, not just a company type.' : '');
       await loadLeads();
     } catch (e) {
       resultEl.classList.remove('hidden');

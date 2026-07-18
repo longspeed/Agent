@@ -127,7 +127,7 @@
   <section class="card rounded-2xl p-6 card-shadow">
     <h2 class="font-display text-lg mb-1" style="letter-spacing:-0.01em;">Usage</h2>
     <p class="text-xs mb-5" style="color:var(--text-muted);">Metered against this account across all time.</p>
-    <div class="grid grid-cols-3 gap-4 max-w-lg">
+    <div class="grid grid-cols-2 gap-4 max-w-lg">
       <div class="rounded-xl p-4" style="background:var(--bg-floating); border:1px solid var(--border);">
         <div id="usage-llm" class="font-display text-2xl" style="letter-spacing:-0.02em;">—</div>
         <div class="text-xs mt-1" style="color:var(--text-secondary);">LLM tokens</div>
@@ -135,10 +135,6 @@
       <div class="rounded-xl p-4" style="background:var(--bg-floating); border:1px solid var(--border);">
         <div id="usage-search" class="font-display text-2xl" style="letter-spacing:-0.02em;">—</div>
         <div class="text-xs mt-1" style="color:var(--text-secondary);">Web searches</div>
-      </div>
-      <div class="rounded-xl p-4" style="background:var(--bg-floating); border:1px solid var(--border);">
-        <div id="usage-verify" class="font-display text-2xl" style="letter-spacing:-0.02em;">—</div>
-        <div class="text-xs mt-1" style="color:var(--text-secondary);">Email verifications</div>
       </div>
     </div>
   </section>
@@ -210,7 +206,6 @@
     const usage = await (await fetch('/api/usage')).json();
     animateCount($('usage-llm'), (usage.llm || {}).quantity || 0, { locale: true });
     animateCount($('usage-search'), (usage.search || {}).quantity || 0, { locale: true });
-    animateCount($('usage-verify'), (usage.email_verification || {}).quantity || 0, { locale: true });
 
     const plan = await (await fetch('/api/plan')).json();
     $('plan-summary').textContent = `$${plan.price_monthly_usd}/month · up to ${plan.daily_send_limit} verified emails per inbox every 24 hours · ${plan.lead_searches_per_hour} lead searches per hour.`;

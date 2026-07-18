@@ -1,18 +1,12 @@
 import json
-from concurrent.futures import ThreadPoolExecutor
 
 from agent import _chat
-import email_verification
 import search
 import sheets
 
 MAX_QUERIES = 3
 MAX_RESULTS_PER_QUERY = 5
 MAX_CANDIDATES_FED_TO_LLM = 15
-# Same conservative worker count as send_outreach.py's send loop -- not a
-# verified NeverBounce-specific rate limit, just avoiding an unbounded burst
-# of concurrent requests to a third-party API.
-MAX_VERIFY_WORKERS = 4
 
 QUERY_SYSTEM = """You turn a description of an ideal customer/lead into concrete web search
 queries that would surface real people or companies matching that description.
@@ -80,13 +74,15 @@ def find_leads(account, target_description, limit=10):
         for _, row in existing
     }
 
-    # First pass: filter down to the exact candidate set to verify (cheap,
-    # no network calls) -- dedup must stay sequential so two candidates in
-    # the same batch sharing a guessed email don't both survive.
-    to_verify = []
+    # Dedup must stay sequential so two candidates in the same batch sharing
+    # a guessed email don't both survive. Every surviving candidate lands as
+    # "unverified" -- there's no automated verification anymore; a sheet
+    # owner marks the EmailConfidence column "verified" by hand once they've
+    # confirmed the address, which is what makes a contact eligible to send.
+    to_add = []
     skipped_duplicates = 0
     for c in candidates:
-        if len(to_verify) >= limit:
+        if len(to_add) >= limit:
             break
 
         name = (c.get("name") or "").strip()
@@ -104,21 +100,12 @@ def find_leads(account, target_description, limit=10):
         if not email_guess:
             continue
 
-        to_verify.append((name, email_guess, company, (c.get("reason") or "").strip()))
+        to_add.append((name, email_guess, company, (c.get("reason") or "").strip()))
         existing_emails.add(email_guess.lower())
 
-    # Second pass: the actual per-candidate network calls, run concurrently.
-    with ThreadPoolExecutor(max_workers=MAX_VERIFY_WORKERS) as pool:
-        verifications = list(pool.map(lambda t: email_verification.verify(t[1]), to_verify))
-
     new_rows = [
-        [
-            name, email_guess, company,
-            "Ready for review" if verification == "verified" else "Needs verification",
-            "", "", "",
-            reason, verification,
-        ]
-        for (name, email_guess, company, reason), verification in zip(to_verify, verifications)
+        [name, email_guess, company, "Needs verification", "", "", "", reason, "unverified"]
+        for name, email_guess, company, reason in to_add
     ]
 
     sheets.append_rows(account, new_rows)
@@ -127,6 +114,4 @@ def find_leads(account, target_description, limit=10):
         "found": len(candidates),
         "added": len(new_rows),
         "skipped_duplicates": skipped_duplicates,
-        "verified": sum(row[sheets.COL_EMAIL_CONFIDENCE] == "verified" for row in new_rows),
-        "needs_verification": sum(row[sheets.COL_EMAIL_CONFIDENCE] != "verified" for row in new_rows),
     }

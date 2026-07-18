@@ -53,6 +53,26 @@ per-account usage by kind — the raw data this would build on already exists.
 **Depends on:** Auth hardening (P2) probably lands first — no point billing accounts
 that can be created via a brute-forceable signup.
 
+### Removed NeverBounce entirely — done 2026-07-18
+**What:** Deleted `outreach-agent/email_verification.py` and every call site
+(`leads.py`'s verify pass, `server.py`'s `/api/outreach/campaigns/verify`
+endpoint, `static/outreach.html`'s "Verify pending emails" button). Removed
+`NEVERBOUNCE_API_KEY` from `config.py`.
+**Why:** NeverBounce's trial credits were exhausted (0 balance, see the
+three entries below) and blocked every real send. Decision: replace
+automated verification with manual verification — `sheets.py::is_verified()`
+already just checks whether the sheet's `EmailConfidence` column literally
+says `"verified"`, so a sheet owner can type that in by hand for any contact
+they've personally confirmed. The fail-closed gate itself (unverified
+contacts are never eligible to send) is unchanged.
+**Context:** New leads from lead-sourcing now always land as `"unverified"`
+in the sheet — no automated verification attempt happens at all anymore.
+The three entries below (logging, parallelization, tests) describe work
+done on the now-deleted module; kept for history, not actionable.
+**Effort:** M (human) → S (CC + gstack)
+**Priority:** Done.
+**Depends on:** Nothing.
+
 ### Log email_verification failures / surface NeverBounce credit exhaustion — done 2026-07-17
 **What:** `email_verification.py` has no logging. Two independent /autoplan
 outside-voice reviews (CEO phase + Eng phase, 2026-07-17) converged

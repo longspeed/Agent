@@ -3,7 +3,13 @@ import time
 import requests
 
 import usage
-from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
+from config import (
+    CLIPROXY_API_KEY,
+    CLIPROXY_BASE_URL,
+    CLIPROXY_MODEL,
+    OPENROUTER_API_KEY,
+    OPENROUTER_MODEL,
+)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_RETRIES = 4
@@ -43,15 +49,29 @@ scheduling link. Sign off with just the sender's first name.
 
 
 def _chat(system, user_prompt):
+    # CLIPROXY_BASE_URL is local-dev-only (see config.py) -- unset in every
+    # real deployment, so this always falls through to OpenRouter there.
+    using_cliproxy = bool(CLIPROXY_BASE_URL)
+    if using_cliproxy:
+        url = f"{CLIPROXY_BASE_URL.rstrip('/')}/chat/completions"
+        api_key = CLIPROXY_API_KEY
+        model = CLIPROXY_MODEL
+        label = "CLIProxyAPI"
+    else:
+        url = API_URL
+        api_key = OPENROUTER_API_KEY
+        model = OPENROUTER_MODEL
+        label = "OpenRouter"
+
     for attempt in range(MAX_RETRIES):
         response = requests.post(
-            API_URL,
+            url,
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json={
-                "model": OPENROUTER_MODEL,
+                "model": model,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_prompt},
@@ -61,14 +81,14 @@ def _chat(system, user_prompt):
         )
         if response.status_code == 429 and attempt < MAX_RETRIES - 1:
             wait = int(response.headers.get("Retry-After", 10))
-            print(f"OpenRouter rate-limited, retrying in {wait}s...")
+            print(f"{label} rate-limited, retrying in {wait}s...")
             time.sleep(wait)
             continue
         response.raise_for_status()
         data = response.json()
-        # Meter the pooled OpenRouter key against whichever account is active.
+        # Meter the pooled key against whichever account is active.
         tokens = (data.get("usage") or {}).get("total_tokens") or 1
-        usage.record("llm", tokens, OPENROUTER_MODEL)
+        usage.record("llm", tokens, model)
         return data["choices"][0]["message"]["content"].strip()
 
 
