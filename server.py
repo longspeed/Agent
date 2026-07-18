@@ -382,13 +382,16 @@ def send_campaigns(request: Request, payload: SendCampaignBody):
     if not payload.confirmed:
         raise HTTPException(status_code=400, detail="Review the batch and confirm before sending.")
     if not preview["eligible"]:
-        raise HTTPException(status_code=409, detail="No verified recipients are available to send today. Mark contacts verified in the sheet or wait for the daily limit to reset.")
+        raise HTTPException(status_code=409, detail="No approved contacts are available to send today. Approve leads on the Lead Agent page or wait for the daily limit to reset.")
     return {"job_id": start_job(account["id"], lambda: send_outreach.main(account))}
 
 
 @app.post("/api/outreach/replies/check", status_code=202)
 def check_replies(request: Request):
     account = _account(request)
+    # 100s auto-poll on the frontend works out to ~36/hour; leave headroom above that.
+    if not ratelimit.check(f"replies-check:{account['id']}", limit=45, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Checking replies too often. Try again later.")
     return {"job_id": start_job(account["id"], lambda: watch_replies.check_for_replies(account))}
 
 

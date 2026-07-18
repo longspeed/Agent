@@ -412,18 +412,46 @@
     }
   });
 
-  document.getElementById('check-replies-btn').addEventListener('click', async () => {
+  let checkingReplies = false;
+  async function checkReplies(showLoading) {
+    if (checkingReplies) return; // don't overlap an auto-poll with an in-flight check
+    checkingReplies = true;
     const btn = document.getElementById('check-replies-btn');
-    setLoading(btn, true, 'Checking…');
+    if (showLoading) setLoading(btn, true, 'Checking…');
     try {
       const { job_id } = await fetch('/api/outreach/replies/check', { method: 'POST' }).then(r => r.json());
       const job = await pollJob(job_id);
       if (job.status === 'error') throw new Error(job.error);
       await Promise.all([loadReviews(), loadCampaigns()]);
+    } catch (e) {
+      // Auto-poll failures (e.g. hitting the rate limit) stay silent; the
+      // manual button still surfaces errors via setLoading's disabled state.
     } finally {
-      setLoading(btn, false);
+      if (showLoading) setLoading(btn, false);
+      checkingReplies = false;
     }
+  }
+
+  document.getElementById('check-replies-btn').addEventListener('click', () => checkReplies(true));
+
+  // Auto-poll for replies every 100s while this tab is visible -- paused
+  // when backgrounded so an open-overnight tab doesn't burn Gmail API quota
+  // for no reason. The server-side rate limit (45/hour) is the real backstop.
+  const AUTO_CHECK_INTERVAL_MS = 100_000;
+  let autoCheckTimer = null;
+  function startAutoCheck() {
+    if (autoCheckTimer) return;
+    autoCheckTimer = setInterval(() => checkReplies(false), AUTO_CHECK_INTERVAL_MS);
+  }
+  function stopAutoCheck() {
+    clearInterval(autoCheckTimer);
+    autoCheckTimer = null;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopAutoCheck();
+    else startAutoCheck();
   });
+  if (!document.hidden) startAutoCheck();
 
   loadCampaigns();
   loadCampaignSafety();
