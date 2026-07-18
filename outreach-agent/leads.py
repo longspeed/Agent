@@ -9,20 +9,28 @@ MAX_RESULTS_PER_QUERY = 5
 MAX_CANDIDATES_FED_TO_LLM = 15
 
 QUERY_SYSTEM = """You turn a description of an ideal customer/lead into concrete web search
-queries that would surface real people or companies matching that description.
+queries that surface NAMED INDIVIDUALS matching that description -- not just companies. A
+lead with no person's name is useless downstream, since there's no one to email. Prefer
+queries likely to surface a name: "founder", "CEO", team/about pages, interviews, press
+quotes, LinkedIn-style bios, conference speaker lists -- over queries that just return
+company directories or "best X companies" listicles.
 Output exactly 3 short search queries, one per line, nothing else -- no numbering,
 no explanation."""
 
 EXTRACT_SYSTEM = """You are a lead researcher. Given a target description and a batch of web
-search results, extract real companies/people that plausibly match the target.
+search results, extract real, named individuals who plausibly match the target.
 
 Rules:
-- Only include results that plausibly match the target description. Skip generic listicles,
-  directories, review sites, and anything that isn't a specific real company or person.
+- Only extract a candidate if you can name a specific person (first and last name found in the
+  content, e.g. "the site names its founder as Jane Doe"). If a result only names a company with
+  no individual mentioned, skip it entirely -- do not invent a name and do not extract the
+  company on its own. A lead search is only useful if there's a person to contact.
+- Skip generic listicles, directories, review sites, and anything that isn't a specific real
+  company or person.
 - For each match, infer a likely contact email ONLY if you can reasonably derive the company's
   domain from the URL (e.g. first.last@domain, or an address literally present in the content).
   If you can't derive a plausible domain, set email_guess to null -- do not invent a domain.
-- reason is one plain sentence: why this specific result fits the target description.
+- reason is one plain sentence: why this specific person fits the target description.
 
 Output ONLY a JSON array, nothing else, in this exact shape:
 [{"name": "...", "company": "...", "url": "...", "reason": "...", "email_guess": "..." or null}]
