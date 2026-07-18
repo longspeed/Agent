@@ -412,9 +412,19 @@
     }
   });
 
+  function hasReplyCheckCandidates() {
+    // Mirrors the server's get_reply_check_rows() scope: only "Sent" (no
+    // reply yet) and "Replied" (could have a follow-up message) rows are
+    // ever worth checking. If there's nothing in either state, a check call
+    // would just do a Sheets read and immediately return -- skip it entirely
+    // for the silent auto-poll instead of spending the request for nothing.
+    return campaignsCache.some(c => c.status === 'Sent' || c.status === 'Replied');
+  }
+
   let checkingReplies = false;
   async function checkReplies(showLoading) {
     if (checkingReplies) return; // don't overlap an auto-poll with an in-flight check
+    if (!showLoading && !hasReplyCheckCandidates()) return; // silent auto-poll: nothing to check, skip the request
     checkingReplies = true;
     const btn = document.getElementById('check-replies-btn');
     if (showLoading) setLoading(btn, true, 'Checking…');
