@@ -60,7 +60,7 @@
 
   <div id="send-result" class="hidden mb-8 rounded-xl px-4 py-3 text-sm" style="background:var(--bg-elevated); border:1px solid var(--border);"></div>
   <section id="campaign-safety" class="rounded-xl px-4 py-3 text-sm mb-8" style="background:var(--bg-elevated); border:1px solid var(--border); color:var(--text-secondary);">
-    Checking verification and daily-send safety…
+    Checking daily-send safety…
   </section>
 
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-12">
@@ -207,9 +207,8 @@
       }
       if (!res.ok) throw new Error('Could not load campaign safety');
       campaignPreview = await res.json();
-      el.style.color = campaignPreview.needs_verification ? 'var(--gold)' : 'var(--text-secondary)';
-      el.textContent = `${campaignPreview.eligible} verified recipient${campaignPreview.eligible === 1 ? '' : 's'} can send today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
-        (campaignPreview.needs_verification ? ` · ${campaignPreview.needs_verification} held for verification — mark them verified in the sheet` : '') +
+      el.style.color = 'var(--text-secondary)';
+      el.textContent = `${campaignPreview.eligible} recipient${campaignPreview.eligible === 1 ? '' : 's'} can send today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
         (campaignPreview.capped ? ` · ${campaignPreview.capped} held by the daily cap` : '');
     } catch (e) {
       el.style.color = 'var(--accent)';
@@ -360,10 +359,10 @@
     if (sendCount === 0) {
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--text-secondary)';
-      resultEl.textContent = 'No verified contacts are available to send today.';
+      resultEl.textContent = 'No pending contacts are available to send today.';
       return;
     }
-    if (!confirm(`Send a real outreach email to ${sendCount} verified contact${sendCount === 1 ? '' : 's'}? This batch is capped at ${campaignPreview.daily_limit} emails per inbox in 24 hours.`)) return;
+    if (!confirm(`Send a real outreach email to ${sendCount} contact${sendCount === 1 ? '' : 's'}? This batch is capped at ${campaignPreview.daily_limit} emails per inbox in 24 hours.`)) return;
 
     setLoading(btn, true, 'Sending…');
     resultEl.classList.add('hidden');

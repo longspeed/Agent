@@ -53,10 +53,10 @@
     <h1 class="font-display text-3xl mb-1.5" style="letter-spacing:-0.02em;">Find new leads</h1>
     <p class="text-sm" style="color:var(--text-secondary);">
       Describe who you're looking for — it searches the web, tries to identify named people,
-      and infers their email where it can. Addresses land here unverified: check each one
-      yourself, then mark it "verified" in the EmailConfidence column of your sheet to make it
-      eligible for outreach. Most searches turn up a handful of leads, not a full list — narrower
-      descriptions with identifiable people (not just companies) tend to work best.
+      and infers their email where it can. Nothing sends automatically: review each lead below
+      and click Approve to queue it for outreach, or Discard to skip it. Most searches turn up a
+      handful of leads, not a full list — narrower descriptions with identifiable people (not
+      just companies) tend to work best.
     </p>
   </div>
 
@@ -164,12 +164,6 @@
     const statusEl = tpl.querySelector('.lc-status');
     const approveBtn = tpl.querySelector('.lc-approve');
     const discardBtn = tpl.querySelector('.lc-discard');
-    if (lead.emailConfidence !== 'verified') {
-      approveBtn.disabled = true;
-      approveBtn.title = 'Mark this email "verified" in the sheet\'s EmailConfidence column first, then reload.';
-      statusEl.style.color = 'var(--gold)';
-      statusEl.textContent = 'Held from sending';
-    }
 
     async function act(action, btn, successText) {
       approveBtn.disabled = true;

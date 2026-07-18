@@ -357,7 +357,6 @@ def _campaign_preview(account: dict) -> dict:
     return {
         "eligible": len(readiness["eligible"]),
         "eligible_total": readiness["eligible_total"],
-        "needs_verification": len(readiness["unverified"]),
         "sent_today": readiness["sent_today"],
         "daily_limit": readiness["daily_limit"],
         "remaining_today": readiness["remaining_today"],
@@ -469,8 +468,8 @@ def list_leads(request: Request):
 def approve_lead(request: Request, row: int):
     account = _account(request)
     lead = next((data for index, data in sheets.get_all_rows(account) if index == row), None)
-    if not lead or lead[sheets.COL_STATUS] not in ("Ready for review", "Needs verification") or not sheets.is_verified(lead):
-        raise HTTPException(status_code=409, detail="Only verified leads can be approved — mark the email verified in the sheet first.")
+    if not lead or lead[sheets.COL_STATUS] not in ("Ready for review", "Needs verification"):
+        raise HTTPException(status_code=409, detail="Lead not found or already actioned.")
     sheets.update_row(account, row, status="")
     return {"ok": True}
 
