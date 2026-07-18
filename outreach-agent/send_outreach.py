@@ -43,7 +43,6 @@ def main(account):
     if not pending:
         return {
             "sent": 0, "total": 0, "failed": [],
-            "unverified": len(readiness["unverified"]),
             "daily_limit": readiness["daily_limit"],
             "remaining_today": readiness["remaining_today"],
         }
@@ -83,7 +82,6 @@ def main(account):
         "sent": len(sent),
         "total": len(pending),
         "failed": [{"email": email, "error": err} for email, err in failed],
-        "unverified": len(readiness["unverified"]),
         "daily_limit": readiness["daily_limit"],
         "remaining_today": max(0, readiness["remaining_today"] - len(sent)),
     }
