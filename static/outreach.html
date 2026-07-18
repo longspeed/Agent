@@ -141,6 +141,7 @@
     </div>
     <div class="flex items-center justify-end gap-3">
       <span class="rc-status text-xs" style="color:var(--green);"></span>
+      <button class="rc-dismiss btn-ghost rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">Dismiss</button>
       <button class="rc-send btn-primary rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">Send reply</button>
     </div>
   </div>
@@ -289,10 +290,11 @@
     tpl.querySelector('.rc-draft').value = r.draft_reply || '';
 
     const sendBtn = tpl.querySelector('.rc-send');
+    const dismissBtn = tpl.querySelector('.rc-dismiss');
     const statusEl = tpl.querySelector('.rc-status');
     sendBtn.addEventListener('click', async () => {
-      const draft = tpl.querySelector('.rc-draft')?.value ?? card.querySelector('.rc-draft').value;
       sendBtn.disabled = true;
+      dismissBtn.disabled = true;
       sendBtn.textContent = 'Sending…';
       try {
         const res = await fetch(`/api/outreach/replies/${r.id}/send`, {
@@ -307,9 +309,29 @@
         setTimeout(() => { card.remove(); updateReviewCount(); }, 900);
       } catch (e) {
         sendBtn.disabled = false;
+        dismissBtn.disabled = false;
         sendBtn.textContent = 'Send reply';
         statusEl.style.color = 'var(--accent)';
         statusEl.textContent = 'Failed to send — try again';
+      }
+    });
+
+    dismissBtn.addEventListener('click', async () => {
+      if (!confirm('Dismiss this review without sending a reply? Use this to clear a duplicate or a reply you\'ve already handled elsewhere.')) return;
+      sendBtn.disabled = true;
+      dismissBtn.disabled = true;
+      dismissBtn.textContent = 'Dismissing…';
+      try {
+        const res = await fetch(`/api/outreach/replies/${r.id}/dismiss`, { method: 'POST' });
+        if (!res.ok) throw new Error('Failed');
+        card.style.opacity = '0.5';
+        setTimeout(() => { card.remove(); updateReviewCount(); }, 700);
+      } catch (e) {
+        sendBtn.disabled = false;
+        dismissBtn.disabled = false;
+        dismissBtn.textContent = 'Dismiss';
+        statusEl.style.color = 'var(--accent)';
+        statusEl.textContent = 'Failed to dismiss — try again';
       }
     });
 

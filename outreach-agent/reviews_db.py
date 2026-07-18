@@ -18,6 +18,22 @@ def _get_client():
 
 
 def add_review(account_id, row_index, name, email, thread_id, customer_reply, draft_reply):
+    # Guards against the same reply being added twice if check_for_replies runs
+    # twice in close succession (e.g. the "Check replies" button clicked again
+    # before the first run finishes) and both reads see the row as "Sent"
+    # before either write flips it to "Replied". Not airtight against a true
+    # simultaneous race, but closes the realistic double-click/overlapping-job case.
+    existing = (
+        _get_client().table(TABLE)
+        .select("id")
+        .eq("account_id", account_id)
+        .eq("thread_id", thread_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return existing.data[0]["id"]
+
     result = _get_client().table(TABLE).insert({
         "account_id": account_id,
         "row_index": row_index,
@@ -57,4 +73,10 @@ def get_review(account_id, review_id):
 def mark_sent(account_id, review_id, sent_body):
     _get_client().table(TABLE).update(
         {"status": "sent", "draft_reply": sent_body}
+    ).eq("account_id", account_id).eq("id", review_id).execute()
+
+
+def dismiss(account_id, review_id):
+    _get_client().table(TABLE).update(
+        {"status": "dismissed"}
     ).eq("account_id", account_id).eq("id", review_id).execute()

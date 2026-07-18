@@ -431,6 +431,17 @@ def send_reply(request: Request, review_id: int, payload: SendReplyBody):
     return {"ok": True}
 
 
+@app.post("/api/outreach/replies/{review_id}/dismiss")
+def dismiss_reply(request: Request, review_id: int):
+    account = _account(request)
+    review = reviews_db.get_review(account["id"], review_id)
+    if not review or review["status"] != "pending":
+        raise HTTPException(status_code=404, detail="Review not found or already handled")
+
+    reviews_db.dismiss(account["id"], review_id)
+    return {"ok": True}
+
+
 # --- Lead sourcing agent --------------------------------------------------------
 
 class LeadSearchBody(BaseModel):
