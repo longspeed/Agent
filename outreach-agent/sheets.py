@@ -89,9 +89,15 @@ def campaign_readiness(account):
     }
 
 
-def get_sent_rows(account):
-    """Rows already sent, awaiting replies."""
-    return [(idx, row) for idx, row in get_all_rows(account) if row[COL_STATUS].strip() == "Sent"]
+def get_reply_check_rows(account):
+    """Rows that could have a new reply worth checking: both "Sent" (no reply
+    yet) and "Replied" (a reply already came in, but a conversation can have
+    more than one message -- a "Replied" row must stay in scope or a second
+    message on the same thread is never looked at again)."""
+    return [
+        (idx, row) for idx, row in get_all_rows(account)
+        if row[COL_STATUS].strip() in ("Sent", "Replied")
+    ]
 
 
 def _row_update_cells(row_index, status=None, thread_id=None, sent_at=None, email_body=None, email_confidence=None):

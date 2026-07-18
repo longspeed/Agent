@@ -19,15 +19,19 @@ def _get_client():
 
 def add_review(account_id, row_index, name, email, thread_id, customer_reply, draft_reply):
     # Guards against the same reply being added twice if check_for_replies runs
-    # twice in close succession (e.g. the "Check replies" button clicked again
-    # before the first run finishes) and both reads see the row as "Sent"
-    # before either write flips it to "Replied". Not airtight against a true
-    # simultaneous race, but closes the realistic double-click/overlapping-job case.
+    # twice in close succession (e.g. the auto-poll firing while a previous
+    # check is still in flight) and both reads catch the same message before
+    # either write records it. Keyed on (thread_id, customer_reply) rather than
+    # thread_id alone -- a thread can have more than one reply over time, and
+    # keying on thread_id alone would silently swallow every reply after the
+    # first one on a given thread. Not airtight against a true simultaneous
+    # race, but closes the realistic overlapping-job case.
     existing = (
         _get_client().table(TABLE)
         .select("id")
         .eq("account_id", account_id)
         .eq("thread_id", thread_id)
+        .eq("customer_reply", customer_reply)
         .limit(1)
         .execute()
     )

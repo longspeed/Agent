@@ -23,7 +23,7 @@ CHECK_INTERVAL_MINUTES = 5
 
 def check_for_replies(account):
     """Returns the list of newly created reviews (empty list if none)."""
-    sent_rows = sheets.get_sent_rows(account)
+    sent_rows = sheets.get_reply_check_rows(account)
     if not sent_rows:
         print("No sent rows awaiting replies.")
         return []
