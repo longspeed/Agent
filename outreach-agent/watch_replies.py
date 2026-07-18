@@ -53,8 +53,8 @@ def check_for_replies(account):
         notify(
             account,
             f"{name} replied - draft response ready",
-            f"Customer's reply:\n{reply_text}\n\n"
-            f"--- Suggested response (review before sending) ---\n{draft}",
+            f"{name} ({email}) replied to your outreach. A draft response is "
+            f"ready for review in the app: check the Outreach Agent page.",
         )
         print(f"Reply detected from {name}, notification sent.")
 
