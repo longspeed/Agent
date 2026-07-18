@@ -89,7 +89,17 @@ def _chat(system, user_prompt):
         # Meter the pooled key against whichever account is active.
         tokens = (data.get("usage") or {}).get("total_tokens") or 1
         usage.record("llm", tokens, model)
-        return data["choices"][0]["message"]["content"].strip()
+        content = data["choices"][0]["message"]["content"]
+        if content is None:
+            # Some providers return content=null instead of text on a refusal,
+            # moderation block, or transient hiccup -- retry like a 429 rather
+            # than crashing with an AttributeError on the caller's .strip().
+            finish_reason = data["choices"][0].get("finish_reason")
+            if attempt < MAX_RETRIES - 1:
+                print(f"{label} returned empty content (finish_reason={finish_reason!r}), retrying...")
+                continue
+            raise RuntimeError(f"{label} returned empty content after {MAX_RETRIES} attempts (finish_reason={finish_reason!r})")
+        return content.strip()
 
 
 def _sender_context(account):
