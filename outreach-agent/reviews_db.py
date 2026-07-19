@@ -17,15 +17,12 @@ def _get_client():
     return _client
 
 
-def add_review(account_id, row_index, name, email, thread_id, customer_reply, draft_reply):
-    # Guards against the same reply being added twice if check_for_replies runs
-    # twice in close succession (e.g. the auto-poll firing while a previous
-    # check is still in flight) and both reads catch the same message before
-    # either write records it. Keyed on (thread_id, customer_reply) rather than
-    # thread_id alone -- a thread can have more than one reply over time, and
-    # keying on thread_id alone would silently swallow every reply after the
-    # first one on a given thread. Not airtight against a true simultaneous
-    # race, but closes the realistic overlapping-job case.
+def find_review_id(account_id, thread_id, customer_reply):
+    """Id of an existing review for this exact reply on this thread (any
+    status), or None. Keyed on (thread_id, customer_reply) rather than
+    thread_id alone -- a thread can have more than one reply over time, and
+    keying on thread_id alone would silently swallow every reply after the
+    first one on a given thread."""
     existing = (
         _get_client().table(TABLE)
         .select("id")
@@ -35,8 +32,18 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply, dr
         .limit(1)
         .execute()
     )
-    if existing.data:
-        return existing.data[0]["id"]
+    return existing.data[0]["id"] if existing.data else None
+
+
+def add_review(account_id, row_index, name, email, thread_id, customer_reply, draft_reply):
+    # Guards against the same reply being added twice if check_for_replies runs
+    # twice in close succession (e.g. the auto-poll firing while a previous
+    # check is still in flight) and both reads catch the same message before
+    # either write records it. Not airtight against a true simultaneous race,
+    # but closes the realistic overlapping-job case.
+    existing_id = find_review_id(account_id, thread_id, customer_reply)
+    if existing_id is not None:
+        return existing_id
 
     result = _get_client().table(TABLE).insert({
         "account_id": account_id,

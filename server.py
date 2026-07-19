@@ -414,7 +414,7 @@ def check_single_reply(request: Request, row: int):
     if not thread_id:
         raise HTTPException(status_code=400, detail="No outreach sent to this contact yet")
 
-    reply_text = gmail.get_latest_reply(account, thread_id)
+    reply_text = gmail.get_latest_reply(account, thread_id, match[sheets.COL_EMAIL].strip())
     return {"replied": bool(reply_text), "replyText": reply_text}
 
 

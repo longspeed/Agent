@@ -1,5 +1,7 @@
 import base64
+import re
 from email.mime.text import MIMEText
+from email.utils import parseaddr
 
 from googleapiclient.discovery import build
 
@@ -72,15 +74,67 @@ def _extract_body(payload):
     return ""
 
 
-def get_latest_reply(account, thread_id):
-    """Returns the body text of the newest message in the thread if there's
-    more than one message (i.e. someone replied to our outreach email),
-    otherwise returns None."""
+_QUOTE_MARKERS = re.compile(
+    r"^(>|On .{0,200} wrote:\s*$|-{2,}\s*Original Message\s*-{2,}|From: .+@.+)"
+)
+
+
+def strip_quoted(text):
+    """Cuts the quoted-history tail of an email body ("On ... wrote:", ">"
+    lines, forwarded headers) so only what this message actually added
+    remains. Heuristic; falls back to the full text if trimming would leave
+    nothing."""
+    lines = text.splitlines()
+    cut = len(lines)
+    for i, line in enumerate(lines):
+        if _QUOTE_MARKERS.match(line.strip()):
+            cut = i
+            break
+    trimmed = "\n".join(lines[:cut]).strip()
+    return trimmed or text.strip()
+
+
+def get_latest_reply(account, thread_id, contact_email):
+    reply, _ = get_latest_reply_with_history(account, thread_id, contact_email)
+    return reply
+
+
+def get_latest_reply_with_history(account, thread_id, contact_email):
+    """Returns (reply_text, history) where reply_text is the body of the
+    newest message in the thread when it was sent by the contact we emailed --
+    whether that's their first reply to our outreach or a follow-up later in
+    an ongoing thread -- otherwise (None, []). history covers every earlier
+    message on the thread, oldest first, as (from_contact, body) pairs, so a
+    reply can be drafted against the whole conversation rather than just the
+    original outreach.
+
+    A "Replied" row stays in the reply-check scope so later messages on the
+    same thread keep getting picked up. To tell a genuine reply apart from our
+    own answer, we match the newest message's From address against the
+    contact's known email rather than relying on Gmail's SENT label: when the
+    replies are produced from the same mailbox that runs outreach (e.g. a
+    Send-As alias, common while testing), a real inbound reply still carries
+    the SENT label, so keying on SENT silently drops it. The sender address is
+    unambiguous -- our replies come from the connected account, theirs come
+    from the address we reached out to."""
     service = _get_service(account)
     thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
     messages = thread.get("messages", [])
     if len(messages) < 2:
-        return None
+        return None, []
+
+    def _from_addr(msg):
+        return parseaddr(_header(msg["payload"]["headers"], "From"))[1].strip().lower()
 
     latest = messages[-1]
-    return _extract_body(latest["payload"]).strip()
+    contact_addr = _from_addr(latest)
+    if contact_email and contact_addr != contact_email.strip().lower():
+        # The newest message is our own reply (or someone other than the
+        # contact) -- nothing new from them to review until they write back.
+        return None, []
+
+    history = [
+        (_from_addr(m) == contact_addr, _extract_body(m["payload"]).strip())
+        for m in messages[:-1]
+    ]
+    return _extract_body(latest["payload"]).strip(), history

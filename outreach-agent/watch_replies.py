@@ -34,14 +34,22 @@ def check_for_replies(account):
         if not thread_id:
             continue
 
-        reply_text = gmail.get_latest_reply(account, thread_id)
+        name = row[sheets.COL_NAME].strip()
+        email = row[sheets.COL_EMAIL].strip()
+
+        reply_text, history = gmail.get_latest_reply_with_history(account, thread_id, email)
         if not reply_text:
             continue
 
-        name = row[sheets.COL_NAME].strip()
-        email = row[sheets.COL_EMAIL].strip()
-        original_email = row[sheets.COL_EMAIL_BODY].strip()
-        draft = agent.draft_reply(account, original_email, reply_text)
+        # A reply that already has a review -- pending, sent, or dismissed --
+        # was handled in an earlier check. Skip before drafting: the auto-poll
+        # runs every 100s, and drafting first would burn an LLM call per poll
+        # per unanswered reply (and resurface dismissed reviews as "new").
+        if reviews_db.find_review_id(account["id"], thread_id, reply_text) is not None:
+            continue
+
+        company = row[sheets.COL_COMPANY].strip()
+        draft = agent.draft_reply(account, name, company, reply_text, history)
 
         sheets.update_row(account, row_index, status="Replied")
         review_id = reviews_db.add_review(

@@ -2,6 +2,7 @@ import time
 
 import requests
 
+import gmail
 import usage
 from config import (
     CLIPROXY_API_KEY,
@@ -39,12 +40,46 @@ Line 1: "Subject: <subject line>" (subject under 8 words, specific, not clickbai
 Then a blank line, then the email body.
 """
 
-REPLY_SYSTEM = """You draft a reply to a customer who responded to a cold outreach email
-that asked to book a meeting via a scheduling link. Be helpful, concise, and match their tone.
-Output only the plain-text email body, no subject line, no markdown, no corporate jargon.
-If they asked a question you can't answer with the information given, say so honestly and
-offer to cover it on the call. If they haven't booked yet, gently point them back to the
-scheduling link. Sign off with just the sender's first name.
+REPLY_SYSTEM = """You draft the reply the sender will send to a prospect who wrote back on a
+cold outreach thread. The thread's end goal is a booked meeting via the scheduling link, but
+this reply's only job is to respond to what the prospect actually wrote -- a draft that
+ignores their words or re-pitches on autopilot is worse than no draft.
+
+Read their newest message carefully and match the reply to what it actually is:
+
+- They want to meet or asked how to book: confirm in one short line and give the scheduling
+  link. If they proposed a specific time, accept it and use the link only to lock it in.
+  No extra selling -- they already said yes.
+- They asked questions: answer every question they asked, in their order, before anything
+  else. Use only facts provided in the context or earlier in the thread. If the information
+  given doesn't contain the answer (pricing, integrations, customer names, anything), say so
+  plainly and offer to cover it on the call -- never guess and never invent details.
+- They have an objection or hesitation ("not now", "we already use X", "too busy"): name the
+  specific thing they said, respond to it honestly in a sentence if the context gives you a
+  real response, then make the smallest possible next ask (a yes/no question, or "worth
+  revisiting in <their timeframe>?"). Do not repeat the original pitch.
+- They said no / not interested / stop emailing: accept it graciously in one or two
+  sentences. Thank them for replying and close the thread politely. No link, no
+  counter-offer, no "just in case" pitch.
+- Auto-reply or out-of-office: one short line acknowledging it, referencing their return
+  date if they gave one. No pitch, no link.
+- Wrong person, or they pointed you to someone else: thank them and ask for the hand-off
+  ("would you mind forwarding this to <name/role>?"), using the person or role they
+  mentioned.
+
+Style:
+- Mirror their tone and length: a two-line casual reply gets a short casual answer; a
+  formal, detailed email earns a fuller one. When unsure, shorter.
+- Reference their actual words where natural, so it reads like a person who listened --
+  but never quote their message back at length.
+- Include the scheduling link only when they show interest or ask about logistics. If no
+  scheduling link is provided, ask for their availability instead.
+- No corporate jargon, no manufactured enthusiasm ("Great question!"), no apologizing for
+  emailing, no "just following up."
+- Plain text only: no subject line, no markdown, no bullet points, no emoji.
+- Sign off with just the sender's first name.
+
+Output only the email body, nothing else.
 """
 
 
@@ -127,18 +162,31 @@ def generate_outreach_email(account, name, company):
 
     text = _chat(OUTREACH_SYSTEM, user_prompt)
 
-    subject_line, _, body = text.partition("\n\n")
+    # Split on the first newline, not "\n\n": models regularly omit the blank
+    # line after the subject, and partitioning on "\n\n" then swallows the
+    # entire body into the subject.
+    subject_line, _, body = text.partition("\n")
     subject = subject_line.removeprefix("Subject:").strip()
     return subject, body.strip()
 
 
-def draft_reply(account, original_email, customer_reply):
+def draft_reply(account, name, company, customer_reply, history=()):
+    """history: (from_contact, body) pairs for every earlier message on the
+    thread, oldest first (see gmail.get_latest_reply_with_history)."""
     ctx = _sender_context(account)
+    conversation = "\n\n".join(
+        f"{'They wrote' if from_contact else 'We wrote'}:\n{gmail.strip_quoted(body)}"
+        for from_contact, body in history
+        if body.strip()
+    )
     user_prompt = (
-        f"Sender: {ctx['sender_name']}\n"
-        f"Scheduling link: {ctx['calendar_link']}\n\n"
-        f"Our original outreach email:\n{original_email}\n\n"
-        f"Customer's reply:\n{customer_reply}\n\n"
-        "Draft our reply."
+        f"Sender's first name (sign with this): {ctx['sender_name']}\n"
+        f"What the sender offers / why they wanted the meeting: {ctx['meeting_purpose']}\n"
+        f"Scheduling link: {ctx['calendar_link'] or '(none set)'}\n"
+        f"Prospect: {name}"
+        + (f" at {company}" if company else "")
+        + f"\n\nThe conversation so far, oldest first:\n{conversation}\n\n"
+        f"Their newest message -- the one to answer now:\n{gmail.strip_quoted(customer_reply)}\n\n"
+        "Draft the sender's reply."
     )
     return _chat(REPLY_SYSTEM, user_prompt)
