@@ -55,16 +55,15 @@
 
 ## Health Stack
 
-No linter, type checker, test suite, or dead-code tool is configured for
-this repo (confirmed 2026-07-16 via `/health` — nothing on PATH, no config
-files). The only available signal is a syntax-only smoke check:
-
+- test: `python tests/test_outreach_agent.py` — self-contained suite (no
+  pytest needed) covering the outreach agent's pure logic with all external
+  boundaries (Gmail, Sheets, OpenRouter, Supabase) faked. Run it after any
+  change to `outreach-agent/*.py`. Added 2026-07-19.
 - typecheck: `python -m py_compile server.py outreach-agent/*.py` (syntax
   errors only — not a real type checker; Python has no static types here)
 
-Everything else (lint/test/deadcode/shell/gbrain) is intentionally absent.
-Update this section once real tooling (e.g. `ruff` for Python, a `pytest`
-suite) is added.
+No linter or dead-code tool is configured (nothing on PATH, no config
+files). Update this section if `ruff`/`pytest` get added.
 
 ## gstack
 - Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
