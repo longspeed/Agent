@@ -4,6 +4,104 @@ Deferred from the multi-tenant hotfix pass (2026-07-16, `/plan-ceo-review`).
 None of these block a single real customer from using the app end-to-end —
 they matter once there's more than one customer, or once sending volume grows.
 
+## Deferred from the product CEO review (2026-07-19, HOLD SCOPE)
+
+### Google verification path (blocks billing)
+**What:** Plan the exit from OAuth "Testing" status: Google verification for
+the restricted `gmail.modify` scope, including the paid third-party CASA
+security assessment.
+**Why:** Two consequences of Testing status are live today: (1) every
+account's refresh token expires after 7 days — candidates' Google connections
+self-destruct and it reads as product breakage (the reconnect flow works and
+says "reconnect Google", but nobody warns them it's coming); (2) the $49
+Pilot plan in `/api/plan` cannot actually be sold until verification is done,
+and the CASA assessment is an unpriced cost sitting in front of it.
+**Pros:** Unblocks real billing; kills the 7-day token death.
+**Cons:** Verification is slow (weeks) and CASA costs real money; worth
+researching whether narrower scopes could reduce the burden first.
+**Context:** `outreach-agent/config.py` SCOPES; `google_auth.py`
+`get_credentials()` handles the expiry cleanly already. Validation week
+mitigation: warn candidates, reconnect is one click (see VALIDATION-WEEK.md).
+**Effort:** M (human, mostly waiting/paperwork) → M (CC can't compress Google)
+**Priority:** P2
+**Depends on:** Comes before Billing (P3) can ship.
+
+### Background reply watcher
+**What:** Server-side scheduler for reply checking, so detection doesn't
+depend on someone having /outreach open in a browser tab.
+**Why:** The homepage says the agent "watches your inbox" — today that's only
+true while a tab is open (100s auto-poll; `watch_replies.py` as a daemon is a
+manual script nobody runs). A prospect replying at night sits undetected.
+**Pros:** Makes the core agent claim true 24/7.
+**Cons:** Needs an always-on host first (currently a dev laptop + tunnel).
+**Context:** `server.py` check_replies endpoint + `static/outreach.html`
+auto-poll; `outreach-agent/watch_replies.py` `main()` already loops with
+`schedule` — the missing piece is running it per-account somewhere durable.
+**Effort:** M (human) → S (CC + gstack)
+**Priority:** P2
+**Depends on:** A real deployment (see Job persistence).
+
+### Job persistence
+**What:** Persist background jobs (send batch, reply-check, lead search)
+instead of the in-memory `JOBS` dict in `server.py`.
+**Why:** Process restarts silently lose in-flight/recent job state — the
+frontend sees a bare 404 with no way to tell "lost to a restart" from "bad
+job id."
+**Pros:** Removes a real failure mode; matters more as usage grows.
+**Cons:** Real infra work (Redis or a Supabase jobs table) — not warranted
+for a 1-3 user validation week.
+**Context:** `server.py` `JOBS = {}`, `start_job()`, `_run_job()`.
+**Effort:** M (human) → S (CC + gstack)
+**Priority:** P2
+**Depends on:** Nothing blocking.
+
+### Split session-signing and token-encryption keys
+**What:** `APP_SECRET_KEY` currently signs session/OAuth-state tokens (HMAC)
+*and* derives the Fernet key encrypting every stored Google token. Split into
+two secrets.
+**Why:** One secret's compromise means both session forgery and decryption of
+every connected Gmail. Rotating it today also permanently breaks every stored
+token.
+**Pros:** Standard key-separation hygiene; makes rotation safe.
+**Cons:** Existing accounts must reconnect Google once when split.
+**Context:** `outreach-agent/config.py`, `accounts_db.py` Fernet derivation.
+**Effort:** S → S
+**Priority:** P2
+**Depends on:** Nothing blocking.
+
+### Operational hygiene bundle
+**What:** (a) structured logging — timestamp + account id + action + outcome
+on send/reply paths instead of bare `print()`; (b) `JOBS` dict cleanup (drop
+entries after N hours); (c) reply-poll efficiency — track Gmail `historyId`
+per thread instead of fetching every thread full every poll (~900 calls/hour
+at 25 sent rows); (d) HTML-only replies reach the LLM/review UI as raw
+markup — strip tags in `gmail._extract_body`'s fallback.
+**Why:** None bites at current scale; all four bite with the second tenant.
+**Pros:** Debuggability three weeks after the fact; less quota burn.
+**Cons:** Pure hygiene, no user-visible change.
+**Context:** `server.py`, `outreach-agent/watch_replies.py`, `gmail.py`.
+**Effort:** M (human) → S (CC + gstack)
+**Priority:** P3
+**Depends on:** Nothing; natural trigger is "before the second real tenant."
+
+### Sheet read pagination + table virtualization
+**What:** Paginate Sheets reads and virtualize the campaigns/leads table
+render instead of loading and rendering the whole sheet every call.
+**Why:** `sheets.get_all_rows()` has no range limit; the frontend renders the
+entire table in one `innerHTML` write.
+**Pros:** Prevents slowdown as lead lists grow.
+**Cons:** Irrelevant at today's scale.
+**Context:** `outreach-agent/sheets.py`, `static/outreach.html`, `static/leads.html`.
+**Effort:** M (human) → S (CC + gstack)
+**Priority:** P3
+**Depends on:** Real usage growth to justify it.
+
+### Per-account send lock — done 2026-07-19
+**What:** ~~Prevent concurrent `send_outreach.main()` runs for the same
+account.~~ Landed from the stash into `server.py` (`_accounts_sending` guard),
+plus per-row Sent marking in `send_outreach.py` so a crash mid-batch can't
+cause re-sends either. Both duplication paths closed.
+
 ### Auth hardening
 **What:** ~~Rate limiting on `/login` and `/signup`~~ **done 2026-07-17** — see
 below. Still open: email verification on signup, password reset flow.
