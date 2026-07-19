@@ -22,13 +22,17 @@ CHECK_INTERVAL_MINUTES = 5
 
 
 def check_for_replies(account):
-    """Returns the list of newly created reviews (empty list if none)."""
+    """Checks every eligible row and returns {"reviews": [...], "row_errors": [...]}.
+    Rows are isolated: one row failing (deleted Gmail thread, transient API
+    error) must not block the rows after it, or a single stale ThreadID would
+    silently stop reply detection for the rest of the sheet on every run."""
     sent_rows = sheets.get_reply_check_rows(account)
     if not sent_rows:
         print("No sent rows awaiting replies.")
-        return []
+        return {"reviews": [], "row_errors": []}
 
     new_reviews = []
+    row_errors = []
     for row_index, row in sent_rows:
         thread_id = row[sheets.COL_THREAD_ID].strip()
         if not thread_id:
@@ -37,28 +41,33 @@ def check_for_replies(account):
         name = row[sheets.COL_NAME].strip()
         email = row[sheets.COL_EMAIL].strip()
 
-        reply_text, history = gmail.get_latest_reply_with_history(account, thread_id, email)
-        if not reply_text:
-            continue
+        try:
+            reply_text, history = gmail.get_latest_reply_with_history(account, thread_id, email)
+            if not reply_text:
+                continue
 
-        # A reply that already has a review -- pending, sent, or dismissed --
-        # was handled in an earlier check. Skip before drafting: the auto-poll
-        # runs every 100s, and drafting first would burn an LLM call per poll
-        # per unanswered reply (and resurface dismissed reviews as "new").
-        if reviews_db.find_review_id(account["id"], thread_id, reply_text) is not None:
-            continue
+            # A reply that already has a review -- pending, sent, or dismissed --
+            # was handled in an earlier check. Skip before drafting: the auto-poll
+            # runs every 100s, and drafting first would burn an LLM call per poll
+            # per unanswered reply (and resurface dismissed reviews as "new").
+            if reviews_db.find_review_id(account["id"], thread_id, reply_text) is not None:
+                continue
 
-        company = row[sheets.COL_COMPANY].strip()
-        draft = agent.draft_reply(account, name, company, reply_text, history)
+            company = row[sheets.COL_COMPANY].strip()
+            draft = agent.draft_reply(account, name, company, reply_text, history)
 
-        sheets.update_row(account, row_index, status="Replied")
-        review_id = reviews_db.add_review(
-            account["id"], row_index, name, email, thread_id, reply_text, draft
-        )
-        new_reviews.append(reviews_db.get_review(account["id"], review_id))
-        print(f"Reply detected from {name}, queued for review in the app.")
+            sheets.update_row(account, row_index, status="Replied", expect_email=email)
+            review_id = reviews_db.add_review(
+                account["id"], row_index, name, email, thread_id, reply_text, draft
+            )
+            new_reviews.append(reviews_db.get_review(account["id"], review_id))
+            print(f"Reply detected from {name}, queued for review in the app.")
+        except Exception as e:
+            label = name or email or f"row {row_index}"
+            row_errors.append(f"{label}: {e}")
+            print(f"Reply check failed for {label} (row {row_index}): {e}")
 
-    return new_reviews
+    return {"reviews": new_reviews, "row_errors": row_errors}
 
 
 def main():

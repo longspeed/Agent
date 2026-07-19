@@ -23,6 +23,33 @@ def _sheet_id(account):
     return sheet_id
 
 
+EXPECTED_HEADER = [
+    "Name", "Email", "Company", "Status", "ThreadID", "SentAt", "EmailBody",
+    "LeadReason", "EmailConfidence",
+]
+
+
+def _validate_header(values):
+    """Fails loudly when the sheet's header row doesn't match the expected
+    columns. Every read and write in this module addresses columns by
+    position, so a reordered or renamed header would otherwise cause silently
+    wrong behavior (emailing the wrong field, statuses in the wrong column) --
+    a worse failure mode than a clear error naming the fix."""
+    if not values:
+        raise RuntimeError(
+            "The connected sheet is empty. Row 1 must be this header: "
+            + ", ".join(EXPECTED_HEADER)
+        )
+    header = [cell.strip().lower() for cell in values[0][:9]]
+    expected = [name.lower() for name in EXPECTED_HEADER]
+    if header != expected:
+        raise RuntimeError(
+            "The sheet's header row doesn't match what Agent Hub expects. "
+            f"Row 1 must be exactly: {', '.join(EXPECTED_HEADER)} — found: "
+            f"{', '.join(values[0][:9]) or '(blank)'}"
+        )
+
+
 def get_all_rows(account):
     """Returns list of (row_index, row_values). row_index is 1-based sheet row number."""
     service = _get_service(account)
@@ -33,6 +60,7 @@ def get_all_rows(account):
         .execute()
     )
     values = result.get("values", [])
+    _validate_header(values)
     rows = []
     for i, row in enumerate(values[1:], start=2):  # skip header row, sheet rows are 1-based
         padded = row + [""] * (9 - len(row))
@@ -115,30 +143,31 @@ def _row_update_cells(row_index, status=None, thread_id=None, sent_at=None, emai
     return cells
 
 
-def update_row(account, row_index, status=None, thread_id=None, sent_at=None, email_body=None, email_confidence=None):
+def _verify_row_index(account, row_index, expect_email):
+    """Guards status writes against stale row indexes. Row numbers are
+    captured when the sheet is read; if the owner sorts or inserts rows
+    before the write lands, the index now points at a different contact and
+    the write would corrupt their row. Re-reads the sheet: if the expected
+    email still lives at row_index, use it; if it moved, follow it; if it's
+    gone, fail loudly rather than write into the wrong row."""
+    wanted = expect_email.strip().lower()
+    rows = get_all_rows(account)
+    for idx, row in rows:
+        if idx == row_index and row[COL_EMAIL].strip().lower() == wanted:
+            return row_index
+    for idx, row in rows:
+        if row[COL_EMAIL].strip().lower() == wanted:
+            return idx
+    raise RuntimeError(
+        f"Couldn't find {expect_email} in the sheet anymore — it may have been "
+        "edited or the row deleted. No status was written for this contact."
+    )
+
+
+def update_row(account, row_index, status=None, thread_id=None, sent_at=None, email_body=None, email_confidence=None, expect_email=None):
+    if expect_email:
+        row_index = _verify_row_index(account, row_index, expect_email)
     cells = _row_update_cells(row_index, status, thread_id, sent_at, email_body, email_confidence)
-    if not cells:
-        return
-
-    _get_service(account).spreadsheets().values().batchUpdate(
-        spreadsheetId=_sheet_id(account),
-        body={
-            "valueInputOption": "RAW",
-            "data": [{"range": cell_range, "values": [[value]]} for cell_range, value in cells],
-        },
-    ).execute()
-
-
-def batch_update_rows(account, updates):
-    """updates: list of dicts with row_index and any of status/thread_id/sent_at/email_body.
-    Writes every row in one API round-trip instead of one call per row."""
-    cells = [
-        cell
-        for u in updates
-        for cell in _row_update_cells(
-            u["row_index"], u.get("status"), u.get("thread_id"), u.get("sent_at"), u.get("email_body"), u.get("email_confidence")
-        )
-    ]
     if not cells:
         return
 

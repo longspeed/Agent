@@ -24,11 +24,27 @@ MAX_WORKERS = 4
 def _send_one(account, row_index, name, email, company):
     subject, body = agent.generate_outreach_email(account, name, company)
     thread_id = gmail.send_email(account, email, subject, body)
+    sent_at = datetime.now(timezone.utc).isoformat()
+    # Mark the row Sent immediately, not at batch end: a crash or restart
+    # mid-batch must not leave already-emailed rows looking Pending, or the
+    # next batch re-emails everyone the interrupted one already reached.
+    try:
+        sheets.update_row(
+            account, row_index, status="Sent", thread_id=thread_id,
+            sent_at=sent_at, email_body=body, expect_email=email,
+        )
+    except Exception as e:
+        # The email DID go out -- surface that loudly instead of letting this
+        # look like a failed send, and tell the operator what to fix.
+        raise RuntimeError(
+            f"Email was sent to {email}, but marking the sheet row failed ({e}). "
+            f"Set that row's Status to 'Sent' manually or it will be re-emailed next batch."
+        ) from e
     return {
         "row_index": row_index,
         "email": email,
         "thread_id": thread_id,
-        "sent_at": datetime.now(timezone.utc).isoformat(),
+        "sent_at": sent_at,
         "email_body": body,
     }
 
@@ -61,15 +77,6 @@ def main(account):
             except Exception as e:
                 failed.append((email, str(e)))
                 print(f"Failed to send to {email}: {e}")
-
-    # One round-trip to the sheet for the whole batch instead of one per row.
-    sheets.batch_update_rows(account, [
-        {
-            "row_index": r["row_index"], "status": "Sent", "thread_id": r["thread_id"],
-            "sent_at": r["sent_at"], "email_body": r["email_body"],
-        }
-        for r in sent
-    ])
 
     summary = f"Sent {len(sent)} of {len(pending)} outreach emails."
     if failed:

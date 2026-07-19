@@ -39,8 +39,10 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
 
 # Name, Email, Company, Status, ThreadID, SentAt, EmailBody, LeadReason, EmailConfidence (first tab).
-# EmailConfidence is now a verification state: "verified", "unverified", or
-# "invalid". Only "verified" addresses are eligible to send.
+# EmailConfidence is informational only (a leftover verification state) --
+# there is no verification gate: any approved row with an email can send.
+# The sheet owner is trusted to only approve addresses they're comfortable
+# emailing (verification via NeverBounce was removed 2026-07-18, see TODOS.md).
 SHEET_RANGE = "A:I"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",

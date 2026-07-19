@@ -1,3 +1,4 @@
+import os
 import sys
 import threading
 import uuid
@@ -73,16 +74,26 @@ def _account(request: Request) -> dict:
     return account
 
 
-def _session_response(payload: dict, account_id: str, status_code: int = 200) -> JSONResponse:
-    response = JSONResponse(payload, status_code=status_code)
+# Set SECURE_COOKIES=1 when serving over HTTPS (e.g. behind the cloudflared
+# tunnel) so session cookies are never sent over plain http. Off by default
+# for local http://127.0.0.1 development.
+SECURE_COOKIES = bool(os.environ.get("SECURE_COOKIES"))
+
+
+def _set_session_cookie(response, account_id: str):
     response.set_cookie(
         auth.COOKIE_NAME,
         auth.create_session_token(account_id),
         httponly=True,
         samesite="lax",
+        secure=SECURE_COOKIES,
         max_age=auth.SESSION_TTL_SECONDS,
     )
     return response
+
+
+def _session_response(payload: dict, account_id: str, status_code: int = 200) -> JSONResponse:
+    return _set_session_cookie(JSONResponse(payload, status_code=status_code), account_id)
 
 
 # --- Pages -------------------------------------------------------------------
@@ -177,15 +188,7 @@ def google_login_callback(state: str = "", code: str = "", error: str = ""):
 
     account = accounts_db.link_or_create_google_account(identity["email"].lower(), identity["google_id"])
     onboarded = bool(account.get("google_token")) and bool((account.get("google_sheet_id") or "").strip())
-    response = RedirectResponse("/" if onboarded else "/settings")
-    response.set_cookie(
-        auth.COOKIE_NAME,
-        auth.create_session_token(account["id"]),
-        httponly=True,
-        samesite="lax",
-        max_age=auth.SESSION_TTL_SECONDS,
-    )
-    return response
+    return _set_session_cookie(RedirectResponse("/" if onboarded else "/settings"), account["id"])
 
 
 @app.get("/api/me")
@@ -231,7 +234,7 @@ def get_plan(request: Request):
         "price_monthly_usd": 49,
         "daily_send_limit": sheets.DAILY_SEND_LIMIT,
         "lead_searches_per_hour": 10,
-        "note": "Human-approved, verified-email outreach. Checkout is coming next.",
+        "note": "Human-approved leads, human-reviewed replies, daily send cap. Checkout is coming next.",
     }
 
 
@@ -305,6 +308,15 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # /api/jobs/{id} for the result instead of blocking on the original request.
 
 JOBS: dict[str, dict] = {}
+
+# Accounts with a send batch currently in flight. Guards against the same
+# account double-clicking "Send pending batch" or triggering it from two open
+# tabs before the first job finishes -- without this, both jobs read the same
+# pending rows and every contact gets emailed twice. Single-process in-memory
+# state is sufficient because this server runs as one uvicorn process (see
+# TODOS.md for the multi-process case).
+_send_lock_guard = threading.Lock()
+_accounts_sending: set[str] = set()
 
 
 def _run_job(job_id, account_id, fn):
@@ -383,7 +395,23 @@ def send_campaigns(request: Request, payload: SendCampaignBody):
         raise HTTPException(status_code=400, detail="Review the batch and confirm before sending.")
     if not preview["eligible"]:
         raise HTTPException(status_code=409, detail="No approved contacts are available to send today. Approve leads on the Lead Agent page or wait for the daily limit to reset.")
-    return {"job_id": start_job(account["id"], lambda: send_outreach.main(account))}
+
+    with _send_lock_guard:
+        if account["id"] in _accounts_sending:
+            raise HTTPException(
+                status_code=409,
+                detail="A batch is already sending for this account — wait for it to finish.",
+            )
+        _accounts_sending.add(account["id"])
+
+    def run():
+        try:
+            return send_outreach.main(account)
+        finally:
+            with _send_lock_guard:
+                _accounts_sending.discard(account["id"])
+
+    return {"job_id": start_job(account["id"], run)}
 
 
 @app.post("/api/outreach/replies/check", status_code=202)
