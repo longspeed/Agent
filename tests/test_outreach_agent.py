@@ -322,6 +322,23 @@ def test_header_validation_case_and_space_insensitive():
         assert sheets.get_all_rows(ACCOUNT) == []
 
 
+def test_header_validation_accepts_partial_prefix():
+    """Real sheets (the founder's included) often only carry the first few
+    header cells -- columns are positional, so a prefix must pass."""
+    with patched(sheets, "_get_service", lambda account: fake_sheets_service([["Name", "Email"], _row()])):
+        assert len(sheets.get_all_rows(ACCOUNT)) == 1
+
+
+def test_header_validation_rejects_data_like_first_row():
+    # A sheet with no header at all: row 1 is a data row, not Name/Email.
+    with patched(sheets, "_get_service", lambda account: fake_sheets_service([["John", "john@x.com"]])):
+        try:
+            sheets.get_all_rows(ACCOUNT)
+        except RuntimeError:
+            return
+    raise AssertionError("data row in place of header must raise")
+
+
 def test_header_validation_rejects_reordered():
     bad = ["Email", "Name", "Company", "Status", "ThreadID", "SentAt", "EmailBody", "LeadReason", "EmailConfidence"]
     with patched(sheets, "_get_service", lambda account: fake_sheets_service([bad, _row()])):

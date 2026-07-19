@@ -34,19 +34,28 @@ def _validate_header(values):
     columns. Every read and write in this module addresses columns by
     position, so a reordered or renamed header would otherwise cause silently
     wrong behavior (emailing the wrong field, statuses in the wrong column) --
-    a worse failure mode than a clear error naming the fix."""
+    a worse failure mode than a clear error naming the fix.
+
+    Only the cells actually present in row 1 are checked, as a prefix of the
+    expected header (at least Name, Email): real sheets in the wild -- the
+    founder's own included -- often only carry the first few header cells,
+    and columns still line up positionally. What must never pass is a
+    reordered or foreign layout ("Email, Name, ..." / "First Name, ...")."""
     if not values:
         raise RuntimeError(
             "The connected sheet is empty. Row 1 must be this header: "
             + ", ".join(EXPECTED_HEADER)
         )
-    header = [cell.strip().lower() for cell in values[0][:9]]
+    found = [cell.strip().lower() for cell in values[0][:9]]
+    while found and not found[-1]:
+        found.pop()
     expected = [name.lower() for name in EXPECTED_HEADER]
-    if header != expected:
+    if len(found) < 2 or found != expected[:len(found)]:
         raise RuntimeError(
             "The sheet's header row doesn't match what Agent Hub expects. "
-            f"Row 1 must be exactly: {', '.join(EXPECTED_HEADER)} — found: "
-            f"{', '.join(values[0][:9]) or '(blank)'}"
+            f"Row 1 must start with: {', '.join(EXPECTED_HEADER[:2])} (full header: "
+            f"{', '.join(EXPECTED_HEADER)}) — found: "
+            f"{', '.join(cell for cell in values[0][:9] if cell.strip()) or '(blank)'}"
         )
 
 
