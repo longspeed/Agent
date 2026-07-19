@@ -4,6 +4,8 @@ outreach-agent/credentials.json
 outreach-agent/token.json
 
 # local data / generated artifacts
+server.log
+example-leads-sheet.csv
 outreach-agent/reviews.db
 outreach-agent/email_preview.txt
 temporary screenshots/
