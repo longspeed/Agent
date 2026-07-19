@@ -5,6 +5,7 @@ a summary notification.
 Run manually per batch:  python send_outreach.py <account-email>
 """
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -21,25 +22,50 @@ from notify import notify
 MAX_WORKERS = 4
 
 
+# Post-send sheet marking: attempts and base backoff (seconds). The delay is
+# a module constant so tests can zero it.
+_MARK_RETRIES = 3
+_MARK_RETRY_DELAY = 2
+
+
+# Per-contact pipeline -- the ordering IS the crash-safety invariant:
+#
+#   draft (LLM) ──▶ gmail.send ──▶ mark row "Sent" (retry x3, backoff)
+#      │               │               │
+#      ▼               ▼               ▼
+#   fail: row       fail: row      still failing: LABELED error
+#   stays Pending,  stays Pending  ("email WAS sent") -- operator must
+#   safe to retry   safe to retry  mark the row or it re-emails next batch
+#
+# The mark happens HERE, immediately after the irreversible side effect,
+# never at batch end: a crash mid-batch must not leave sent rows Pending
+# (learning: batch-end-write-defeats-send-lock). The retry exists because a
+# transient Sheets 429/500 on this one write would otherwise convert a
+# SUCCESSFUL send into a future duplicate email.
 def _send_one(account, row_index, name, email, company):
     subject, body = agent.generate_outreach_email(account, name, company)
     thread_id = gmail.send_email(account, email, subject, body)
     sent_at = datetime.now(timezone.utc).isoformat()
-    # Mark the row Sent immediately, not at batch end: a crash or restart
-    # mid-batch must not leave already-emailed rows looking Pending, or the
-    # next batch re-emails everyone the interrupted one already reached.
-    try:
-        sheets.update_row(
-            account, row_index, status="Sent", thread_id=thread_id,
-            sent_at=sent_at, email_body=body, expect_email=email,
-        )
-    except Exception as e:
+    last_err = None
+    for attempt in range(_MARK_RETRIES):
+        try:
+            sheets.update_row(
+                account, row_index, status="Sent", thread_id=thread_id,
+                sent_at=sent_at, email_body=body, expect_email=email,
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < _MARK_RETRIES - 1:
+                time.sleep(_MARK_RETRY_DELAY * (attempt + 1))
+    else:
         # The email DID go out -- surface that loudly instead of letting this
         # look like a failed send, and tell the operator what to fix.
         raise RuntimeError(
-            f"Email was sent to {email}, but marking the sheet row failed ({e}). "
-            f"Set that row's Status to 'Sent' manually or it will be re-emailed next batch."
-        ) from e
+            f"Email was sent to {email}, but marking the sheet row failed after "
+            f"{_MARK_RETRIES} attempts ({last_err}). Set that row's Status to "
+            f"'Sent' manually or it will be re-emailed next batch."
+        ) from last_err
     return {
         "row_index": row_index,
         "email": email,
@@ -50,6 +76,9 @@ def _send_one(account, row_index, name, email, company):
 
 
 def main(account):
+    # Writes go into columns D-I; refuse the whole batch unless row 1
+    # explicitly labels them (see sheets.require_full_header).
+    sheets.require_full_header(account)
     readiness = sheets.campaign_readiness(account)
     pending = [
         (row_index, row[sheets.COL_NAME].strip(), row[sheets.COL_EMAIL].strip(), row[sheets.COL_COMPANY].strip())

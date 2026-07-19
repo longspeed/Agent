@@ -40,6 +40,17 @@ watched, this week). Product decisions live in TODOS.md; this file is the
   their Google connection **expires after 7 days** (Testing-mode policy;
   reconnect is one click, not a bug).
 
+## Standing rules for the whole week
+
+- [ ] **Always reply to prospects from inside the app, never the Gmail UI.**
+  Reply detection only sees the newest message in a thread — a manual Gmail
+  reply on top of an unprocessed prospect reply buries it forever (P2 TODO
+  tracks the structural fix).
+- [ ] **Every sheet that sends needs the full 9-label header row** — the app
+  now refuses to write statuses without it (protects data people keep in
+  unlabeled columns). This includes your own sheet: add the full header
+  before the next send.
+
 ## During the watched session
 
 - [ ] Watch, don't demo. Their machine, their Google account, their real

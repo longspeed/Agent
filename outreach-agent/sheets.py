@@ -152,6 +152,31 @@ def _row_update_cells(row_index, status=None, thread_id=None, sent_at=None, emai
     return cells
 
 
+def require_full_header(account):
+    """Gate for every WRITE path (send batch, reply marking, lead
+    approve/discard): row 1 must carry all nine labels before the app writes
+    into columns D-I. Reads accept a Name+Email prefix (_validate_header),
+    but writing into unlabeled columns could silently overwrite data the
+    owner keeps there -- the full header is their explicit consent that
+    those columns belong to Agent Hub. The error hands them the exact row
+    to paste."""
+    service = _get_service(account)
+    result = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=_sheet_id(account), range="A1:I1")
+        .execute()
+    )
+    values = result.get("values", [])
+    header = [cell.strip().lower() for cell in (values[0] if values else [])]
+    if header != [name.lower() for name in EXPECTED_HEADER]:
+        raise RuntimeError(
+            "Before Agent Hub can write statuses, row 1 must contain the full "
+            "header (this protects any data you keep in unlabeled columns). "
+            "Paste this into row 1: " + ", ".join(EXPECTED_HEADER)
+        )
+
+
 def _verify_row_index(account, row_index, expect_email):
     """Guards status writes against stale row indexes. Row numbers are
     captured when the sheet is read; if the owner sorts or inserts rows

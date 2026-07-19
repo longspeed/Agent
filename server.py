@@ -74,10 +74,14 @@ def _account(request: Request) -> dict:
     return account
 
 
-# Set SECURE_COOKIES=1 when serving over HTTPS (e.g. behind the cloudflared
-# tunnel) so session cookies are never sent over plain http. Off by default
-# for local http://127.0.0.1 development.
-SECURE_COOKIES = bool(os.environ.get("SECURE_COOKIES"))
+# Set SECURE_COOKIES=1 (or true/yes) when serving over HTTPS (e.g. behind the
+# cloudflared tunnel) so session cookies are never sent over plain http.
+# Parsed explicitly -- bool(os.environ.get(...)) would treat "0" and "false"
+# as ON, and the resulting Secure cookie over plain http fails as a silent
+# login loop with nothing in any log. Read at call time so tests (and a
+# restarted tunnel setup) see env changes without a module reload.
+def _secure_cookies() -> bool:
+    return os.environ.get("SECURE_COOKIES", "").strip().lower() in ("1", "true", "yes")
 
 
 def _set_session_cookie(response, account_id: str):
@@ -86,7 +90,7 @@ def _set_session_cookie(response, account_id: str):
         auth.create_session_token(account_id),
         httponly=True,
         samesite="lax",
-        secure=SECURE_COOKIES,
+        secure=_secure_cookies(),
         max_age=auth.SESSION_TTL_SECONDS,
     )
     return response
@@ -411,7 +415,14 @@ def send_campaigns(request: Request, payload: SendCampaignBody):
             with _send_lock_guard:
                 _accounts_sending.discard(account["id"])
 
-    return {"job_id": start_job(account["id"], run)}
+    try:
+        return {"job_id": start_job(account["id"], run)}
+    except Exception:
+        # If the job thread never spawned, run()'s finally never fires --
+        # release here or the account is wedged on 409 until restart.
+        with _send_lock_guard:
+            _accounts_sending.discard(account["id"])
+        raise
 
 
 @app.post("/api/outreach/replies/check", status_code=202)

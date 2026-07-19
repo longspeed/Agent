@@ -432,6 +432,15 @@
       const { job_id } = await fetch('/api/outreach/replies/check', { method: 'POST' }).then(r => r.json());
       const job = await pollJob(job_id);
       if (job.status === 'error') throw new Error(job.error);
+      // Per-row failures don't fail the job — surface them or a broken row
+      // silently stops being watched for replies.
+      const rowErrors = (job.result && job.result.row_errors) || [];
+      const errEl = document.getElementById('send-result');
+      if (rowErrors.length) {
+        errEl.classList.remove('hidden');
+        errEl.style.color = 'var(--accent)';
+        errEl.textContent = `${rowErrors.length} contact${rowErrors.length === 1 ? '' : 's'} couldn't be checked for replies — ${rowErrors[0]}`;
+      }
       await Promise.all([loadReviews(), loadCampaigns()]);
     } catch (e) {
       // Auto-poll failures (e.g. hitting the rate limit) stay silent; the

@@ -69,17 +69,40 @@ token.
 **Priority:** P2
 **Depends on:** Nothing blocking.
 
+### Reply-detection correctness: scan since last outgoing, not newest-only
+**What:** `gmail.get_latest_reply_with_history` only inspects `messages[-1]`.
+Replace with "scan all messages after our last outgoing message" (or a
+per-thread `historyId` cursor), and decide a policy for replies arriving
+from an address other than the sheet's Email cell (assistant/alias).
+**Why:** Two silent drop paths (eng review 2026-07-19, outside voice):
+(a) operator replies manually from the Gmail UI before a poll runs → the
+contact's earlier reply is buried and never reviewed; (b) contact replies
+from a different address → dropped every poll, forever. Both lose booked-
+meeting signal with zero operator indication.
+**Pros:** Closes the only known ways to silently lose a reply; the cursor
+also kills the ~900 Gmail calls/hour polling waste (same mechanism).
+**Cons:** Real design work (unknown-address policy: auto-accept vs flagged
+review); touches the most safety-critical read path.
+**Context:** `outreach-agent/gmail.py` `get_latest_reply_with_history`;
+week mitigation is procedural (VALIDATION-WEEK.md: reply from inside the
+app only).
+**Effort:** M (human) → S (CC + gstack)
+**Priority:** P2
+**Depends on:** Nothing blocking.
+
 ### Operational hygiene bundle
 **What:** (a) structured logging — timestamp + account id + action + outcome
 on send/reply paths instead of bare `print()`; (b) `JOBS` dict cleanup (drop
-entries after N hours); (c) reply-poll efficiency — track Gmail `historyId`
-per thread instead of fetching every thread full every poll (~900 calls/hour
-at 25 sent rows); (d) HTML-only replies reach the LLM/review UI as raw
-markup — strip tags in `gmail._extract_body`'s fallback.
+entries after N hours); (c) HTML-only replies reach the LLM/review UI as raw
+markup — strip tags in `gmail._extract_body`'s fallback; (d) narrow
+`sheets._verify_row_index` to an email-column-only range read — today every
+guarded write re-reads the whole sheet (~2 Sheets calls per send; fine at
+25-row scale, brushes read quota at 500-row sheets with concurrent polling).
 **Why:** None bites at current scale; all four bite with the second tenant.
 **Pros:** Debuggability three weeks after the fact; less quota burn.
 **Cons:** Pure hygiene, no user-visible change.
-**Context:** `server.py`, `outreach-agent/watch_replies.py`, `gmail.py`.
+**Context:** `server.py`, `outreach-agent/watch_replies.py`, `gmail.py`,
+`outreach-agent/sheets.py`.
 **Effort:** M (human) → S (CC + gstack)
 **Priority:** P3
 **Depends on:** Nothing; natural trigger is "before the second real tenant."

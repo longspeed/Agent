@@ -21,6 +21,7 @@ for var, val in {
     os.environ.setdefault(var, val)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "outreach-agent"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for `import server`
 
 import accounts_db
 import agent
@@ -135,6 +136,22 @@ def test_strip_quoted_all_quoted_falls_back():
 def test_strip_quoted_plain_text_untouched():
     text = "Just a normal reply.\nSecond line."
     assert gmail.strip_quoted(text) == text
+
+
+def test_strip_quoted_preserves_inline_reply():
+    """Inline repliers weave answers between '>' lines -- nothing may be cut."""
+    text = "Thanks!\n> got 15 min Tuesday?\nTuesday works, but pricing first:\nwhat does it cost?"
+    assert gmail.strip_quoted(text) == text
+
+
+def test_strip_quoted_preserves_midbody_from_line():
+    text = "From: john@x.com — my colleague will attend\nAlso, can we do Friday?"
+    assert gmail.strip_quoted(text) == text
+
+
+def test_strip_quoted_outlook_with_body_below_marker():
+    text = "Works for me.\n\n-----Original Message-----\nFrom: o@x.com\nSent: Monday\n\nthe entire original email body"
+    assert gmail.strip_quoted(text) == "Works for me."
 
 
 # ---------------------------------------------------------------- _extract_body
@@ -469,6 +486,7 @@ def _watch_env(calls, reply_map, existing_reviews=None):
 
     return [
         (reviews_db, "find_review_id", lambda account_id, t, r: existing.get((t, r))),
+        (sheets, "require_full_header", lambda account: calls.setdefault("header_gate", []).append(True)),
         (sheets, "get_reply_check_rows", lambda account: calls["rows"]),
         (sheets, "update_row", lambda account, idx, **kw: calls.setdefault("update_row", []).append((idx, kw))),
         (gmail, "get_latest_reply_with_history", fake_get_reply),
@@ -532,6 +550,33 @@ def test_check_for_replies_isolates_broken_rows():
     assert len(result["reviews"]) == 1, "row after the broken one must still be checked"
     assert len(result["row_errors"]) == 1 and "Broken" in result["row_errors"][0]
     assert calls["draft"][0][0] == "Jane"
+    assert calls.get("header_gate"), "reply run must gate on the full header before writing"
+
+
+def test_check_for_replies_review_saved_before_sheet_write():
+    """A failing status write must cost one row_error -- never a re-draft:
+    the review (and thus the dedupe key) is recorded before the sheet write."""
+    rows = [(2, _row(status="Sent", thread="t1", name="John", email="john@x.com"))]
+    reply_map = {"t1": ("yes!", [(False, "orig")])}
+    calls = {"rows": rows}
+    existing = {}
+
+    def broken_update(account, idx, **kw):
+        raise RuntimeError("email cell edited")
+
+    with contextlib.ExitStack() as stack:
+        targets = _watch_env(calls, reply_map, existing)
+        for obj, name, value in targets:
+            if name == "update_row":
+                value = broken_update
+            stack.enter_context(patched(obj, name, value))
+        first = watch_replies.check_for_replies(ACCOUNT)
+        second = watch_replies.check_for_replies(ACCOUNT)
+
+    assert len(first["reviews"]) == 1, "review must exist despite the failed sheet write"
+    assert len(first["row_errors"]) == 1 and "queued for review" in first["row_errors"][0]
+    assert len(calls["draft"]) == 1, f"BUG: re-drafted on the failure path ({len(calls['draft'])} drafts)"
+    assert len(second["reviews"]) == 0
 
 
 # --------------------------------------------------------------- send_outreach
@@ -548,12 +593,14 @@ def test_send_outreach_marks_each_row_immediately():
     readiness = {"eligible": rows, "eligible_total": 2, "sent_today": 0,
                  "daily_limit": 25, "remaining_today": 25, "capped": 0}
     with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: calls.update(header_gate=True)))
         stack.enter_context(patched(sheets, "campaign_readiness", lambda account: readiness))
         stack.enter_context(patched(agent, "generate_outreach_email", fake_generate))
         stack.enter_context(patched(gmail, "send_email", lambda account, to, s, b: f"thread-{to}"))
         stack.enter_context(patched(sheets, "update_row", lambda account, idx, **kw: calls["updates"].append((idx, kw))))
         stack.enter_context(patched(send_outreach, "notify", lambda account, subj, msg_: calls.update(notify=(subj, msg_))))
         result = send_outreach.main(ACCOUNT)
+    assert calls.get("header_gate"), "send batch must gate on the full header"
 
     assert result["sent"] == 1 and result["total"] == 2
     assert result["failed"] == [{"email": "f@x.com", "error": "LLM exploded"}]
@@ -573,10 +620,15 @@ def test_send_outreach_sheet_write_failure_is_labeled():
     readiness = {"eligible": rows, "eligible_total": 1, "sent_today": 0,
                  "daily_limit": 25, "remaining_today": 25, "capped": 0}
 
+    attempts = []
+
     def broken_update(account, idx, **kw):
+        attempts.append(idx)
         raise RuntimeError("sheet gone")
 
     with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(send_outreach, "_MARK_RETRY_DELAY", 0))
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
         stack.enter_context(patched(sheets, "campaign_readiness", lambda account: readiness))
         stack.enter_context(patched(agent, "generate_outreach_email", lambda a, n, c: ("S", "B")))
         stack.enter_context(patched(gmail, "send_email", lambda account, to, s, b: "t-1"))
@@ -587,14 +639,128 @@ def test_send_outreach_sheet_write_failure_is_labeled():
     assert result["sent"] == 0
     assert len(result["failed"]) == 1
     assert "was sent" in result["failed"][0]["error"].lower()
+    assert len(attempts) == send_outreach._MARK_RETRIES, "persistent failure must exhaust all retries"
+
+
+def test_send_outreach_mark_retry_recovers_from_transient_failure():
+    """A single Sheets hiccup on the post-send write must self-heal, not
+    convert a successful send into a future duplicate."""
+    rows = [(2, _row(name="John", email="j@x.com"))]
+    readiness = {"eligible": rows, "eligible_total": 1, "sent_today": 0,
+                 "daily_limit": 25, "remaining_today": 25, "capped": 0}
+    attempts = []
+
+    def flaky_update(account, idx, **kw):
+        attempts.append((idx, kw))
+        if len(attempts) == 1:
+            raise RuntimeError("429 transient")
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(send_outreach, "_MARK_RETRY_DELAY", 0))
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
+        stack.enter_context(patched(sheets, "campaign_readiness", lambda account: readiness))
+        stack.enter_context(patched(agent, "generate_outreach_email", lambda a, n, c: ("S", "B")))
+        stack.enter_context(patched(gmail, "send_email", lambda account, to, s, b: "t-1"))
+        stack.enter_context(patched(sheets, "update_row", flaky_update))
+        stack.enter_context(patched(send_outreach, "notify", lambda *a: None))
+        result = send_outreach.main(ACCOUNT)
+
+    assert result["sent"] == 1 and result["failed"] == []
+    assert len(attempts) == 2 and attempts[1][1]["status"] == "Sent"
 
 
 def test_send_outreach_nothing_pending():
     readiness = {"eligible": [], "eligible_total": 0, "sent_today": 0,
                  "daily_limit": 25, "remaining_today": 25, "capped": 0}
-    with patched(sheets, "campaign_readiness", lambda account: readiness):
-        result = send_outreach.main(ACCOUNT)
+    with patched(sheets, "require_full_header", lambda account: None):
+        with patched(sheets, "campaign_readiness", lambda account: readiness):
+            result = send_outreach.main(ACCOUNT)
     assert result == {"sent": 0, "total": 0, "failed": [], "daily_limit": 25, "remaining_today": 25}
+
+
+# ------------------------------------------------------------ header write gate
+
+def test_require_full_header_accepts_complete():
+    with patched(sheets, "_get_service", lambda account: fake_sheets_service([list(sheets.EXPECTED_HEADER)])):
+        sheets.require_full_header(ACCOUNT)  # must not raise
+
+
+def test_require_full_header_rejects_partial():
+    with patched(sheets, "_get_service", lambda account: fake_sheets_service([["Name", "Email"]])):
+        try:
+            sheets.require_full_header(ACCOUNT)
+        except RuntimeError as e:
+            assert "row 1" in str(e).lower()
+            return
+    raise AssertionError("partial header must block writes")
+
+
+# ------------------------------------------------------------- server endpoints
+
+def test_server_secure_cookies_env_parse():
+    import server
+    cases = [("", False), ("0", False), ("false", False), ("no", False),
+             ("1", True), ("true", True), ("YES", True), (" 1 ", True)]
+    saved = os.environ.get("SECURE_COOKIES")
+    try:
+        for val, expect in cases:
+            if val == "":
+                os.environ.pop("SECURE_COOKIES", None)
+            else:
+                os.environ["SECURE_COOKIES"] = val
+            assert server._secure_cookies() == expect, (val, expect)
+    finally:
+        if saved is None:
+            os.environ.pop("SECURE_COOKIES", None)
+        else:
+            os.environ["SECURE_COOKIES"] = saved
+
+
+def test_server_send_lock_lifecycle():
+    """REGRESSION (eng review): concurrent-send 409, release after run,
+    release when the job thread fails to spawn."""
+    import server
+    from types import SimpleNamespace
+    account = dict(ACCOUNT)
+    req = SimpleNamespace(state=SimpleNamespace(account_id=account["id"]))
+    body = server.SendCampaignBody(confirmed=True)
+    captured = {}
+    server._accounts_sending.discard(account["id"])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: account))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server, "_campaign_preview", lambda a: {"eligible": 1}))
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured.update(fn=fn) or "job-1"))
+        assert server.send_campaigns(req, body) == {"job_id": "job-1"}
+        assert account["id"] in server._accounts_sending
+        try:
+            server.send_campaigns(req, body)
+            raise AssertionError("expected 409 while a batch is in flight")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+        with patched(server.send_outreach, "main", lambda a: {"sent": 0}):
+            captured["fn"]()
+        assert account["id"] not in server._accounts_sending, "lock must release after the job runs"
+
+        def boom(aid, fn):
+            raise RuntimeError("thread spawn failed")
+        stack.enter_context(patched(server, "start_job", boom))
+        try:
+            server.send_campaigns(req, body)
+            raise AssertionError("expected spawn failure to propagate")
+        except RuntimeError:
+            pass
+        assert account["id"] not in server._accounts_sending, "lock must release when spawn fails"
+
+
+def test_server_plan_copy_is_accurate():
+    import server
+    from types import SimpleNamespace
+    req = SimpleNamespace(state=SimpleNamespace(account_id="a"))
+    with patched(server, "_account", lambda r: dict(ACCOUNT)):
+        plan = server.get_plan(req)
+    assert "verified-email" not in plan["note"]
+    assert "Human-approved" in plan["note"]
 
 
 # ------------------------------------------------------------------------ auth

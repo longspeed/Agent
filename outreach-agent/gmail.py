@@ -74,21 +74,44 @@ def _extract_body(payload):
     return ""
 
 
-_QUOTE_MARKERS = re.compile(
-    r"^(>|On .{0,200} wrote:\s*$|-{2,}\s*Original Message\s*-{2,}|From: .+@.+)"
-)
+_ATTRIBUTION = re.compile(r"^On .{0,200} wrote:\s*$")
+_ORIG_MESSAGE = re.compile(r"^-{2,}\s*Original Message\s*-{2,}$")
+_HEADERISH = re.compile(r"^(From|Sent|To|Cc|Subject|Date):\s")
 
 
 def strip_quoted(text):
-    """Cuts the quoted-history tail of an email body ("On ... wrote:", ">"
-    lines, forwarded headers) so only what this message actually added
-    remains. Heuristic; falls back to the full text if trimming would leave
-    nothing."""
+    """Trims the quoted-history TAIL of an email body so only what this
+    message actually added remains. Deliberately not cut-at-first-marker:
+    inline repliers weave answers between '>' lines, and those answers must
+    survive to the LLM. Rules:
+    - "-----Original Message-----" cuts unconditionally (nobody writes below it)
+    - "On ... wrote:" / forwarded-header lines cut only when everything after
+      them is quoted, blank, or more headers -- content below means an inline
+      reply, which is kept whole (quotes included, as context)
+    - otherwise only trailing '>'/blank lines are stripped
+    Falls back to the full text if trimming would leave nothing."""
     lines = text.splitlines()
+
+    def only_quoted_below(idx):
+        return all(
+            not l.strip() or l.strip().startswith(">") or _HEADERISH.match(l.strip())
+            for l in lines[idx + 1:]
+        )
+
     cut = len(lines)
     for i, line in enumerate(lines):
-        if _QUOTE_MARKERS.match(line.strip()):
+        s = line.strip()
+        if _ORIG_MESSAGE.match(s):
             cut = i
+            break
+        if (_ATTRIBUTION.match(s) or _HEADERISH.match(s)) and only_quoted_below(i):
+            cut = i
+            break
+    while cut > 0:
+        s = lines[cut - 1].strip()
+        if not s or s.startswith(">"):
+            cut -= 1
+        else:
             break
     trimmed = "\n".join(lines[:cut]).strip()
     return trimmed or text.strip()

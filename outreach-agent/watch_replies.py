@@ -30,6 +30,9 @@ def check_for_replies(account):
     if not sent_rows:
         print("No sent rows awaiting replies.")
         return {"reviews": [], "row_errors": []}
+    # This run writes "Replied" statuses -- same full-header consent gate as
+    # the send path (see sheets.require_full_header).
+    sheets.require_full_header(account)
 
     new_reviews = []
     row_errors = []
@@ -56,12 +59,23 @@ def check_for_replies(account):
             company = row[sheets.COL_COMPANY].strip()
             draft = agent.draft_reply(account, name, company, reply_text, history)
 
-            sheets.update_row(account, row_index, status="Replied", expect_email=email)
+            # Review FIRST, sheet status second. The review is the operator
+            # surface and the dedupe key: once it exists, a failing status
+            # write costs one visible row_error -- never a re-draft per poll.
+            # (Reversed, a persistently failing write would re-burn an LLM
+            # call every 100s because add_review never runs.)
             review_id = reviews_db.add_review(
                 account["id"], row_index, name, email, thread_id, reply_text, draft
             )
             new_reviews.append(reviews_db.get_review(account["id"], review_id))
             print(f"Reply detected from {name}, queued for review in the app.")
+            try:
+                sheets.update_row(account, row_index, status="Replied", expect_email=email)
+            except Exception as e:
+                row_errors.append(
+                    f"{name or email}: reply queued for review, but marking the "
+                    f"sheet 'Replied' failed: {e}"
+                )
         except Exception as e:
             label = name or email or f"row {row_index}"
             row_errors.append(f"{label}: {e}")
