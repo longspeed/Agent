@@ -276,3 +276,22 @@ Harmless but confusing to a new engineer wondering which store is live.
 **Effort:** S (human) → S (CC + gstack)
 **Priority:** P3
 **Depends on:** Nothing.
+
+## From /qa run (2026-07-20, pre-connect candidate state)
+
+### Serve HTML routes with Cache-Control: no-cache
+**What:** Page routes (`/outreach`, `/settings`, `/login`, `/signup`, `/`)
+send no Cache-Control header, so browsers heuristically cache the HTML+JS.
+**Why:** Observed live during QA: after a fix landed in `static/outreach.html`,
+a plain reload still ran the old JS; only a cache-busted URL picked it up.
+If a fix ships mid-validation-week, a candidate's browser may keep the old
+page until a hard refresh — right when a stale bug matters most.
+**Fix:** Add `Cache-Control: no-cache` to the HTML page responses in
+`server.py` (static assets can stay cacheable).
+**Effort:** S · **Priority:** P2 (before shipping any mid-week fix to candidates)
+
+### Add a favicon
+**What:** `/favicon.ico` 404s for logged-in users — one console error per tab.
+**Why:** Cosmetic, but it's the only recurring console 404 and shows up in
+every QA console sweep as noise.
+**Effort:** S · **Priority:** P3
