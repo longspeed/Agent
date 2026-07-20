@@ -443,8 +443,15 @@
       }
       await Promise.all([loadReviews(), loadCampaigns()]);
     } catch (e) {
-      // Auto-poll failures (e.g. hitting the rate limit) stay silent; the
-      // manual button still surfaces errors via setLoading's disabled state.
+      // Auto-poll failures (e.g. hitting the rate limit) stay silent, but a
+      // manual click must say why nothing happened — otherwise a dead button
+      // reads as a broken app.
+      if (showLoading) {
+        const errEl = document.getElementById('send-result');
+        errEl.classList.remove('hidden');
+        errEl.style.color = 'var(--accent)';
+        errEl.textContent = e.message || "Couldn't check for replies.";
+      }
     } finally {
       if (showLoading) setLoading(btn, false);
       checkingReplies = false;
