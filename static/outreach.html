@@ -196,17 +196,20 @@
 
   let campaignsCache = [];
   let campaignPreview = null;
+  let campaignBlockedReason = null; // 409 detail (e.g. Google not connected) — shown when Send is clicked anyway
   async function loadCampaignSafety() {
     const el = document.getElementById('campaign-safety');
     try {
       const res = await fetch('/api/outreach/campaigns/preview');
       if (res.status === 409) {
         const detail = (await res.json()).detail || 'Connect your Google account to get started.';
+        campaignBlockedReason = detail;
         el.style.color = 'var(--text-secondary)';
         el.innerHTML = `${esc(detail)} <a href="/settings" style="color:var(--accent);">Go to Settings</a>`;
         return;
       }
       if (!res.ok) throw new Error('Could not load campaign safety');
+      campaignBlockedReason = null;
       campaignPreview = await res.json();
       el.style.color = 'var(--text-secondary)';
       el.textContent = `${campaignPreview.eligible} recipient${campaignPreview.eligible === 1 ? '' : 's'} can send today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
@@ -381,7 +384,9 @@
     if (sendCount === 0) {
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--text-secondary)';
-      resultEl.textContent = 'No pending contacts are available to send today.';
+      // A blocked preview (Google not connected, no sheet picked) is not the
+      // same as an empty sheet — say the real reason.
+      resultEl.textContent = campaignBlockedReason || 'No pending contacts are available to send today.';
       return;
     }
     if (!confirm(`Send a real outreach email to ${sendCount} contact${sendCount === 1 ? '' : 's'}? This batch is capped at ${campaignPreview.daily_limit} emails per inbox in 24 hours.`)) return;
