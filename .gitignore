@@ -19,5 +19,9 @@ __pycache__/
 node_modules/
 .gstack/
 
+# throwaway QA/design screenshots from the landing-page builds
+landing/shots/
+site/shots/
+
 # local-only tooling (separate repo, not part of this project)
 CLIProxyAPI/

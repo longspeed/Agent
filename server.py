@@ -35,10 +35,14 @@ PUBLIC_PATHS = {"/login", "/signup", "/logout", "/auth/google/login", "/auth/goo
 
 @app.middleware("http")
 async def require_auth(request: Request, call_next):
-    if request.url.path in PUBLIC_PATHS:
+    if request.url.path in PUBLIC_PATHS or request.url.path.startswith("/static/landing/"):
         return await call_next(request)
     account_id = auth.verify_session_token(request.cookies.get(auth.COOKIE_NAME))
     if not account_id:
+        if request.url.path == "/":
+            # Logged-out visitors see the marketing landing page; the app
+            # home (agents) stays behind auth.
+            return FileResponse(STATIC_DIR / "landing" / "index.html")
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return RedirectResponse(f"/login?next={request.url.path}")
