@@ -1,4 +1,5 @@
 import os
+import posixpath
 import sys
 import threading
 import uuid
@@ -33,9 +34,18 @@ STATIC_DIR = ROOT / "static"
 PUBLIC_PATHS = {"/login", "/signup", "/logout", "/auth/google/login", "/auth/google/callback"}
 
 
+def _is_public_landing_asset(path: str) -> bool:
+    # The marketing landing bundle under /static/landing/ is public. Normalize
+    # first: without this, "/static/landing/../outreach.html" starts with the
+    # prefix, skips auth, and StaticFiles then resolves the "../" back into an
+    # auth-gated page template. normpath collapses the traversal so only paths
+    # that genuinely live under /static/landing/ get the bypass.
+    return posixpath.normpath(path).startswith("/static/landing/")
+
+
 @app.middleware("http")
 async def require_auth(request: Request, call_next):
-    if request.url.path in PUBLIC_PATHS or request.url.path.startswith("/static/landing/"):
+    if request.url.path in PUBLIC_PATHS or _is_public_landing_asset(request.url.path):
         return await call_next(request)
     account_id = auth.verify_session_token(request.cookies.get(auth.COOKIE_NAME))
     if not account_id:

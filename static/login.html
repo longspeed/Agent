@@ -87,7 +87,11 @@
   const form = document.getElementById('login-form');
   const errorEl = document.getElementById('login-error');
   const submitBtn = form.querySelector('button[type=submit]');
-  const next = new URLSearchParams(window.location.search).get('next') || '/';
+  // Only honor same-site absolute paths. Reject "//evil.com", "https://…",
+  // and "\\evil.com" so a crafted /login?next=… link can't redirect a
+  // freshly-authenticated user off to a phishing page.
+  const rawNext = new URLSearchParams(window.location.search).get('next') || '/';
+  const next = (/^\/[^/\\]/.test(rawNext) || rawNext === '/') ? rawNext : '/';
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
