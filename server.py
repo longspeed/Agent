@@ -133,7 +133,10 @@ def leads_page():
 
 @app.get("/settings")
 def settings_page():
-    return FileResponse(STATIC_DIR / "settings.html")
+    # React build (app/, output to static/app/) -- first page converted from
+    # the old hand-written static/settings.html, which stays on disk
+    # unreferenced as a rollback/diff reference during the migration.
+    return FileResponse(STATIC_DIR / "app/settings.html")
 
 
 @app.get("/login")
