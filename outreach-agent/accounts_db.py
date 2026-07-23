@@ -13,6 +13,17 @@ from config import SUPABASE_URL, SUPABASE_SECRET_KEY, APP_SECRET_KEY
 ACCOUNTS_TABLE = "accounts"
 USAGE_TABLE = "usage_events"
 
+
+class AccountLinkBlocked(Exception):
+    """A "Sign in with Google" identity matched an existing account that was
+    created with a password, whose email was never verified. Auto-merging the
+    two would be an account-takeover primitive: an attacker who pre-registers
+    victim@corp.com with a password they know gets the victim silently welded
+    into that account the first time the victim uses Google SSO -- and the
+    attacker keeps the password. Refuse the auto-merge and make the user prove
+    ownership by signing in with their password instead. Raised by
+    link_or_create_google_account; the callback turns it into a redirect."""
+
 # Settings a customer may edit about themselves via the API.
 EDITABLE_SETTINGS = (
     "sender_name",
@@ -76,14 +87,25 @@ def get_account_by_google_id(google_id: str) -> dict | None:
 
 def link_or_create_google_account(email: str, google_id: str) -> dict:
     """Signs in with a Google identity: reuses an account already linked to
-    this Google id, links it to an existing password account with the same
-    (verified) email, or creates a fresh password-less account."""
+    this Google id, links it to an existing *password-less* account with the
+    same email, or creates a fresh password-less account.
+
+    Raises AccountLinkBlocked if the email already belongs to a password
+    account -- that email was never verified, so silently adopting it would
+    let a pre-registered password account hijack the Google identity (and
+    hand the attacker any Gmail token the victim later connects). The user
+    must sign in with their password on that account instead."""
     existing = get_account_by_google_id(google_id)
     if existing:
         return existing
 
     by_email = get_account_by_email(email)
     if by_email:
+        if by_email.get("password_hash"):
+            raise AccountLinkBlocked(email)
+        # No password on the matched account (it was itself created via Google,
+        # or is otherwise password-less) -- there is nothing to hijack, so it's
+        # safe to attach this google_id.
         result = (
             _get_client().table(ACCOUNTS_TABLE)
             .update({"google_id": google_id}).eq("id", by_email["id"]).execute()

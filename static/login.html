@@ -123,7 +123,9 @@
 
   const googleError = new URLSearchParams(window.location.search).get('google_error');
   if (googleError) {
-    errorEl.textContent = `Google sign-in failed (${googleError}). Try again.`;
+    errorEl.textContent = googleError === 'account_exists'
+      ? 'An account with this email already exists. Sign in with your email and password below.'
+      : `Google sign-in failed (${googleError}). Try again.`;
     errorEl.classList.remove('hidden');
     history.replaceState(null, '', '/login');
   }
