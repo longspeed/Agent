@@ -515,9 +515,12 @@ export function GettingStartedPage() {
               <Table
                 head={['Limit', 'Value']}
                 rows={[
-                  ['Outreach emails', plan ? `${plan.daily_send_limit} per 24 hours` : 'per 24 hours'],
+                  // Falls back to wording rather than a number: /api/plan needs a
+                  // session, and this page is public, so a logged-out reader
+                  // always lands here.
+                  ['Outreach emails', plan ? `${plan.daily_send_limit} per 24 hours` : 'Capped per 24 hours (sign in to see yours)'],
                   ['Send batches', '5 per hour'],
-                  ['Lead searches', plan ? `${plan.lead_searches_per_hour} per hour` : 'per hour'],
+                  ['Lead searches', plan ? `${plan.lead_searches_per_hour} per hour` : 'Capped per hour (sign in to see yours)'],
                   ['Leads per search', '1 to 25'],
                   ['Reply checks', '45 per hour'],
                   ['Signup attempts', '5 per hour per IP'],

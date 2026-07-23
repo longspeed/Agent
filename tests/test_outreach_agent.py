@@ -1062,6 +1062,56 @@ def test_sheet_template_is_valid_xlsx_with_leads_tab_first():
     assert sheet_template.NOTES_SHEET in tabs
 
 
+# --------------------------------------------------------- public asset gating
+
+def test_public_asset_allows_landing_and_app_bundles():
+    import server
+    assert server._is_public_asset("/static/landing/index.html")
+    assert server._is_public_asset("/static/app/assets/settings-abc123.js")
+
+
+def test_public_asset_refuses_traversal_out_of_a_public_prefix():
+    """The public prefixes grew to cover the guide's React bundle, so the
+    normpath guard has to hold on both. Without it StaticFiles resolves the
+    '..' back into an auth-gated page template and serves it unauthenticated."""
+    import server
+    for path in (
+        "/static/landing/../outreach.html",
+        "/static/app/assets/../settings.html",
+        "/static/app/assets/../../outreach.html",
+        "/static/app/assets/../../../server.py",
+    ):
+        assert not server._is_public_asset(path), path
+
+
+def test_public_asset_does_not_expose_app_page_shells():
+    """Only assets/ is public. The page templates themselves stay gated, so
+    widening the prefix cannot hand out a rendered app page."""
+    import server
+    assert not server._is_public_asset("/static/app/settings.html")
+    assert not server._is_public_asset("/static/outreach.html")
+
+
+def test_public_paths_cover_every_link_the_marketing_site_exposes():
+    """Each of these is linked from the landing footer or nav, so a logged-out
+    prospect has to reach it. /privacy additionally gates Google's OAuth
+    verification, which gates billing."""
+    import server
+    for path in ("/privacy", "/terms", "/acceptable-use", "/dpa", "/security",
+                 "/getting-started", "/static/legal.css"):
+        assert path in server.PUBLIC_PATHS, path
+
+
+def test_api_docs_are_closed_by_default():
+    """Left on, /docs and /openapi.json hand every tenant a map of the whole
+    API. They are opt-in via ENABLE_API_DOCS."""
+    import server
+    if not server._API_DOCS:
+        assert server.app.openapi_url is None
+        assert server.app.docs_url is None
+        assert server.app.redoc_url is None
+
+
 # ---------------------------------------------------------------------- runner
 
 def main():

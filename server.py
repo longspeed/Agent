@@ -63,19 +63,31 @@ PUBLIC_PATHS |= set(LEGAL_PAGES)
 # Without it a logged-out visitor gets the markup and no styling.
 PUBLIC_PATHS.add("/static/legal.css")
 
+# The getting-started guide is the product documentation the marketing site
+# links to as "Docs", so a prospect has to be able to read it before signing up.
+PUBLIC_PATHS.add("/getting-started")
 
-def _is_public_landing_asset(path: str) -> bool:
-    # The marketing landing bundle under /static/landing/ is public. Normalize
-    # first: without this, "/static/landing/../outreach.html" starts with the
-    # prefix, skips auth, and StaticFiles then resolves the "../" back into an
+# Prefixes served without auth. /static/landing/ is the marketing bundle;
+# /static/app/assets/ holds the compiled React chunks the guide needs (it shares
+# them with Settings). Shipping compiled frontend code to anonymous visitors is
+# how every SPA works and leaks nothing: the bundles carry UI code and API paths,
+# and every one of those APIs is independently auth-gated. No page template is
+# reachable this way, only assets/.
+_PUBLIC_ASSET_PREFIXES = ("/static/landing/", "/static/app/assets/")
+
+
+def _is_public_asset(path: str) -> bool:
+    # Normalize first: without this, "/static/landing/../outreach.html" starts
+    # with the prefix, skips auth, and StaticFiles then resolves the "../" into an
     # auth-gated page template. normpath collapses the traversal so only paths
-    # that genuinely live under /static/landing/ get the bypass.
-    return posixpath.normpath(path).startswith("/static/landing/")
+    # that genuinely live under a public prefix get the bypass.
+    normalized = posixpath.normpath(path)
+    return normalized.startswith(_PUBLIC_ASSET_PREFIXES)
 
 
 @app.middleware("http")
 async def require_auth(request: Request, call_next):
-    if request.url.path in PUBLIC_PATHS or _is_public_landing_asset(request.url.path):
+    if request.url.path in PUBLIC_PATHS or _is_public_asset(request.url.path):
         return await call_next(request)
     account_id = auth.verify_session_token(request.cookies.get(auth.COOKIE_NAME))
     if not account_id:
