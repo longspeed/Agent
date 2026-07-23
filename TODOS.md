@@ -125,12 +125,55 @@ account.~~ Landed from the stash into `server.py` (`_accounts_sending` guard),
 plus per-row Sent marking in `send_outreach.py` so a crash mid-batch can't
 cause re-sends either. Both duplication paths closed.
 
+### Security hardening pass — done 2026-07-22
+**What:** Five fixes from a backend review, all with tests
+(`tests/test_outreach_agent.py`, +5 cases → 61 total):
+1. **Rate limiter was a no-op behind the tunnel.** `/login` + `/signup`
+   keyed on `request.client.host`, which is `127.0.0.1` for every visitor
+   behind cloudflared — so the per-IP limits were global (one attacker's 10
+   login attempts locked out every customer). Now keyed on
+   `_client_ip()` → `CF-Connecting-IP` (authoritative at Cloudflare's edge),
+   falling back to the socket peer for local/dev. `X-Forwarded-For` is
+   deliberately not trusted (spoofable without a known proxy chain). This
+   corrects the "rate limiting done 2026-07-17" claim below, which was only
+   ever verified on localhost.
+2. **Pre-registration account takeover via Google SSO.** `signup` never
+   verified emails, and `link_or_create_google_account` silently merged a
+   Google identity into any existing account with the same email. An attacker
+   who pre-registered `victim@corp.com` with a password got the victim welded
+   into that account on their first Google sign-in — attacker keeps the
+   password, gains any Gmail token the victim later connects. Now the merge
+   refuses a password-holding account (`AccountLinkBlocked` → `/login?
+   google_error=account_exists`, "sign in with your password"); only
+   password-less accounts auto-link.
+3. **Job errors leaked internals.** `_run_job` returned `str(e)` for every
+   exception. Now only `RuntimeError` (the app's user-safe message convention)
+   is surfaced; anything else is logged server-side and returns a generic
+   message.
+4. **`ratelimit._hits` grew unbounded** — one-off IP keys never evicted. Added
+   an opportunistic sweep (drops keys whose newest hit predates the largest
+   window in use).
+5. **`tavily_search` docstring lied** ("returns [] on failure" but raised).
+   Now genuinely returns `[]` on a request/JSON failure (so one flaky query
+   doesn't abort a 3-query lead search) and meters only on success; still
+   raises loudly for the missing-key config error.
+**Still open (follow-ups, NOT done here):**
+- Email verification on signup + password reset flow (needs a transactional
+  email provider — unchanged from below). The takeover vector is closed
+  without it, but verified signup is still the proper long-term fix and would
+  let password users also enable Google SSO (currently they're told to use
+  their password).
+- Authenticated "link Google identity to my existing account" flow, so a
+  password user can opt into SSO after proving ownership.
+
 ### Auth hardening
-**What:** ~~Rate limiting on `/login` and `/signup`~~ **done 2026-07-17** — see
-below. Still open: email verification on signup, password reset flow.
+**What:** ~~Rate limiting on `/login` and `/signup`~~ **done 2026-07-17**
+(proxy-IP correctness fixed 2026-07-22, see the security pass above). Still
+open: email verification on signup, password reset flow.
 **Why:** Currently anyone can mass-create accounts with an unverified email, and
 there's no way to recover a lost password. Fine for one trusted customer, not
-fine once signup is public.
+fine once signup is public. (The account-*takeover* consequence of unverified
+signup was closed 2026-07-22; the mass-creation/abuse vector remains.)
 **Pros:** Closes remaining abuse/support-load vectors.
 **Cons:** Real implementation work — email verification and password reset both
 need a transactional email path (provider not chosen).
@@ -294,4 +337,68 @@ page until a hard refresh — right when a stale bug matters most.
 **What:** `/favicon.ico` 404s for logged-in users — one console error per tab.
 **Why:** Cosmetic, but it's the only recurring console 404 and shows up in
 every QA console sweep as noise.
+**Effort:** S · **Priority:** P3
+
+## From /qa run (2026-07-23, branch feat/lead-sheet-template-and-guide)
+
+Fixed in that run and not repeated here: the five missing legal pages
+(`/privacy`, `/terms`, `/acceptable-use`, `/dpa`, `/security`), `/docs` serving
+Swagger UI, and the raw-JSON 404. Report:
+`.gstack/qa-reports/qa-report-localhost-8000-2026-07-23.md`.
+
+### Decide the LLM route that sees prospect reply text
+**What:** `agent.draft_reply()` sends the prospect's own message to OpenRouter,
+and `config.OPENROUTER_MODEL` defaults to `openai/gpt-oss-20b:free`.
+**Why:** Free inference routes commonly permit the provider to retain or train
+on submitted prompts. The prompt here is a third party's private email, which
+the customer is data controller for. It is the first thing a serious vendor
+review will ask about, and the new `/privacy` and `/dpa` pages now disclose it.
+**Fix:** either pin a paid model carrying a no-training term, or keep the free
+route and state the tradeoff as a deliberate product position.
+**Context:** `outreach-agent/agent.py:173`, `outreach-agent/config.py:22`.
+**Effort:** S (human) → S (CC + gstack) · **Priority:** P2
+**Depends on:** Nothing; it is a decision, not a build.
+
+### Legal pages need a lawyer's review before charging anyone
+**What:** `/privacy`, `/terms`, `/acceptable-use` and `/security` were written
+from the codebase and are factually accurate, but are marked "draft pending
+legal review" on the page itself. `/dpa` deliberately publishes no contract
+text, since a DPA is a signed Article 28 agreement rather than a notice.
+**Why:** They unblock the broken links and Google's OAuth verification
+requirement today. They are not a substitute for drafted terms once money
+changes hands, and `/terms` in particular lacks governing law, jurisdiction,
+and entity-appropriate warranty disclaimers.
+**Fix:** have a lawyer produce the real versions; keep the sub-processor table
+in `/dpa` in sync with the code when a provider is added or removed.
+**Context:** `static/privacy.html`, `terms.html`, `acceptable-use.html`,
+`dpa.html`, `security.html`.
+**Effort:** M (human, mostly external) · **Priority:** P2 (before billing)
+**Depends on:** Billing work; the two land together.
+
+### Session for a deleted account 500s instead of clearing the cookie
+**What:** A validly signed session whose `account_id` no longer resolves raises
+an unhandled `postgrest.APIError` → 500.
+**Why:** Not reachable today: tokens are HMAC-signed, so the id cannot be chosen
+without `APP_SECRET_KEY`. It becomes reachable the day account deletion ships,
+or after any accounts-table migration, where the right behaviour is to clear the
+cookie and redirect to `/login`.
+**Effort:** S · **Priority:** P3
+**Depends on:** Pairs naturally with account deletion.
+
+### Legacy pages still load Tailwind from the CDN
+**What:** `/login` (and the other not-yet-migrated pages) pull
+`cdn.tailwindcss.com`, which compiles styles in the browser on every load.
+**Why:** Puts a third-party origin on the critical render path of the sign-in
+page; if the CDN is slow or blocked, sign-in renders unstyled. The React pages
+under `static/app/` already compile Tailwind at build time.
+**Fix:** falls out of the React migration already in progress. Tracked so it is
+not mistaken for a regression in the meantime.
+**Effort:** absorbed by the migration · **Priority:** P3
+**Depends on:** The page-by-page React conversion.
+
+### Delete the QA account
+**What:** `/qa` created `qa-2026-07-23@example.com` to test the logged-in pages.
+It has no Google token and no sheet, so it can send nothing.
+**Why:** It is a real row in the accounts table, and self-service account
+deletion does not exist yet, so it needs removing by hand.
 **Effort:** S · **Priority:** P3
