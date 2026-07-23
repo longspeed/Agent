@@ -28,7 +28,20 @@ import sheets
 import usage
 import watch_replies
 
-app = FastAPI()
+# FastAPI's auto-docs are off unless explicitly enabled. Left on, /docs, /redoc
+# and /openapi.json hand every logged-in tenant an interactive map of all 33
+# endpoints with request/response schemas. Per-endpoint auth still applies, so
+# this is disclosure rather than a hole, but a multi-tenant app has no reason to
+# publish its own blueprint. /docs also collided with the marketing site's
+# "Docs" link, so customers clicking for help landed in Swagger UI.
+# Set ENABLE_API_DOCS=1 locally when you want them.
+_API_DOCS = os.environ.get("ENABLE_API_DOCS", "").strip().lower() in ("1", "true", "yes")
+
+app = FastAPI(
+    docs_url="/docs" if _API_DOCS else None,
+    redoc_url="/redoc" if _API_DOCS else None,
+    openapi_url="/openapi.json" if _API_DOCS else None,
+)
 
 STATIC_DIR = ROOT / "static"
 
@@ -59,6 +72,16 @@ async def require_auth(request: Request, call_next):
         return RedirectResponse(f"/login?next={request.url.path}")
     request.state.account_id = account_id
     return await call_next(request)
+
+
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    # Browsers get a page; API clients keep the JSON body they parse. Without
+    # the split, a mistyped URL showed a raw {"detail":"Not Found"} to a person.
+    wants_html = "text/html" in request.headers.get("accept", "")
+    if request.url.path.startswith("/api/") or not wants_html:
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    return FileResponse(STATIC_DIR / "404.html", status_code=404)
 
 
 @app.exception_handler(RuntimeError)

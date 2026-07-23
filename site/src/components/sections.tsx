@@ -270,7 +270,7 @@ const FOOTER_COLS: { title: string; links: { label: string; href: string }[] }[]
       { label: 'How it works', href: '#how-it-works' },
       { label: 'Pricing', href: '#pricing' },
       { label: 'Security', href: '#security' },
-      { label: 'Docs', href: '/docs' },
+      { label: 'Docs', href: '/getting-started' },
     ],
   },
   {
