@@ -1,0 +1,123 @@
+/* Shared shell for the public legal + security pages (/privacy, /terms,
+   /security, /acceptable-use, /dpa). Tokens match the app pages so a visitor
+   who lands here from the marketing site does not feel handed off elsewhere. */
+:root {
+  --bg: #0f0e0c;
+  --bg-elevated: #17150f;
+  --bg-floating: #1e1b14;
+  --border: #2a2620;
+  --border-hover: #3a342a;
+  --text: #f5f1e8;
+  --text-secondary: #a69c8a;
+  --text-muted: #726b5a;
+  --accent: #e8622c;
+  --accent-hover: #f4753e;
+  --accent-dim: rgba(232, 98, 44, 0.12);
+  --steel: #4c86a8;
+  --gold: #d8a93b;
+}
+
+html { background: var(--bg); }
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+}
+
+.font-display { font-family: 'Fraunces', Georgia, serif; }
+
+.noise {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.035;
+}
+
+.wrap { position: relative; max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+
+.topbar {
+  position: relative;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  border-radius: 4px;
+  transition: color 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.back:hover { color: var(--text); }
+.back:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-dim); }
+
+h1 { font-size: 1.875rem; letter-spacing: -0.02em; margin: 1.5rem 0 0.5rem; }
+h2 { font-size: 1.125rem; letter-spacing: -0.01em; margin: 2.25rem 0 0.75rem; }
+h3 { font-size: 0.95rem; font-weight: 600; margin: 1.5rem 0 0.5rem; color: var(--text); }
+
+p, li { font-size: 0.9rem; line-height: 1.7; color: var(--text-secondary); }
+p { margin: 0 0 0.9rem; }
+ul { margin: 0 0 1rem; padding-left: 1.1rem; }
+li { margin-bottom: 0.4rem; }
+li::marker { color: var(--text-muted); }
+strong { color: var(--text); font-weight: 600; }
+a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+a:hover { color: var(--accent-hover); }
+
+.updated { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 2rem; }
+
+.note {
+  background: var(--bg-floating);
+  border-left: 2px solid var(--steel);
+  border-radius: 0.5rem;
+  padding: 0.9rem 1rem;
+  margin: 0 0 1.25rem;
+}
+.note.warn { border-left-color: var(--gold); }
+.note p:last-child { margin-bottom: 0; }
+
+table { width: 100%; border-collapse: collapse; margin: 0 0 1.25rem; font-size: 0.85rem; }
+th, td {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  color: var(--text-secondary);
+}
+th { color: var(--text); font-weight: 500; background: var(--bg-floating); white-space: nowrap; }
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  margin: 0 0 1.25rem;
+}
+.table-scroll table { margin: 0; }
+/* The wrapper already draws the bottom edge; without this the last row's own
+   border sits directly on it and reads as a double rule. */
+.table-scroll tr:last-child td { border-bottom: none; }
+
+footer.legal-footer {
+  border-top: 1px solid var(--border);
+  margin-top: 3rem;
+  padding-top: 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.8rem;
+}
+footer.legal-footer a { color: var(--text-muted); text-decoration: none; }
+footer.legal-footer a:hover { color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .back { transition: none; }
+}

@@ -47,6 +47,22 @@ STATIC_DIR = ROOT / "static"
 
 PUBLIC_PATHS = {"/login", "/signup", "/logout", "/auth/google/login", "/auth/google/callback"}
 
+# Reachable logged out on purpose. These are linked from the marketing footer,
+# so a prospect evaluating the product reads them before they have an account.
+# Google's OAuth verification also requires a publicly resolvable privacy policy.
+LEGAL_PAGES = {
+    "/privacy": "privacy.html",
+    "/terms": "terms.html",
+    "/acceptable-use": "acceptable-use.html",
+    "/dpa": "dpa.html",
+    "/security": "security.html",
+}
+PUBLIC_PATHS |= set(LEGAL_PAGES)
+# The stylesheet those pages share. Exact-match, so unlike a prefix rule it
+# cannot be walked ("/static/legal.css/../outreach.html" is simply not equal).
+# Without it a logged-out visitor gets the markup and no styling.
+PUBLIC_PATHS.add("/static/legal.css")
+
 
 def _is_public_landing_asset(path: str) -> bool:
     # The marketing landing bundle under /static/landing/ is public. Normalize
@@ -179,6 +195,16 @@ def settings_page():
     # the old hand-written static/settings.html, which stays on disk
     # unreferenced as a rollback/diff reference during the migration.
     return FileResponse(STATIC_DIR / "app/settings.html")
+
+
+def _legal_page(filename: str):
+    return lambda: FileResponse(STATIC_DIR / filename)
+
+
+for _path, _file in LEGAL_PAGES.items():
+    # Registered in a loop rather than five near-identical handlers. Each is a
+    # plain static page; the middleware already lets them through logged out.
+    app.get(_path)(_legal_page(_file))
 
 
 @app.get("/getting-started")

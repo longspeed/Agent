@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Security — Agent Hub</title>
+<link rel="icon" href="/static/landing/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/legal.css">
+</head>
+<body>
+<div class="noise" style="position:fixed;inset:0;pointer-events:none;"></div>
+
+<div class="topbar">
+  <a class="back" href="/">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    Agent Hub
+  </a>
+</div>
+
+<main class="wrap">
+  <h1 class="font-display">Security</h1>
+  <p class="updated">Last updated 23 July 2026</p>
+
+  <div class="note warn">
+    <p><strong>Written from the codebase, not from a certification.</strong>
+    Agent Hub is early-stage software. This page states what is actually
+    implemented, including the gaps. It is not a SOC 2 report and does not claim
+    to be one.</p>
+  </div>
+
+  <h2>Accounts and sessions</h2>
+  <ul>
+    <li>Passwords are hashed with <strong>PBKDF2-SHA256, 260,000 iterations</strong>,
+    with a unique random salt per password. Verification is constant-time.</li>
+    <li>Sign in with Google is supported and uses an identity-only scope,
+    separate from the Gmail and Sheets permissions.</li>
+    <li>Sessions are a signed token in an <strong>HttpOnly</strong> cookie with
+    <code>SameSite=lax</code>, marked <code>Secure</code> in production, expiring
+    after 14 days. The signature is HMAC-SHA256, so the account id inside it
+    cannot be altered.</li>
+    <li>Sign-in is limited to 10 attempts per 5 minutes per IP; sign-up to 5 per
+    hour. Behind a proxy the real client IP is read from a trusted header rather
+    than the socket, so one visitor cannot exhaust everyone's limit.</li>
+  </ul>
+
+  <h2>Your Google connection</h2>
+  <ul>
+    <li>The OAuth token is <strong>encrypted before it is stored</strong>
+    (Fernet, AES) and is never written to disk in plain text.</li>
+    <li>The OAuth state parameter is signed and short-lived, so an attacker
+    cannot attach their Google account to your session.</li>
+    <li>Disconnecting from Settings erases the stored token immediately.</li>
+    <li>Mail access is used only to send your outreach and to read the threads
+    Agent Hub started. The rest of your mailbox is not scanned.</li>
+  </ul>
+
+  <h2>Tenant isolation</h2>
+  <p>Every table carries an account id, every query filters on it, and
+  row-level security is enabled on top. Background jobs are visible only to the
+  account that started them. A row index is re-verified against the expected
+  email address before any status is written, so a sheet edited mid-run cannot
+  cause a write against the wrong person.</p>
+
+  <h2>Guardrails on sending</h2>
+  <ul>
+    <li>Nothing sends without an explicit confirmation.</li>
+    <li>A row is only eligible when you have approved it by clearing its Status.</li>
+    <li>Sending is capped per account per 24 hours, and to 5 batches per hour.</li>
+    <li>Agent Hub refuses to write into your sheet at all until row 1 carries
+    the full nine-column header. That is your explicit consent that those
+    columns belong to the app rather than to your own notes.</li>
+    <li>No reply is sent to a prospect until you have read and approved it.</li>
+  </ul>
+
+  <h2>Known gaps</h2>
+  <p>Stated openly, because a security page that lists only strengths is not
+  worth reading:</p>
+  <ul>
+    <li>Email verification on sign-up is not implemented yet.</li>
+    <li>Password reset is not implemented yet. Contact support if locked out.</li>
+    <li>Self-service account deletion is not implemented yet.</li>
+    <li>Reply drafting sends prospect message text to a third-party language
+    model provider. See the <a href="/privacy">privacy policy</a>.</li>
+    <li>Agent Hub has not completed Google's OAuth verification review, so
+    Gmail access is currently limited to allow-listed test accounts.</li>
+  </ul>
+
+  <h2>Reporting a vulnerability</h2>
+  <p>Email <a href="mailto:support@agenthub.app">support@agenthub.app</a> with
+  enough detail to reproduce it. We will acknowledge, and we will not pursue
+  anyone who reports in good faith and does not access other people's data.</p>
+
+  <footer class="legal-footer">
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="/acceptable-use">Acceptable Use</a>
+    <a href="/dpa">Data Processing</a>
+    <a href="/security">Security</a>
+  </footer>
+</main>
+</body>
+</html>

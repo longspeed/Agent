@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — Agent Hub</title>
+<link rel="icon" href="/static/landing/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/legal.css">
+</head>
+<body>
+<div class="noise" style="position:fixed;inset:0;pointer-events:none;"></div>
+
+<div class="topbar">
+  <a class="back" href="/">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    Agent Hub
+  </a>
+</div>
+
+<main class="wrap">
+  <h1 class="font-display">Privacy Policy</h1>
+  <p class="updated">Last updated 23 July 2026</p>
+
+  <div class="note warn">
+    <p><strong>Draft pending legal review.</strong> This document describes
+    accurately what the software does with data today, written from the
+    codebase. It has not been reviewed by a lawyer. Do not rely on it as legal
+    advice or as a finished compliance artifact.</p>
+  </div>
+
+  <p>Agent Hub sends outreach email from your own Gmail account and tracks
+  replies in your own Google Sheet. This policy explains what we store, what we
+  send to other companies, and what we never do.</p>
+
+  <p>Two groups of people appear in this policy. <strong>You</strong> are the
+  Agent Hub customer. <strong>Your prospects</strong> are the people you email.
+  For your prospects' data, you are the controller and Agent Hub is a processor
+  acting on your instructions.</p>
+
+  <h2>What we store about you</h2>
+
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Data</th><th>Why</th><th>How it is held</th></tr></thead>
+    <tbody>
+      <tr><td>Email address</td><td>Identifies your account</td><td>Plain text</td></tr>
+      <tr><td>Password</td><td>Sign-in, if you did not use Google</td><td>Hashed with PBKDF2-SHA256, 260,000 iterations, unique per-password salt. Never stored or logged in plain text and not recoverable by us</td></tr>
+      <tr><td>Google OAuth token</td><td>Sending mail and reading your sheet on your behalf</td><td>Encrypted at rest (Fernet, AES) before it reaches the database</td></tr>
+      <tr><td>Your settings</td><td>Sender name, meeting purpose, calendar link, notification address, Sheet ID</td><td>Plain text</td></tr>
+      <tr><td>Usage counters</td><td>Metering LLM tokens and searches</td><td>Event kind, quantity, and a short detail string capped at 200 characters</td></tr>
+      <tr><td>Reply drafts</td><td>The review queue you approve before anything sends</td><td>Includes the prospect's reply text and the drafted response</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>Everything is stored in Supabase (PostgreSQL). Every table is scoped by
+  account and protected with row-level security, so one customer's queries
+  cannot return another customer's rows.</p>
+
+  <h2>What we do not store</h2>
+  <ul>
+    <li><strong>Your lead list.</strong> It stays in your Google Sheet. We read
+    it when a job runs and write status back. We keep no copy.</li>
+    <li><strong>Your mailbox.</strong> We read only the threads Agent Hub
+    itself started, to detect replies. We do not scan the rest of your inbox.</li>
+    <li><strong>Payment card details.</strong> Billing is not implemented yet.
+    When it is, a payment provider will handle card data and we will not see it.</li>
+  </ul>
+
+  <h2>Who else receives data</h2>
+
+  <p>Running the product means passing some data to other companies. These are
+  all of them:</p>
+
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Company</th><th>What reaches them</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Google</td><td>Your OAuth token, the contents of your lead sheet, and the mail you send and receive through Agent Hub</td><td>It is your Gmail and your Sheet</td></tr>
+      <tr><td>Supabase</td><td>Everything in the table above</td><td>Database hosting</td></tr>
+      <tr><td>OpenRouter</td><td>Lead name and company, your meeting purpose, and <strong>the text of replies your prospects send you</strong></td><td>Writing the outreach email and drafting replies</td></tr>
+      <tr><td>Tavily</td><td>The search description you type on the Leads page</td><td>Web search, only when you use the lead sourcing agent</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <p><strong>Worth reading twice.</strong> When you use the reply feature, the
+    message your prospect wrote is sent to a third-party language model provider
+    so a response can be drafted. If that is not acceptable for your industry,
+    do not use reply drafting. The outreach and lead sheet features work without it.</p>
+  </div>
+
+  <p>We do not sell data, and we do not share it with advertisers or data
+  brokers.</p>
+
+  <h2>Your prospects' data</h2>
+
+  <p>You choose who goes in your sheet. Agent Hub emails only rows you have
+  approved, and drafts only replies you read before sending. If a prospect asks
+  you to stop contacting them, honour it: remove or mark the row in your sheet.
+  Agent Hub does not currently maintain a central suppression list, so that
+  step is yours.</p>
+
+  <h2>Retention and deletion</h2>
+
+  <p>Account data is kept while your account exists. You can disconnect Google
+  at any time from Settings, which erases the stored token immediately.</p>
+
+  <div class="note warn">
+    <p><strong>Self-service account deletion is not built yet.</strong> To have
+    your account and its data erased, email
+    <a href="mailto:support@agenthub.app">support@agenthub.app</a> and we will
+    do it manually. We are stating this plainly rather than implying a button
+    that does not exist.</p>
+  </div>
+
+  <h2>Security</h2>
+
+  <p>Sessions use a signed, HttpOnly cookie that expires after 14 days.
+  Google tokens are encrypted before storage. Sign-in and sign-up are rate
+  limited. Outbound sending is capped per account per 24 hours. More detail is
+  on the <a href="/security">security page</a>.</p>
+
+  <h2>Contact</h2>
+
+  <p>Questions, requests, or corrections:
+  <a href="mailto:support@agenthub.app">support@agenthub.app</a>.</p>
+
+  <footer class="legal-footer">
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="/acceptable-use">Acceptable Use</a>
+    <a href="/dpa">Data Processing</a>
+    <a href="/security">Security</a>
+  </footer>
+</main>
+</body>
+</html>

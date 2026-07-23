@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Processing — Agent Hub</title>
+<link rel="icon" href="/static/landing/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/legal.css">
+</head>
+<body>
+<div class="noise" style="position:fixed;inset:0;pointer-events:none;"></div>
+
+<div class="topbar">
+  <a class="back" href="/">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    Agent Hub
+  </a>
+</div>
+
+<main class="wrap">
+  <h1 class="font-display">Data Processing</h1>
+  <p class="updated">Last updated 23 July 2026</p>
+
+  <div class="note warn">
+    <p><strong>There is no executed DPA published here, on purpose.</strong> A
+    Data Processing Agreement is a contract signed between two parties under
+    Article 28 GDPR, not a notice a company posts on its website. Publishing a
+    generated one would give you a document that looks binding and is not. If
+    you need a DPA in place, request one at
+    <a href="mailto:support@agenthub.app?subject=DPA%20request">support@agenthub.app</a>
+    and it will be handled as a signed agreement.</p>
+  </div>
+
+  <p>What follows is the factual information a DPA would annex, and it is
+  accurate today. Use it for your vendor review.</p>
+
+  <h2>Roles</h2>
+  <p>For the personal data of the people you contact, <strong>you are the
+  controller</strong> and <strong>Agent Hub is the processor</strong>, acting on
+  your documented instructions. You decide who is in your list and why. For your
+  own account data, Agent Hub is the controller.</p>
+
+  <h2>Subject matter and duration</h2>
+  <p>Processing lasts for as long as your account exists. Subject matter is the
+  sending of outreach email you have approved, the detection of replies to it,
+  and optionally the discovery of prospective contacts.</p>
+
+  <h2>Categories of data subject</h2>
+  <ul>
+    <li>You and any colleagues using your account</li>
+    <li>The prospects in your lead sheet</li>
+    <li>Anyone who replies to mail you sent</li>
+  </ul>
+
+  <h2>Categories of personal data</h2>
+  <ul>
+    <li>Names, business email addresses, company names</li>
+    <li>The content of outreach messages sent and replies received</li>
+    <li>For your account: email address, password hash, encrypted Google token,
+    settings, usage counters</li>
+  </ul>
+  <p>Agent Hub is not intended for special-category data. Do not put it in your
+  sheet.</p>
+
+  <h2>Sub-processors</h2>
+  <p>This is the complete list. It is derived from the code, not from memory.</p>
+
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Sub-processor</th><th>Purpose</th><th>Data reaching them</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Google (Gmail, Sheets, Drive)</td>
+        <td>Sending and reading your mail, reading and updating your sheet</td>
+        <td>Your lead sheet contents, message bodies, your OAuth token</td>
+      </tr>
+      <tr>
+        <td>Supabase</td>
+        <td>Database hosting</td>
+        <td>Account records, settings, usage events, reply review queue</td>
+      </tr>
+      <tr>
+        <td>OpenRouter</td>
+        <td>Language model inference for writing outreach and drafting replies</td>
+        <td>Lead name and company, your meeting purpose, and the text of replies your prospects send</td>
+      </tr>
+      <tr>
+        <td>Tavily</td>
+        <td>Web search, only when the lead sourcing agent is used</td>
+        <td>The search description you type</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <p><strong>Point to raise in your review:</strong> reply drafting sends the
+    message your prospect wrote to a language model provider. If that is
+    unacceptable for your data, do not use reply drafting. Outreach sending and
+    the lead sheet work without it.</p>
+  </div>
+
+  <h2>Security measures</h2>
+  <p>Summarised on the <a href="/security">security page</a>: encrypted Google
+  tokens at rest, hashed passwords, signed HttpOnly session cookies, row-level
+  security for tenant isolation, and rate limits on authentication and sending.</p>
+
+  <h2>Data subject requests</h2>
+  <p>Because your lead data lives in your own Google Sheet, most access,
+  correction, and erasure requests are actioned by you directly in the sheet.
+  For data held by Agent Hub, email
+  <a href="mailto:support@agenthub.app">support@agenthub.app</a>. Note that
+  self-service account deletion is not built yet and is handled manually.</p>
+
+  <footer class="legal-footer">
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="/acceptable-use">Acceptable Use</a>
+    <a href="/dpa">Data Processing</a>
+    <a href="/security">Security</a>
+  </footer>
+</main>
+</body>
+</html>
