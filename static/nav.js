@@ -6,20 +6,21 @@ function renderNav(breadcrumb) {
   header.className = 'sticky top-0 z-20 border-b';
   header.style.cssText = 'border-color:var(--border); background:rgba(15,14,12,0.75); backdrop-filter:blur(12px);';
 
-  const settingsLink = `<a href="/settings" class="text-xs font-medium ease-spring transition-colors duration-150 hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-muted); --tw-ring-color:var(--accent);">Settings</a>`;
-  const logoutBtn = `<button id="nav-logout-btn" class="text-xs font-medium ease-spring transition-colors duration-150 hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-muted); --tw-ring-color:var(--accent);">Log out</button>`;
+  const guideLink = `<a href="/getting-started" class="text-xs font-medium whitespace-nowrap ease-spring transition-colors duration-150 hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-muted); --tw-ring-color:var(--accent);">Guide</a>`;
+  const settingsLink = `<a href="/settings" class="text-xs font-medium whitespace-nowrap ease-spring transition-colors duration-150 hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-muted); --tw-ring-color:var(--accent);">Settings</a>`;
+  const logoutBtn = `<button id="nav-logout-btn" class="text-xs font-medium whitespace-nowrap ease-spring transition-colors duration-150 hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-muted); --tw-ring-color:var(--accent);">Log out</button>`;
 
   header.innerHTML = breadcrumb ? `
-    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-      <div class="flex items-center gap-4">
+    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between gap-3">
+      <div class="flex items-center gap-3 sm:gap-4 min-w-0">
         <a href="/" class="flex items-center gap-1.5 text-sm ease-spring transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 rounded" style="color:var(--text-secondary); --tw-ring-color:var(--accent);">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
           Agents
         </a>
         <span style="color:var(--border-hover);">/</span>
-        <span class="font-display text-base" style="letter-spacing:-0.01em;">${breadcrumb}</span>
+        <span class="font-display text-base truncate" style="letter-spacing:-0.01em;">${breadcrumb}</span>
       </div>
-      <div class="flex items-center gap-5">${settingsLink}${logoutBtn}</div>
+      <div class="flex items-center gap-3 sm:gap-5 shrink-0">${guideLink}${settingsLink}${logoutBtn}</div>
     </div>` : `
     <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
       <div class="flex items-center gap-2.5">
@@ -30,6 +31,7 @@ function renderNav(breadcrumb) {
       </div>
       <nav class="flex items-center gap-5 text-sm" style="color:var(--text-secondary);">
         <span style="color:var(--text);">Home</span>
+        ${guideLink}
         ${settingsLink}
         ${logoutBtn}
       </nav>

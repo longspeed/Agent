@@ -6,10 +6,20 @@ export function NavBar({ breadcrumb }: { breadcrumb?: string }) {
     window.location.href = '/login'
   }
 
+  const guideLink = (
+    <a
+      href="/getting-started"
+      className="text-xs font-medium whitespace-nowrap transition-colors duration-150 ease-[cubic-bezier(.22,1,.36,1)] hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded"
+      style={{ color: 'var(--color-sand)' }}
+    >
+      Guide
+    </a>
+  )
+
   const settingsLink = (
     <a
       href="/settings"
-      className="text-xs font-medium transition-colors duration-150 ease-[cubic-bezier(.22,1,.36,1)] hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded"
+      className="text-xs font-medium whitespace-nowrap transition-colors duration-150 ease-[cubic-bezier(.22,1,.36,1)] hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded"
       style={{ color: 'var(--color-sand)' }}
     >
       Settings
@@ -19,7 +29,7 @@ export function NavBar({ breadcrumb }: { breadcrumb?: string }) {
   const logoutBtn = (
     <button
       onClick={logout}
-      className="text-xs font-medium transition-colors duration-150 ease-[cubic-bezier(.22,1,.36,1)] hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded"
+      className="text-xs font-medium whitespace-nowrap transition-colors duration-150 ease-[cubic-bezier(.22,1,.36,1)] hover:text-white focus-visible:outline-none focus-visible:ring-2 rounded"
       style={{ color: 'var(--color-sand)' }}
     >
       Log out
@@ -32,11 +42,11 @@ export function NavBar({ breadcrumb }: { breadcrumb?: string }) {
       style={{ borderColor: 'var(--color-line)', background: 'rgba(15,14,12,0.75)', backdropFilter: 'blur(12px)' }}
     >
       {breadcrumb ? (
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
             <a
               href="/"
-              className="flex items-center gap-1.5 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 rounded"
+              className="flex items-center gap-1.5 text-sm whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 rounded"
               style={{ color: 'var(--color-sand)' }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -45,11 +55,12 @@ export function NavBar({ breadcrumb }: { breadcrumb?: string }) {
               Agents
             </a>
             <span style={{ color: 'var(--color-line-hover)' }}>/</span>
-            <span className="font-display text-base" style={{ letterSpacing: '-0.01em' }}>
+            <span className="font-display text-base truncate" style={{ letterSpacing: '-0.01em' }}>
               {breadcrumb}
             </span>
           </div>
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-3 sm:gap-5 shrink-0">
+            {guideLink}
             {settingsLink}
             {logoutBtn}
           </div>
@@ -68,6 +79,7 @@ export function NavBar({ breadcrumb }: { breadcrumb?: string }) {
           </div>
           <nav className="flex items-center gap-5 text-sm" style={{ color: 'var(--color-sand)' }}>
             <span style={{ color: 'var(--color-cream)' }}>Home</span>
+            {guideLink}
             {settingsLink}
             {logoutBtn}
           </nav>

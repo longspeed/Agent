@@ -21,6 +21,9 @@
   --color-steel: #4c86a8;
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-display: 'Fraunces', Georgia, serif;
+  /* The spring curve the static pages applied via a hand-written .ease-spring
+     class; as a theme token it generates the `ease-spring` utility. */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html,

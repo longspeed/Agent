@@ -18,6 +18,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         settings: resolve(__dirname, 'settings.html'),
+        'getting-started': resolve(__dirname, 'getting-started.html'),
       },
     },
   },

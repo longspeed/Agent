@@ -9,7 +9,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "outreach-agent"))
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from googleapiclient.errors import HttpError
 from pydantic import BaseModel
@@ -23,6 +23,7 @@ import leads
 import ratelimit
 import reviews_db
 import send_outreach
+import sheet_template
 import sheets
 import usage
 import watch_replies
@@ -98,6 +99,24 @@ def _secure_cookies() -> bool:
     return os.environ.get("SECURE_COOKIES", "").strip().lower() in ("1", "true", "yes")
 
 
+# Behind the Cloudflare tunnel every request reaches uvicorn from 127.0.0.1
+# (the cloudflared process), so request.client.host collapses every visitor
+# into one bucket -- making the per-IP rate limits on /login and /signup
+# global. Anyone could then lock every customer out with 10 login attempts.
+# Cloudflare's edge sets CF-Connecting-IP to the real client IP and overwrites
+# any value the client tries to send, so it is authoritative here. Fall back
+# to the socket peer for local/dev where the header is absent (matching the
+# pre-tunnel behavior, so tests that don't set the header are unaffected).
+# X-Forwarded-For is deliberately NOT trusted: without a known proxy chain it
+# is client-spoofable, which would let an attacker bypass the limiter entirely
+# by rotating fake IPs -- strictly worse than the shared-bucket bug.
+def _client_ip(request: Request) -> str:
+    cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+    if cf_ip:
+        return cf_ip
+    return request.client.host if request.client else "unknown"
+
+
 def _set_session_cookie(response, account_id: str):
     response.set_cookie(
         auth.COOKIE_NAME,
@@ -139,6 +158,15 @@ def settings_page():
     return FileResponse(STATIC_DIR / "app/settings.html")
 
 
+@app.get("/getting-started")
+def getting_started_page():
+    # React build (app/, output to static/app/). Auth-gated like every other
+    # app page: its bundle lives under /static/app/, which the middleware only
+    # exempts for /static/landing/, so serving it logged-out would render a
+    # blank page. Steps 2-8 all require being signed in anyway.
+    return FileResponse(STATIC_DIR / "app/getting-started.html")
+
+
 @app.get("/login")
 def login_page():
     return FileResponse(STATIC_DIR / "login.html")
@@ -158,7 +186,7 @@ class CredentialsBody(BaseModel):
 
 @app.post("/signup", status_code=201)
 def signup_submit(request: Request, payload: CredentialsBody):
-    if not ratelimit.check(f"signup:{request.client.host}", limit=5, window_seconds=3600):
+    if not ratelimit.check(f"signup:{_client_ip(request)}", limit=5, window_seconds=3600):
         raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
     email = payload.email.strip().lower()
     if "@" not in email or "." not in email.partition("@")[2]:
@@ -174,7 +202,7 @@ def signup_submit(request: Request, payload: CredentialsBody):
 
 @app.post("/login")
 def login_submit(request: Request, payload: CredentialsBody):
-    if not ratelimit.check(f"login:{request.client.host}", limit=10, window_seconds=300):
+    if not ratelimit.check(f"login:{_client_ip(request)}", limit=10, window_seconds=300):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again in a few minutes.")
     account = accounts_db.get_account_by_email(payload.email.strip().lower())
     if account and not account.get("password_hash"):
@@ -207,7 +235,14 @@ def google_login_callback(state: str = "", code: str = "", error: str = ""):
     except Exception:
         return RedirectResponse("/login?google_error=auth_failed")
 
-    account = accounts_db.link_or_create_google_account(identity["email"].lower(), identity["google_id"])
+    try:
+        account = accounts_db.link_or_create_google_account(
+            identity["email"].lower(), identity["google_id"]
+        )
+    except accounts_db.AccountLinkBlocked:
+        # This email already has a password account (unverified). Don't silently
+        # merge -- send them to sign in with their password (see AccountLinkBlocked).
+        return RedirectResponse("/login?google_error=account_exists")
     onboarded = bool(account.get("google_token")) and bool((account.get("google_sheet_id") or "").strip())
     return _set_session_cookie(RedirectResponse("/" if onboarded else "/settings"), account["id"])
 
@@ -239,6 +274,33 @@ def update_settings(request: Request, payload: SettingsBody):
         request.state.account_id, payload.model_dump(exclude_none=True)
     )
     return {key: account.get(key) for key in accounts_db.EDITABLE_SETTINGS}
+
+
+@app.get("/api/lead-sheet-template.xlsx")
+def lead_sheet_template():
+    """The starter workbook linked from Settings: the exact nine-label header
+    row, sample rows covering each Status, and a notes tab. Built per request
+    rather than served from disk so it can never drift from EXPECTED_HEADER."""
+    return Response(
+        content=sheet_template.build_xlsx(),
+        media_type=sheet_template.MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="{sheet_template.FILENAME}"'
+        },
+    )
+
+
+@app.get("/api/lead-sheet-template.csv")
+def lead_sheet_template_csv():
+    """Same rows as the .xlsx, for people who keep leads as CSV. Still a
+    starting point for a Google Sheet -- nothing here parses CSV as input."""
+    return Response(
+        content=sheet_template.build_csv(),
+        media_type=sheet_template.CSV_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="{sheet_template.CSV_FILENAME}"'
+        },
+    )
 
 
 @app.get("/api/usage")
@@ -344,8 +406,20 @@ def _run_job(job_id, account_id, fn):
     try:
         result = usage.run_as(account_id, fn)
         JOBS[job_id] = {"account_id": account_id, "status": "done", "result": result, "error": None}
-    except Exception as e:
+    except RuntimeError as e:
+        # RuntimeError is the app's convention for hand-written, user-safe
+        # messages (see runtime_error_handler) -- surface it to the client.
         JOBS[job_id] = {"account_id": account_id, "status": "error", "result": None, "error": str(e)}
+    except Exception as e:
+        # Anything else is unexpected: a raw str(e) here would ship internal
+        # details straight to the frontend (Google API JSON payloads, Supabase
+        # errors, KeyErrors). Log the real cause server-side, return a generic
+        # message.
+        print(f"Job {job_id} (account {account_id}) failed unexpectedly: {e!r}")
+        JOBS[job_id] = {
+            "account_id": account_id, "status": "error", "result": None,
+            "error": "Something went wrong on our end. Please try again.",
+        }
 
 
 def start_job(account_id, fn) -> str:

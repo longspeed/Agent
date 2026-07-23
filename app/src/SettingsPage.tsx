@@ -250,6 +250,16 @@ export function SettingsPage() {
                 Add your calendar booking link
               </li>
             </ol>
+            <p className="text-xs mt-4 text-mute">
+              First time here?{' '}
+              <a
+                href="/getting-started"
+                className="text-accent underline underline-offset-[3px] decoration-accent/40 rounded-[3px] transition-colors duration-200 ease-spring hover:text-accent-hover hover:decoration-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 active:opacity-85"
+              >
+                Read the getting started guide
+              </a>{' '}
+              for a walkthrough of every step.
+            </p>
           </section>
         )}
 
@@ -332,6 +342,26 @@ export function SettingsPage() {
                   className="w-full rounded-lg px-4 py-2.5 text-sm mt-2 bg-floating border border-line focus:outline-none focus:border-accent"
                 />
               )}
+              <p className="text-xs mt-3 leading-relaxed text-mute">
+                Starting from scratch? Download the starter sheet as{' '}
+                <a
+                  href="/api/lead-sheet-template.xlsx"
+                  download
+                  className="text-accent underline underline-offset-[3px] decoration-accent/40 rounded-[3px] transition-colors duration-200 ease-spring hover:text-accent-hover hover:decoration-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 active:opacity-85"
+                >
+                  Excel
+                </a>{' '}
+                or{' '}
+                <a
+                  href="/api/lead-sheet-template.csv"
+                  download
+                  className="text-accent underline underline-offset-[3px] decoration-accent/40 rounded-[3px] transition-colors duration-200 ease-spring hover:text-accent-hover hover:decoration-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 active:opacity-85"
+                >
+                  CSV
+                </a>
+                . Both carry the nine headers Agent Hub needs and an example row per status. Import
+                one into Google Sheets, then delete the examples.
+              </p>
             </div>
 
             <label className="text-sm">

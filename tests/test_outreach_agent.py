@@ -5,10 +5,12 @@ Run:  python tests/test_outreach_agent.py
 """
 import base64
 import contextlib
+import io
 import os
 import sys
 import time
 import traceback
+import zipfile
 from pathlib import Path
 
 # Make config importable even without a .env (harmless if one exists).
@@ -29,6 +31,7 @@ import auth
 import gmail
 import ratelimit
 import reviews_db
+import sheet_template
 import sheets
 import send_outreach
 import watch_replies
@@ -817,6 +820,246 @@ def test_normalize_sheet_id():
 def test_encrypt_decrypt_roundtrip():
     secret = '{"token": "ya29.xyz"}'
     assert accounts_db.decrypt_secret(accounts_db.encrypt_secret(secret)) == secret
+
+
+# ------------------------------------------------------- security fixes (2026-07-22)
+
+def test_client_ip_prefers_cf_connecting_ip():
+    """REGRESSION: behind the Cloudflare tunnel every request arrives from
+    127.0.0.1, so keying rate limits on request.client.host collapsed all
+    visitors into one bucket. CF-Connecting-IP is the authoritative client IP."""
+    import server
+    from types import SimpleNamespace
+    # Header present (behind the tunnel) -> the real client IP wins.
+    req = SimpleNamespace(headers={"cf-connecting-ip": "203.0.113.9"},
+                          client=SimpleNamespace(host="127.0.0.1"))
+    assert server._client_ip(req) == "203.0.113.9"
+    # No header (local/dev) -> socket peer, matching the old behavior.
+    req2 = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.5"))
+    assert server._client_ip(req2) == "10.0.0.5"
+    # Whitespace in the header is stripped.
+    req3 = SimpleNamespace(headers={"cf-connecting-ip": "  198.51.100.7 "},
+                           client=SimpleNamespace(host="127.0.0.1"))
+    assert server._client_ip(req3) == "198.51.100.7"
+    # No client at all -> "unknown", never an AttributeError.
+    req4 = SimpleNamespace(headers={}, client=None)
+    assert server._client_ip(req4) == "unknown"
+
+
+def test_link_google_blocks_password_account_takeover():
+    """REGRESSION: a "Sign in with Google" identity must NOT silently merge
+    into a pre-registered password account (unverified email) -- that's an
+    account-takeover primitive. See accounts_db.AccountLinkBlocked."""
+    # Case A: email already belongs to a PASSWORD account -> refuse to merge.
+    with patched(accounts_db, "get_account_by_google_id", lambda gid: None), \
+         patched(accounts_db, "get_account_by_email",
+                 lambda e: {"id": "prereg", "email": e, "password_hash": "pbkdf2$260000$x$y"}):
+        try:
+            accounts_db.link_or_create_google_account("victim@corp.com", "google-123")
+            raise AssertionError("expected AccountLinkBlocked for a password account")
+        except accounts_db.AccountLinkBlocked:
+            pass
+
+    # Case B: email belongs to a password-LESS account (itself created via
+    # Google) -> nothing to hijack, safe to attach the google_id.
+    linked = {"id": "acct-9", "email": "u@corp.com", "google_id": "google-xyz"}
+
+    class _Resp:
+        data = [linked]
+
+    class _Query:
+        def update(self, *a, **k):
+            return self
+
+        def eq(self, *a, **k):
+            return self
+
+        def execute(self):
+            return _Resp()
+
+    class _Client:
+        def table(self, *a, **k):
+            return _Query()
+
+    with patched(accounts_db, "get_account_by_google_id", lambda gid: None), \
+         patched(accounts_db, "get_account_by_email",
+                 lambda e: {"id": "acct-9", "email": e, "password_hash": None}), \
+         patched(accounts_db, "_get_client", lambda: _Client()):
+        assert accounts_db.link_or_create_google_account("u@corp.com", "google-xyz") == linked
+
+    # Case C: this google_id is already linked -> reuse, no email lookup at all.
+    existing = {"id": "acct-1", "google_id": "google-known"}
+    with patched(accounts_db, "get_account_by_google_id", lambda gid: existing):
+        assert accounts_db.link_or_create_google_account("x@y.com", "google-known") is existing
+
+
+def test_run_job_sanitizes_unexpected_errors():
+    """RuntimeError is the app's user-safe message convention -> surfaced.
+    Any other exception must not leak its internals to the client."""
+    import server
+    server._run_job("job-rt", "acct-1",
+                    lambda: (_ for _ in ()).throw(RuntimeError("Set a calendar link in Settings")))
+    assert server.JOBS["job-rt"]["error"] == "Set a calendar link in Settings"
+
+    server._run_job("job-int", "acct-1",
+                    lambda: (_ for _ in ()).throw(KeyError("secret_internal_field")))
+    assert "secret_internal_field" not in server.JOBS["job-int"]["error"]
+    assert server.JOBS["job-int"]["error"] == "Something went wrong on our end. Please try again."
+
+    server.JOBS.pop("job-rt", None)
+    server.JOBS.pop("job-int", None)
+
+
+def test_ratelimit_evicts_stale_keys():
+    """A key whose newest hit predates the largest window is swept, so one-off
+    keys (e.g. a single signup IP) don't accumulate in _hits forever."""
+    stale_key = f"stale:{time.time()}"
+    fresh_key = f"fresh:{time.time()}"
+    ratelimit._hits[stale_key] = [time.time() - 10_000]
+    ratelimit._last_sweep = 0.0       # force the next check() to run a sweep
+    ratelimit._max_window = 3600
+    ratelimit.check(fresh_key, limit=5, window_seconds=3600)
+    assert stale_key not in ratelimit._hits, "stale key should have been evicted"
+    ratelimit._hits.pop(fresh_key, None)
+
+
+def test_tavily_search_resilient_and_requires_key():
+    """Missing key stays a loud config error; a failed request returns [] (so
+    one flaky query doesn't abort a multi-query search) and isn't metered."""
+    import search
+    import requests as _requests
+
+    with patched(search, "TAVILY_API_KEY", ""):
+        try:
+            search.tavily_search("q")
+            raise AssertionError("expected RuntimeError when the key is unset")
+        except RuntimeError:
+            pass
+
+    def boom_post(*a, **k):
+        raise _requests.RequestException("network down")
+
+    metered = []
+    with patched(search, "TAVILY_API_KEY", "key"), \
+         patched(search.requests, "post", boom_post), \
+         patched(search.usage, "record", lambda *a, **k: metered.append(a)):
+        assert search.tavily_search("q") == []
+    assert metered == [], "a failed search must not be metered"
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": [{"title": "T", "url": "http://u", "content": "C", "extra": 1}]}
+
+    metered_ok = []
+    with patched(search, "TAVILY_API_KEY", "key"), \
+         patched(search.requests, "post", lambda *a, **k: _Resp()), \
+         patched(search.usage, "record", lambda *a, **k: metered_ok.append(a)):
+        rows = search.tavily_search("q", max_results=3)
+    assert rows == [{"title": "T", "url": "http://u", "content": "C"}]
+    assert len(metered_ok) == 1, "a successful search meters exactly once"
+
+
+# -------------------------------------------------------------- sheet template
+
+def _template_rows():
+    """Read the generated workbook back the way a spreadsheet app would, so the
+    assertions below test the shipped bytes rather than the source constants."""
+    import xml.etree.ElementTree as ET
+
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    archive = zipfile.ZipFile(io.BytesIO(sheet_template.build_xlsx()))
+    sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+    rows = []
+    for row in sheet.find("m:sheetData", ns).findall("m:row", ns):
+        cells = {}
+        for cell in row.findall("m:c", ns):
+            column = "".join(ch for ch in cell.get("r") if ch.isalpha())
+            text = cell.find("m:is/m:t", ns)
+            cells[column] = text.text if text is not None else ""
+        rows.append([cells.get(chr(ord("A") + i), "") for i in range(9)])
+    return rows
+
+
+def test_sheet_template_header_row_matches_expected_header():
+    """The entire point of the download is a row 1 the write gate accepts."""
+    assert _template_rows()[0] == sheets.EXPECTED_HEADER
+
+
+def test_sheet_template_survives_the_write_gate():
+    """require_full_header() is what rejects a hand-typed sheet. The file we
+    hand people has to clear it, byte for byte."""
+    header = _template_rows()[0]
+    with patched(sheets, "_get_service", lambda account: fake_sheets_service([header])):
+        sheets.require_full_header(ACCOUNT)  # raises if the header is wrong
+
+
+def test_sheet_template_rows_are_never_sendable():
+    """Someone will connect this file as their real sheet without deleting the
+    examples. campaign_readiness() queues any row with a blank Status and an
+    email, so one blank Status here emails a stranger on their first run. Run
+    the shipped rows through the real eligibility rule, not a copy of it."""
+    rows = [(i, row) for i, row in enumerate(_template_rows()[1:], start=2)]
+    with patched(sheets, "get_all_rows", lambda account: rows):
+        readiness = sheets.campaign_readiness(ACCOUNT)
+    assert readiness["eligible_total"] == 0, (
+        f"a demo row is queued to send: {readiness['eligible']!r}"
+    )
+
+
+def test_sheet_template_uses_only_reserved_example_addresses():
+    """Second line of defence behind the Status guard: RFC 2606 reserves
+    example.com precisely so it can never reach a real mailbox."""
+    for row in _template_rows()[1:]:
+        email = row[sheets.COL_EMAIL]
+        assert email.endswith("@example.com"), f"non-reserved address: {email}"
+
+
+def _template_csv_rows():
+    """Parse the shipped CSV the way Sheets' importer would."""
+    import csv as csv_mod
+    text = sheet_template.build_csv().decode("utf-8-sig")
+    return list(csv_mod.reader(io.StringIO(text)))
+
+
+def test_sheet_template_csv_matches_the_workbook():
+    """Two formats, one grid. If they drift, whichever one a user picks stops
+    being a faithful description of what the app expects."""
+    assert _template_csv_rows() == _template_rows()
+
+
+def test_sheet_template_csv_rows_are_never_sendable():
+    """Same guarantee the workbook carries: a CSV is the likelier thing someone
+    imports wholesale without deleting the examples first."""
+    rows = [(i, row) for i, row in enumerate(_template_csv_rows()[1:], start=2)]
+    with patched(sheets, "get_all_rows", lambda account: rows):
+        readiness = sheets.campaign_readiness(ACCOUNT)
+    assert readiness["eligible_total"] == 0, (
+        f"a demo row in the CSV is queued to send: {readiness['eligible']!r}"
+    )
+
+
+def test_sheet_template_csv_starts_with_a_bom():
+    """Without the BOM Excel guesses the local codepage and mangles the file."""
+    assert sheet_template.build_csv().startswith(b"\xef\xbb\xbf")
+
+
+def test_sheet_template_is_valid_xlsx_with_leads_tab_first():
+    """The zip and XML are hand-rolled, so check the parts parse -- and that the
+    leads grid is the FIRST tab, because SHEET_RANGE ("A:I") is unqualified and
+    Sheets resolves it against the leftmost tab."""
+    import xml.etree.ElementTree as ET
+
+    archive = zipfile.ZipFile(io.BytesIO(sheet_template.build_xlsx()))
+    assert archive.testzip() is None
+    for name in archive.namelist():
+        ET.fromstring(archive.read(name))  # raises on malformed XML
+    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+    tabs = [el.get("name") for el in workbook.iter() if el.tag.endswith("}sheet")]
+    assert tabs[0] == sheet_template.DATA_SHEET
+    assert sheet_template.NOTES_SHEET in tabs
 
 
 # ---------------------------------------------------------------------- runner

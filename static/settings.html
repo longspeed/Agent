@@ -34,6 +34,11 @@
   .step-dot.done{background:var(--ok); border-color:var(--ok); transform:scale(1.05);}
   .step-dot.done svg{opacity:1; transform:scale(1);}
   .btn-ghost:active{transform:scale(0.98);}
+  .tpl-link{color:var(--accent); text-decoration:underline; text-underline-offset:3px; text-decoration-color:rgba(232,98,44,0.4); border-radius:3px; transition:color 200ms cubic-bezier(.22,1,.36,1), text-decoration-color 200ms cubic-bezier(.22,1,.36,1);}
+  .tpl-link:hover{color:var(--accent-hover); text-decoration-color:var(--accent-hover);}
+  .tpl-link:focus-visible{outline:none; box-shadow:0 0 0 3px var(--accent-dim);}
+  .tpl-link:active{opacity:0.85;}
+  @media (prefers-reduced-motion: reduce){.tpl-link{transition:none;}}
   .field{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
   .field:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);}
   .card{background:var(--bg-elevated); border:1px solid var(--border);}
@@ -100,6 +105,10 @@
         <button type="button" id="sheet-manual-toggle" class="text-xs mt-2 ease-spring transition-colors duration-150" style="color:var(--text-muted);">Or paste a Sheet ID/URL manually</button>
         <input id="google_sheet_id" type="text" class="hidden field w-full rounded-lg px-4 py-2.5 text-sm mt-2 ease-spring transition-colors duration-150"
           placeholder="Paste a Sheet ID or the full Sheets URL">
+        <p class="text-xs mt-3 leading-relaxed" style="color:var(--text-muted);">
+          Starting from scratch? <a href="/api/lead-sheet-template.xlsx" class="tpl-link" download>Download the starter sheet</a>.
+          It has the nine headers Agent Hub needs and an example row per status. Import it into Google Sheets, then delete the examples.
+        </p>
       </div>
       <label class="text-sm">
         <span class="block mb-1.5" style="color:var(--text-secondary);">Sender first name (signs your emails)</span>

@@ -173,7 +173,9 @@ def require_full_header(account):
         raise RuntimeError(
             "Before Agent Hub can write statuses, row 1 must contain the full "
             "header (this protects any data you keep in unlabeled columns). "
-            "Paste this into row 1: " + ", ".join(EXPECTED_HEADER)
+            "Paste this into row 1: " + ", ".join(EXPECTED_HEADER) + ". "
+            "Starting a fresh sheet? Settings has a starter file to download "
+            "with the header already in place."
         )
 
 
