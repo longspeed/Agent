@@ -28,12 +28,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for `import s
 import accounts_db
 import agent
 import auth
+import drafts_db
 import gmail
 import ratelimit
 import reviews_db
 import sheet_template
 import sheets
 import send_outreach
+import suppressions_db
 import watch_replies
 
 
@@ -109,10 +111,24 @@ def fake_sheets_service(values):
 ACCOUNT = {
     "id": "acct-1",
     "sender_name": "Oanh",
+    "sender_company": "Ledgerline",
     "meeting_purpose": "help teams automate invoicing",
     "calendar_booking_link": "https://cal.com/oanh/15min",
     "google_sheet_id": "sheet-1",
 }
+
+# A generated email that passes _validate_outreach for ACCOUNT: contains the
+# calendar link verbatim, is long enough, and trips none of the banned-phrase /
+# placeholder / markdown / dash checks. Tests that only care about a DIFFERENT
+# aspect (subject parsing, prepare queuing) reuse this so validation is never
+# the incidental reason they fail.
+GOOD_EMAIL_BODY = (
+    "Hi John, you mentioned scaling accounts payable at Acme, which is the reason "
+    "I'm writing. We help finance teams cut invoice matching from days to minutes. "
+    "Worth 15 minutes to compare notes? Grab a time here: https://cal.com/oanh/15min\n\n"
+    "Oanh\nLedgerline"
+)
+GOOD_EMAIL = f"Subject: Cutting invoice matching\n\n{GOOD_EMAIL_BODY}"
 
 # ---------------------------------------------------------------- strip_quoted
 
@@ -292,27 +308,149 @@ def test_draft_reply_empty_history_bodies_filtered():
 # ------------------------------------------------------- generate_outreach_email
 
 def test_generate_outreach_wellformed():
-    with patched(agent, "_chat", lambda s, u: "Subject: Quick intro\n\nHi John,\nbody here.\nOanh"):
+    with patched(agent, "_chat", lambda s, u: GOOD_EMAIL):
         subject, body = agent.generate_outreach_email(ACCOUNT, "John", "Acme")
-    assert subject == "Quick intro"
-    assert body == "Hi John,\nbody here.\nOanh"
+    assert subject == "Cutting invoice matching"
+    assert "https://cal.com/oanh/15min" in body
+    assert body.startswith("Hi John")
 
 
 def test_generate_outreach_single_newline_output():
     # LLMs frequently emit "Subject: X\nBody..." without the blank line.
-    with patched(agent, "_chat", lambda s, u: "Subject: Quick intro\nHi John,\nbody here."):
+    with patched(agent, "_chat", lambda s, u: GOOD_EMAIL.replace("\n\n", "\n", 1)):
         subject, body = agent.generate_outreach_email(ACCOUNT, "John", "Acme")
-    assert subject == "Quick intro"
-    assert body == "Hi John,\nbody here."
+    assert subject == "Cutting invoice matching"
+    assert body.startswith("Hi John")
 
 
-def test_generate_outreach_requires_calendar_link():
+def test_generate_outreach_without_link_asks_for_reply():
+    """The CTA link is optional now: no link must NOT block generation, and the
+    prompt should steer the model to ask for a reply instead."""
     account = dict(ACCOUNT, calendar_booking_link="  ")
+    no_link_email = (
+        "Subject: Cutting invoice matching\n\n"
+        "Hi John, you mentioned scaling accounts payable at Acme, which is the reason I'm writing. "
+        "We help finance teams cut invoice matching from days to minutes. "
+        "If that's worth a look, just reply and I'll show how it maps to Acme.\n\nOanh\nLedgerline"
+    )
+    captured = {}
+    with patched(agent, "_chat", lambda s, u: captured.update(prompt=u) or no_link_email):
+        subject, body = agent.generate_outreach_email(account, "John", "Acme")
+    assert subject == "Cutting invoice matching"
+    assert "No call-to-action link is set" in captured["prompt"]
+    # The validator must not demand a link that was never configured.
+    assert agent._validate_outreach(subject, body, "") == []
+
+
+def test_generate_outreach_still_requires_a_goal():
+    account = dict(ACCOUNT, meeting_purpose="  ")  # empty goal, but link is set
     try:
         agent.generate_outreach_email(account, "John", "Acme")
     except RuntimeError:
         return
-    raise AssertionError("should raise without calendar link")
+    raise AssertionError("an empty goal must still block generation")
+
+
+def test_generate_outreach_blocks_default_meeting_purpose():
+    from config import DEFAULT_MEETING_PURPOSE
+    account = dict(ACCOUNT, meeting_purpose=DEFAULT_MEETING_PURPOSE)
+    assert agent.account_send_blockers(account)  # preview would disable the button
+    with patched(agent, "_chat", lambda s, u: GOOD_EMAIL):
+        try:
+            agent.generate_outreach_email(account, "John", "Acme")
+        except RuntimeError as e:
+            assert "Settings" in str(e)
+            return
+    raise AssertionError("default meeting purpose must block generation")
+
+
+def test_generate_outreach_passes_lead_reason_to_prompt():
+    captured = {}
+    def fake_chat(system, user_prompt):
+        captured["prompt"] = user_prompt
+        return GOOD_EMAIL
+    with patched(agent, "_chat", fake_chat):
+        agent.generate_outreach_email(ACCOUNT, "John", "Acme", lead_reason="spoke at RevOps summit")
+    assert "spoke at RevOps summit" in captured["prompt"]
+    assert "Research note" in captured["prompt"]
+
+
+def test_generate_outreach_omits_lead_reason_when_blank():
+    captured = {}
+    with patched(agent, "_chat", lambda s, u: captured.update(prompt=u) or GOOD_EMAIL):
+        agent.generate_outreach_email(ACCOUNT, "John", "Acme", lead_reason="")
+    assert "Research note" not in captured["prompt"]
+
+
+def test_generate_outreach_embeds_unsubscribe_line():
+    unsub = "https://app.example.com/unsubscribe?t=abc.def"
+    with patched(agent, "_chat", lambda s, u: GOOD_EMAIL):
+        _, body = agent.generate_outreach_email(ACCOUNT, "John", "Acme", unsubscribe_url=unsub)
+    assert unsub in body
+
+
+def test_generate_outreach_retries_then_raises_on_bad_output():
+    calls = {"n": 0}
+    def bad_chat(system, user_prompt):
+        calls["n"] += 1
+        return "Subject: hi\n\nLet's hop on a call to discuss synergies."  # banned + no link + short
+    with patched(agent, "_chat", bad_chat):
+        try:
+            agent.generate_outreach_email(ACCOUNT, "John", "Acme")
+        except RuntimeError:
+            assert calls["n"] == 2, "must retry exactly once before giving up"
+            return
+    raise AssertionError("invalid output must raise, not return")
+
+
+def test_generate_outreach_second_attempt_can_succeed():
+    outputs = iter(["Subject: hi\n\ntoo short", GOOD_EMAIL])
+    with patched(agent, "_chat", lambda s, u: next(outputs)):
+        subject, body = agent.generate_outreach_email(ACCOUNT, "John", "Acme")
+    assert subject == "Cutting invoice matching"
+
+
+# ------------------------------------------------------ subject parsing + validator
+
+def test_split_subject_variants():
+    for raw, want in [
+        ("Subject: hello there\n\nbody", "hello there"),
+        ("**Subject:** hello there\n\nbody", "hello there"),
+        ("subject - hello there\nbody", "hello there"),
+        ('Subject: "hello there"\n\nbody', "hello there"),
+    ]:
+        subject, _ = agent._split_subject(raw)
+        assert subject == "hello there", (raw, subject)
+
+
+def test_split_subject_missing_prefix_keeps_body_whole():
+    # The critical regression: no "Subject:" line must NOT eat the first body
+    # line into the subject header.
+    raw = "Hi John, this is the whole email.\nSecond line."
+    subject, body = agent._split_subject(raw)
+    assert subject is None
+    assert body == raw
+
+
+def test_validator_flags_each_failure_mode():
+    link = "https://cal.com/oanh/15min"
+    good = GOOD_EMAIL_BODY
+    assert agent._validate_outreach("Cutting invoice matching", good, link) == []
+    assert agent._validate_outreach("", good, link)                      # empty subject
+    assert agent._validate_outreach("s", good.replace(link, "my calendar"), link)  # link paraphrased
+    assert agent._validate_outreach("s", good + " circle back soon", link)         # banned phrase
+    assert agent._validate_outreach("s", good.replace("which is", "— which is"), link)  # em dash
+    assert agent._validate_outreach("s", good.replace("Hi John", "Hi [First Name]"), link)   # placeholder
+    assert agent._validate_outreach("s", good.replace("We help", "**We help**"), link)       # markdown
+    assert agent._validate_outreach("s", "too short", link)              # truncated
+
+
+def test_validator_requires_optout_when_expected():
+    link = "https://cal.com/oanh/15min"
+    unsub = "https://app.example.com/unsubscribe?t=x.y"
+    assert agent._validate_outreach("s", GOOD_EMAIL_BODY, link, unsub)  # missing -> problem
+    with_optout = GOOD_EMAIL_BODY + "\n\n" + agent._opt_out_line(unsub)
+    assert agent._validate_outreach("s", with_optout, link, unsub) == []
 
 
 # ---------------------------------------------------------------------- sheets
@@ -451,6 +589,15 @@ def test_campaign_readiness_caps_at_daily_limit():
     assert r["capped"] == max(0, 10 - r["remaining_today"])
 
 
+def test_campaign_readiness_excludes_suppressed():
+    rows = [(2, _row(email="keep@x.com")), (3, _row(email="Gone@x.com"))]
+    with patched(sheets, "get_all_rows", lambda account: rows):
+        r = sheets.campaign_readiness(ACCOUNT, suppressed_emails={"gone@x.com"})
+    emails = [row[sheets.COL_EMAIL] for _, row in r["eligible"]]
+    assert emails == ["keep@x.com"], "opted-out address (case-insensitive) must drop out"
+    assert r["eligible_total"] == 1
+
+
 def test_row_update_cells_column_letters_match_col_constants():
     cells = sheets._row_update_cells(7, status="s", thread_id="t", sent_at="a", email_body="b", email_confidence="c")
     letters = {v: k[0] for k, v in cells}
@@ -582,103 +729,150 @@ def test_check_for_replies_review_saved_before_sheet_write():
     assert len(second["reviews"]) == 0
 
 
-# --------------------------------------------------------------- send_outreach
+# --------------------------------------------- send_outreach: prepare (phase 1)
 
-def test_send_outreach_marks_each_row_immediately():
-    calls = {"updates": []}
-    rows = [(2, _row(name="John", email="j@x.com")), (3, _row(name="Fail", email="f@x.com", company=""))]
+def _readiness(rows, remaining=25):
+    return {"eligible": rows, "eligible_total": len(rows), "sent_today": 0,
+            "daily_limit": 25, "remaining_today": remaining, "capped": 0}
 
-    def fake_generate(account, name, company):
+
+def test_prepare_drafts_queues_without_sending_or_writing():
+    calls = {"drafts": [], "sends": 0, "updates": 0}
+    rows = [(2, _row(name="John", email="j@x.com", company="Acme")),
+            (3, _row(name="Fail", email="f@x.com", company=""))]
+
+    def fake_generate(account, name, company, lead_reason="", unsubscribe_url=""):
         if name == "Fail":
             raise RuntimeError("LLM exploded")
         return "Subject line", "Body text"
 
-    readiness = {"eligible": rows, "eligible_total": 2, "sent_today": 0,
-                 "daily_limit": 25, "remaining_today": 25, "capped": 0}
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(sheets, "require_full_header", lambda account: calls.update(header_gate=True)))
-        stack.enter_context(patched(sheets, "campaign_readiness", lambda account: readiness))
+        stack.enter_context(patched(suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(sheets, "campaign_readiness", lambda account, suppressed_emails=None: _readiness(rows)))
+        stack.enter_context(patched(drafts_db, "has_pending_for_row", lambda aid, idx: False))
         stack.enter_context(patched(agent, "generate_outreach_email", fake_generate))
-        stack.enter_context(patched(gmail, "send_email", lambda account, to, s, b: f"thread-{to}"))
-        stack.enter_context(patched(sheets, "update_row", lambda account, idx, **kw: calls["updates"].append((idx, kw))))
+        stack.enter_context(patched(drafts_db, "add_draft", lambda *a: calls["drafts"].append(a) or len(calls["drafts"])))
+        stack.enter_context(patched(gmail, "send_email", lambda *a, **k: calls.__setitem__("sends", calls["sends"] + 1) or "t"))
+        stack.enter_context(patched(sheets, "update_row", lambda *a, **k: calls.__setitem__("updates", calls["updates"] + 1)))
         stack.enter_context(patched(send_outreach, "notify", lambda account, subj, msg_: calls.update(notify=(subj, msg_))))
-        result = send_outreach.main(ACCOUNT)
-    assert calls.get("header_gate"), "send batch must gate on the full header"
+        result = send_outreach.prepare_drafts(ACCOUNT)
 
-    assert result["sent"] == 1 and result["total"] == 2
+    assert calls.get("header_gate"), "prepare must gate on the full header"
+    assert result["prepared"] == 1 and result["total"] == 2
     assert result["failed"] == [{"email": "f@x.com", "error": "LLM exploded"}]
-    # Per-row marking: exactly one update, at send time, with the guard email.
-    assert len(calls["updates"]) == 1
-    idx, kw = calls["updates"][0]
-    assert idx == 2 and kw["status"] == "Sent" and kw["thread_id"] == "thread-j@x.com"
-    assert kw["expect_email"] == "j@x.com"
-    assert "Sent 1 of 2" in calls["notify"][1]
-    assert result["remaining_today"] == 24
+    assert calls["sends"] == 0, "prepare must NOT send any email"
+    assert calls["updates"] == 0, "prepare must NOT write the sheet"
+    # add_draft(account_id, row_index, name, email, company, subject, body)
+    assert len(calls["drafts"]) == 1
+    a = calls["drafts"][0]
+    assert a[1] == 2 and a[3] == "j@x.com" and a[5] == "Subject line"
+    assert "Prepared 1 of 2" in calls["notify"][1]
 
 
-def test_send_outreach_sheet_write_failure_is_labeled():
-    """If the email went out but the sheet write failed, the error must say
-    the email was SENT -- not report it as a failed send."""
-    rows = [(2, _row(name="John", email="j@x.com"))]
-    readiness = {"eligible": rows, "eligible_total": 1, "sent_today": 0,
-                 "daily_limit": 25, "remaining_today": 25, "capped": 0}
+def test_prepare_drafts_skips_rows_already_in_queue():
+    rows = [(2, _row(email="j@x.com"))]
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
+        stack.enter_context(patched(suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(sheets, "campaign_readiness", lambda account, suppressed_emails=None: _readiness(rows)))
+        stack.enter_context(patched(drafts_db, "has_pending_for_row", lambda aid, idx: True))  # already queued
+        stack.enter_context(patched(agent, "generate_outreach_email", lambda *a, **k: ("S", "B")))
+        stack.enter_context(patched(send_outreach, "notify", lambda *a: None))
+        result = send_outreach.prepare_drafts(ACCOUNT)
+    assert result["prepared"] == 0 and result["total"] == 0
 
+
+def test_prepare_drafts_nothing_eligible():
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
+        stack.enter_context(patched(suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(sheets, "campaign_readiness", lambda account, suppressed_emails=None: _readiness([])))
+        result = send_outreach.prepare_drafts(ACCOUNT)
+    assert result == {"prepared": 0, "total": 0, "failed": [], "daily_limit": 25, "remaining_today": 25}
+
+
+# ----------------------------------------------- send_outreach: send (phase 2)
+
+def test_mark_row_sent_labels_persistent_failure():
+    """If the email went out but the sheet write keeps failing, the error must
+    say the email WAS sent, not report a failed send."""
     attempts = []
-
     def broken_update(account, idx, **kw):
         attempts.append(idx)
         raise RuntimeError("sheet gone")
-
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(send_outreach, "_MARK_RETRY_DELAY", 0))
-        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
-        stack.enter_context(patched(sheets, "campaign_readiness", lambda account: readiness))
-        stack.enter_context(patched(agent, "generate_outreach_email", lambda a, n, c: ("S", "B")))
-        stack.enter_context(patched(gmail, "send_email", lambda account, to, s, b: "t-1"))
         stack.enter_context(patched(sheets, "update_row", broken_update))
-        stack.enter_context(patched(send_outreach, "notify", lambda *a: None))
-        result = send_outreach.main(ACCOUNT)
+        try:
+            send_outreach.mark_row_sent(ACCOUNT, 2, "j@x.com", "t-1", "body")
+        except RuntimeError as e:
+            assert "was sent" in str(e).lower()
+            assert len(attempts) == send_outreach._MARK_RETRIES
+            return
+    raise AssertionError("persistent failure must raise after exhausting retries")
 
-    assert result["sent"] == 0
-    assert len(result["failed"]) == 1
-    assert "was sent" in result["failed"][0]["error"].lower()
-    assert len(attempts) == send_outreach._MARK_RETRIES, "persistent failure must exhaust all retries"
 
-
-def test_send_outreach_mark_retry_recovers_from_transient_failure():
-    """A single Sheets hiccup on the post-send write must self-heal, not
-    convert a successful send into a future duplicate."""
-    rows = [(2, _row(name="John", email="j@x.com"))]
-    readiness = {"eligible": rows, "eligible_total": 1, "sent_today": 0,
-                 "daily_limit": 25, "remaining_today": 25, "capped": 0}
+def test_mark_row_sent_recovers_from_transient_failure():
     attempts = []
-
-    def flaky_update(account, idx, **kw):
-        attempts.append((idx, kw))
+    def flaky(account, idx, **kw):
+        attempts.append(kw)
         if len(attempts) == 1:
             raise RuntimeError("429 transient")
-
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(send_outreach, "_MARK_RETRY_DELAY", 0))
-        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
-        stack.enter_context(patched(sheets, "campaign_readiness", lambda account: readiness))
-        stack.enter_context(patched(agent, "generate_outreach_email", lambda a, n, c: ("S", "B")))
-        stack.enter_context(patched(gmail, "send_email", lambda account, to, s, b: "t-1"))
-        stack.enter_context(patched(sheets, "update_row", flaky_update))
+        stack.enter_context(patched(sheets, "update_row", flaky))
+        send_outreach.mark_row_sent(ACCOUNT, 2, "j@x.com", "t-1", "body")
+    assert len(attempts) == 2 and attempts[1]["status"] == "Sent"
+
+
+def test_send_prepared_draft_sends_marks_and_reappends_optout():
+    calls = {}
+    draft = {"row_index": 2, "email": "j@x.com", "subject": "Hi", "body": "Body without a link"}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, email: "https://u/unsub?t=x.y"))
+        stack.enter_context(patched(gmail, "send_email",
+            lambda account, to, s, b, unsubscribe_url="": calls.update(to=to, body=b, header=unsubscribe_url) or "t-9"))
+        stack.enter_context(patched(sheets, "update_row", lambda account, idx, **kw: calls.update(marked=(idx, kw))))
+        thread_id, sent_body = send_outreach.send_prepared_draft(ACCOUNT, draft)
+    assert thread_id == "t-9"
+    assert calls["header"] == "https://u/unsub?t=x.y", "List-Unsubscribe header must be set"
+    assert "https://u/unsub?t=x.y" in sent_body, "opt-out line must be appended when missing"
+    idx, kw = calls["marked"]
+    assert idx == 2 and kw["status"] == "Sent" and kw["expect_email"] == "j@x.com"
+
+
+def test_send_all_prepared_skips_suppressed_and_respects_cap():
+    drafts = [
+        {"id": 1, "row_index": 2, "email": "a@x.com", "subject": "S", "body": "b"},
+        {"id": 2, "row_index": 3, "email": "b@x.com", "subject": "S", "body": "b"},
+        {"id": 3, "row_index": 4, "email": "c@x.com", "subject": "S", "body": "b"},
+    ]
+    sent, discarded, marked = [], [], []
+    readiness_calls = {"n": 0}
+    def fake_readiness(account, **k):
+        readiness_calls["n"] += 1
+        return {"remaining_today": 1}  # only room for one send
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(send_outreach, "_SEND_ALL_MIN_GAP", 0))
+        stack.enter_context(patched(send_outreach, "_SEND_ALL_MAX_GAP", 0))
+        stack.enter_context(patched(drafts_db, "list_pending_drafts", lambda aid: drafts))
+        stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: email == "a@x.com"))
+        stack.enter_context(patched(drafts_db, "discard", lambda aid, did: discarded.append(did)))
+        stack.enter_context(patched(sheets, "campaign_readiness", fake_readiness))
+        def fake_send(account, draft, subject=None, body=None):
+            sent.append(draft["email"]); return "t", draft["body"]
+        stack.enter_context(patched(send_outreach, "send_prepared_draft", fake_send))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda aid, did, s, b: marked.append(did)))
         stack.enter_context(patched(send_outreach, "notify", lambda *a: None))
-        result = send_outreach.main(ACCOUNT)
-
-    assert result["sent"] == 1 and result["failed"] == []
-    assert len(attempts) == 2 and attempts[1][1]["status"] == "Sent"
-
-
-def test_send_outreach_nothing_pending():
-    readiness = {"eligible": [], "eligible_total": 0, "sent_today": 0,
-                 "daily_limit": 25, "remaining_today": 25, "capped": 0}
-    with patched(sheets, "require_full_header", lambda account: None):
-        with patched(sheets, "campaign_readiness", lambda account: readiness):
-            result = send_outreach.main(ACCOUNT)
-    assert result == {"sent": 0, "total": 0, "failed": [], "daily_limit": 25, "remaining_today": 25}
+        result = send_outreach.send_all_prepared(ACCOUNT)
+    assert sent == ["b@x.com"], "suppressed skipped, then one sent before the cap bit"
+    assert discarded == [1], "the suppressed draft is discarded, not left pending"
+    assert result["sent"] == 1
+    reasons = {s["reason"] for s in result["skipped"]}
+    assert "recipient unsubscribed" in reasons and "daily limit reached" in reasons
+    # Efficiency guarantee: the cap is read once for the batch, not per draft.
+    assert readiness_calls["n"] == 1, "campaign_readiness must be read once, not per draft"
 
 
 # ------------------------------------------------------------ header write gate
@@ -719,29 +913,29 @@ def test_server_secure_cookies_env_parse():
             os.environ["SECURE_COOKIES"] = saved
 
 
-def test_server_send_lock_lifecycle():
-    """REGRESSION (eng review): concurrent-send 409, release after run,
+def test_server_prepare_lock_lifecycle():
+    """REGRESSION (eng review): concurrent-prepare 409, release after run,
     release when the job thread fails to spawn."""
     import server
     from types import SimpleNamespace
     account = dict(ACCOUNT)
     req = SimpleNamespace(state=SimpleNamespace(account_id=account["id"]))
-    body = server.SendCampaignBody(confirmed=True)
+    body = server.PrepareCampaignBody(confirmed=True)
     captured = {}
     server._accounts_sending.discard(account["id"])
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: account))
         stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
-        stack.enter_context(patched(server, "_campaign_preview", lambda a: {"eligible": 1}))
+        stack.enter_context(patched(server, "_campaign_preview", lambda a: {"eligible": 1, "blockers": []}))
         stack.enter_context(patched(server, "start_job", lambda aid, fn: captured.update(fn=fn) or "job-1"))
-        assert server.send_campaigns(req, body) == {"job_id": "job-1"}
+        assert server.prepare_campaigns(req, body) == {"job_id": "job-1"}
         assert account["id"] in server._accounts_sending
         try:
-            server.send_campaigns(req, body)
+            server.prepare_campaigns(req, body)
             raise AssertionError("expected 409 while a batch is in flight")
         except server.HTTPException as e:
             assert e.status_code == 409
-        with patched(server.send_outreach, "main", lambda a: {"sent": 0}):
+        with patched(server.send_outreach, "prepare_drafts", lambda a: {"prepared": 0}):
             captured["fn"]()
         assert account["id"] not in server._accounts_sending, "lock must release after the job runs"
 
@@ -749,11 +943,248 @@ def test_server_send_lock_lifecycle():
             raise RuntimeError("thread spawn failed")
         stack.enter_context(patched(server, "start_job", boom))
         try:
-            server.send_campaigns(req, body)
+            server.prepare_campaigns(req, body)
             raise AssertionError("expected spawn failure to propagate")
         except RuntimeError:
             pass
         assert account["id"] not in server._accounts_sending, "lock must release when spawn fails"
+
+
+def test_server_prepare_blocked_by_settings():
+    """A generic meeting purpose / missing link surfaces as a 409, not a batch
+    that fails every row at generation time."""
+    import server
+    from types import SimpleNamespace
+    account = dict(ACCOUNT)
+    req = SimpleNamespace(state=SimpleNamespace(account_id=account["id"]))
+    body = server.PrepareCampaignBody(confirmed=True)
+    server._accounts_sending.discard(account["id"])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: account))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server, "_campaign_preview", lambda a: {"eligible": 3, "blockers": ["Describe what your meeting is for in Settings."]}))
+        try:
+            server.prepare_campaigns(req, body)
+            raise AssertionError("expected 409 when settings block the batch")
+        except server.HTTPException as e:
+            assert e.status_code == 409 and "Settings" in e.detail
+        assert account["id"] not in server._accounts_sending, "no lock should be held on a rejected batch"
+
+
+# --------------------------------------------------- server: draft send/discard routes
+
+def _srv_req(account_id="acct-1"):
+    from types import SimpleNamespace
+    return SimpleNamespace(state=SimpleNamespace(account_id=account_id))
+
+
+_PENDING_DRAFT = {"id": 7, "row_index": 2, "email": "j@x.com", "subject": "orig",
+                  "body": "orig body", "status": "pending"}
+
+
+def test_send_draft_404_when_missing_or_handled():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: None))
+        try:
+            server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
+            raise AssertionError("expected 404")
+        except server.HTTPException as e:
+            assert e.status_code == 404
+
+
+def test_send_draft_409_and_discards_when_suppressed():
+    import server
+    discarded = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: True))
+        stack.enter_context(patched(server.drafts_db, "discard", lambda aid, did: discarded.append(did)))
+        try:
+            server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
+            raise AssertionError("expected 409")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+    assert discarded == [7], "a draft whose recipient opted out is discarded, not sent"
+
+
+def test_send_draft_409_when_cap_reached():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 0}))
+        try:
+            server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
+            raise AssertionError("expected 409")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+
+
+def test_send_draft_happy_path_marks_edited_copy():
+    import server
+    marked = {}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
+        stack.enter_context(patched(server.send_outreach, "send_prepared_draft",
+            lambda a, d, subject=None, body=None: ("t-1", "sent body with optout")))
+        stack.enter_context(patched(server.drafts_db, "mark_sent",
+            lambda aid, did, s, b: marked.update(did=did, subject=s, body=b)))
+        result = server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="edited", body="edited body"))
+    assert result == {"ok": True}
+    # The operator's edited subject is recorded, and the body stored is the one
+    # send_prepared_draft actually sent (opt-out line applied).
+    assert marked == {"did": 7, "subject": "edited", "body": "sent body with optout"}
+
+
+def test_discard_draft_happy_and_404():
+    import server
+    discarded = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "discard", lambda aid, did: discarded.append(did)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: {"id": did, "status": "pending"}))
+        assert server.discard_draft(_srv_req(), 5) == {"ok": True}
+    assert discarded == [5]
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: None))
+        try:
+            server.discard_draft(_srv_req(), 5)
+            raise AssertionError("expected 404")
+        except server.HTTPException as e:
+            assert e.status_code == 404
+
+
+def test_send_all_drafts_409_when_none_pending():
+    import server
+    account = dict(ACCOUNT)
+    server._accounts_sending.discard(account["id"])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: account))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.drafts_db, "list_pending_drafts", lambda aid: []))
+        try:
+            server.send_all_drafts(_srv_req())
+            raise AssertionError("expected 409 when nothing is pending")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+    assert account["id"] not in server._accounts_sending, "no lock held when there's nothing to send"
+
+
+def test_send_all_drafts_starts_background_job():
+    import server
+    account = dict(ACCOUNT)
+    server._accounts_sending.discard(account["id"])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: account))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.drafts_db, "list_pending_drafts", lambda aid: [{"id": 1}]))
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: "job-9"))
+        assert server.send_all_drafts(_srv_req()) == {"job_id": "job-9"}
+    server._accounts_sending.discard(account["id"])  # cleanup: run()'s finally never fired (start_job mocked)
+
+
+# --------------------------------------------------- server: public unsubscribe routes
+
+def test_unsubscribe_confirm_invalid_token_400():
+    import server
+    with patched(server.auth, "verify_unsubscribe_token", lambda t: None):
+        resp = server.unsubscribe_confirm("garbage")
+    assert resp.status_code == 400
+    assert b"expired or invalid" in resp.body.lower()
+
+
+def test_unsubscribe_confirm_valid_shows_confirm_page():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.auth, "verify_unsubscribe_token", lambda t: ("acct-1", "p@x.com")))
+        stack.enter_context(patched(server.accounts_db, "get_account", lambda aid: dict(ACCOUNT)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        resp = server.unsubscribe_confirm("t")
+    assert resp.status_code == 200
+    assert b"Confirm unsubscribe" in resp.body and b"p@x.com" in resp.body
+
+
+def test_unsubscribe_apply_suppresses_and_marks_sheet():
+    import server
+    import asyncio
+    added, marked = [], []
+
+    class FakeReq:
+        query_params = {}
+        async def form(self):
+            return {"t": "tok"}
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.auth, "verify_unsubscribe_token", lambda t: ("acct-1", "p@x.com")))
+        stack.enter_context(patched(server.accounts_db, "get_account", lambda aid: dict(ACCOUNT)))
+        stack.enter_context(patched(server.suppressions_db, "add",
+            lambda aid, email, source="unsubscribe_link": added.append((aid, email))))
+        stack.enter_context(patched(server.sheets, "mark_unsubscribed", lambda account, email: marked.append(email)))
+        resp = asyncio.run(server.unsubscribe_apply(FakeReq()))
+    assert resp.status_code == 200
+    assert b"unsubscribed" in resp.body.lower()
+    assert added == [("acct-1", "p@x.com")] and marked == ["p@x.com"]
+
+
+def test_unsubscribe_apply_still_succeeds_when_sheet_write_fails():
+    """The opt-out (suppression) is authoritative; a Sheets hiccup on the
+    best-effort row mark must not turn into an error page for the recipient."""
+    import server
+    import asyncio
+    added = []
+
+    class FakeReq:
+        query_params = {}
+        async def form(self):
+            return {"t": "tok"}
+
+    def boom(account, email):
+        raise RuntimeError("sheet unreachable")
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.auth, "verify_unsubscribe_token", lambda t: ("acct-1", "p@x.com")))
+        stack.enter_context(patched(server.accounts_db, "get_account", lambda aid: dict(ACCOUNT)))
+        stack.enter_context(patched(server.suppressions_db, "add",
+            lambda aid, email, source="unsubscribe_link": added.append(email)))
+        stack.enter_context(patched(server.sheets, "mark_unsubscribed", boom))
+        resp = asyncio.run(server.unsubscribe_apply(FakeReq()))
+    assert resp.status_code == 200 and added == ["p@x.com"]
+
+
+# ------------------------------------------------------- unsubscribe tokens
+
+def test_unsubscribe_token_roundtrip():
+    token = auth.create_unsubscribe_token("acct-9", "Person@Example.com")
+    result = auth.verify_unsubscribe_token(token)
+    assert result == ("acct-9", "person@example.com"), "email is normalised to lower-case"
+
+
+def test_unsubscribe_token_tamper_and_garbage():
+    token = auth.create_unsubscribe_token("acct-9", "p@x.com")
+    body, _, sig = token.partition(".")
+    assert auth.verify_unsubscribe_token(f"{body}.deadbeef") is None  # bad signature
+    assert auth.verify_unsubscribe_token("not-a-token") is None       # no dot
+    assert auth.verify_unsubscribe_token("") is None
+    assert auth.verify_unsubscribe_token(None) is None
+
+
+def test_unsubscribe_token_not_interchangeable_with_session():
+    """An unsubscribe token must never authenticate as a session, and vice
+    versa -- they share the signing key but not the payload namespace."""
+    unsub = auth.create_unsubscribe_token("acct-9", "p@x.com")
+    session = auth.create_session_token("acct-9", ttl_seconds=60)
+    assert auth.verify_session_token(unsub) is None
+    assert auth.verify_unsubscribe_token(session) is None
 
 
 def test_server_plan_copy_is_accurate():

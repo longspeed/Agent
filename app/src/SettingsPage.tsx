@@ -4,6 +4,7 @@ import { useAnimatedCount } from './hooks/useAnimatedCount'
 
 interface AccountSettings {
   sender_name: string | null
+  sender_company: string | null
   meeting_purpose: string | null
   calendar_booking_link: string | null
   notify_email: string | null
@@ -34,6 +35,7 @@ interface SheetOption {
 
 const EMPTY_FORM: AccountSettings = {
   sender_name: '',
+  sender_company: '',
   meeting_purpose: '',
   calendar_booking_link: '',
   notify_email: '',
@@ -95,6 +97,7 @@ export function SettingsPage() {
     setMe(meRes)
     setForm({
       sender_name: meRes.settings.sender_name || '',
+      sender_company: meRes.settings.sender_company || '',
       meeting_purpose: meRes.settings.meeting_purpose || '',
       calendar_booking_link: meRes.settings.calendar_booking_link || '',
       notify_email: meRes.settings.notify_email || '',
@@ -124,6 +127,7 @@ export function SettingsPage() {
     e.preventDefault()
     const body = {
       sender_name: form.sender_name?.trim() ?? '',
+      sender_company: form.sender_company?.trim() ?? '',
       meeting_purpose: form.meeting_purpose?.trim() ?? '',
       calendar_booking_link: form.calendar_booking_link?.trim() ?? '',
       notify_email: form.notify_email?.trim() ?? '',
@@ -376,25 +380,45 @@ export function SettingsPage() {
             </label>
 
             <label className="text-sm">
-              <span className="block mb-1.5 text-sand">Calendar booking link</span>
+              <span className="block mb-1.5 text-sand">Company name (shown under your name in the signature)</span>
               <input
-                type="url"
-                value={form.calendar_booking_link ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, calendar_booking_link: e.target.value }))}
-                placeholder="https://cal.com/you/15min"
+                type="text"
+                value={form.sender_company ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, sender_company: e.target.value }))}
+                placeholder="Ledgerline"
                 className="w-full rounded-lg px-4 py-2.5 text-sm bg-floating border border-line focus:outline-none focus:border-accent"
               />
             </label>
 
             <label className="text-sm">
-              <span className="block mb-1.5 text-sand">Meeting purpose (one sentence used in every email)</span>
+              <span className="block mb-1.5 text-sand">What you're reaching out about (one sentence, used in every email)</span>
               <input
                 type="text"
                 value={form.meeting_purpose ?? ''}
                 onChange={(e) => setForm((f) => ({ ...f, meeting_purpose: e.target.value }))}
-                placeholder="a quick intro call to see if there's a fit to work together"
+                placeholder="show finance teams how to cut invoice matching from days to minutes"
                 className="w-full rounded-lg px-4 py-2.5 text-sm bg-floating border border-line focus:outline-none focus:border-accent"
               />
+              <span className="block mt-1.5 text-xs text-sand/60">
+                Say what you offer, who it helps, and what you want to happen (a call, a demo, a
+                trial, a reply). The generic default is rejected at send time because it produces
+                empty-sounding emails.
+              </span>
+            </label>
+
+            <label className="text-sm">
+              <span className="block mb-1.5 text-sand">Call-to-action link <span className="text-sand/50">(optional)</span></span>
+              <input
+                type="url"
+                value={form.calendar_booking_link ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, calendar_booking_link: e.target.value }))}
+                placeholder="https://cal.com/you/15min  ·  or a signup / demo / doc link"
+                className="w-full rounded-lg px-4 py-2.5 text-sm bg-floating border border-line focus:outline-none focus:border-accent"
+              />
+              <span className="block mt-1.5 text-xs text-sand/60">
+                Where you want people to go: a booking page, a signup, a demo, a resource.
+                Leave it blank and each email simply asks for a reply.
+              </span>
             </label>
 
             <label className="text-sm">

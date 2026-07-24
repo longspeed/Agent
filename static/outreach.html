@@ -36,6 +36,19 @@
   .spin{animation:spin 0.7s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
   .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;}
+  /* Native <dialog>: Esc-to-close, focus trapping and inert background come
+     free, so none of that is reimplemented in JS below. */
+  .modal{border:none;padding:0;background:transparent;color:var(--text);width:100%;max-width:min(600px, calc(100vw - 32px));}
+  .modal::backdrop{background:rgba(8,7,5,0.7);backdrop-filter:blur(3px);}
+  .modal[open]{animation:modal-in 240ms cubic-bezier(.22,1,.36,1);}
+  @keyframes modal-in{from{opacity:0;transform:translateY(10px) scale(0.985);}to{opacity:1;transform:none;}}
+  @media (prefers-reduced-motion: reduce){.modal[open]{animation:none;}}
+  /* Numbering runs through both lists: the second one starts where the first
+     left off via --from, so the steps read 1..11 without hardcoded digits. */
+  .steps{counter-reset:step var(--from, 0);}
+  .steps > li{counter-increment:step;}
+  .step-num{flex:none;width:22px;height:22px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;background:var(--accent-dim);color:var(--accent);}
+  .step-num::before{content:counter(step);}
 </style>
 </head>
 <body class="min-h-screen antialiased">
@@ -52,8 +65,11 @@
       <p class="text-sm" style="color:var(--text-secondary);">Live status pulled from your Google Sheet.</p>
     </div>
     <div class="flex items-center gap-3">
+      <button id="how-it-works-btn" class="btn-ghost rounded-lg px-3.5 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">
+        See how it works
+      </button>
       <button id="send-batch-btn" class="btn-primary rounded-lg px-4 py-2.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">
-        <span class="btn-label">Review batch</span>
+        <span class="btn-label">Prepare drafts</span>
       </button>
     </div>
   </div>
@@ -63,10 +79,14 @@
     Checking daily-send safety…
   </section>
 
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-12">
+  <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-12">
     <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
       <div class="text-2xl font-display mb-1" id="stat-pending">—</div>
       <div class="text-xs" style="color:var(--text-secondary);">Pending</div>
+    </div>
+    <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+      <div class="text-2xl font-display mb-1" id="stat-drafts" style="color:var(--gold);">—</div>
+      <div class="text-xs" style="color:var(--text-secondary);">Awaiting approval</div>
     </div>
     <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
       <div class="text-2xl font-display mb-1" id="stat-sent">—</div>
@@ -78,7 +98,7 @@
     </div>
     <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
       <div class="text-2xl font-display mb-1" id="stat-review" style="color:var(--accent);">—</div>
-      <div class="text-xs" style="color:var(--text-secondary);">Awaiting review</div>
+      <div class="text-xs" style="color:var(--text-secondary);">Replies to review</div>
     </div>
   </div>
 
@@ -105,10 +125,26 @@
     </div>
   </section>
 
+  <section class="mb-16">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-display text-xl flex items-center gap-2.5" style="letter-spacing:-0.01em;">
+        Drafts awaiting approval
+        <span id="draft-count-badge" class="badge" style="background:var(--gold-dim); color:var(--gold);">0</span>
+      </h2>
+      <button id="send-all-btn" class="btn-ghost rounded-lg px-3.5 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 hidden" style="--tw-ring-color:var(--border-hover);">
+        <span class="btn-label">Send all</span>
+      </button>
+    </div>
+    <p class="text-xs mb-4" style="color:var(--text-secondary);">Each email is drafted from your Settings and the contact's research note. Read it, edit anything, then send. Nothing goes out until you do.</p>
+    <div id="drafts-list" class="space-y-4">
+      <div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Loading…</div>
+    </div>
+  </section>
+
   <section>
     <div class="flex items-center justify-between mb-4">
       <h2 class="font-display text-xl flex items-center gap-2.5" style="letter-spacing:-0.01em;">
-        Needs review
+        Replies to review
         <span id="review-count-badge" class="badge" style="background:var(--accent-dim); color:var(--accent);">0</span>
       </h2>
       <button id="check-replies-btn" class="btn-ghost rounded-lg px-3.5 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">
@@ -121,6 +157,144 @@
   </section>
 
 </main>
+
+<dialog id="how-it-works" class="modal rounded-2xl" aria-labelledby="hiw-title">
+  <div class="card-shadow rounded-2xl overflow-hidden" style="background:var(--bg-elevated); border:1px solid var(--border);">
+
+    <header class="flex items-start justify-between gap-4 px-6 pt-6 pb-4" style="border-bottom:1px solid var(--border);">
+      <div>
+        <h2 id="hiw-title" class="font-display text-xl mb-1" style="letter-spacing:-0.01em;">How the outreach agent works</h2>
+        <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">Every step it takes, in order. Nothing leaves your inbox without your confirmation.</p>
+      </div>
+      <button data-close class="btn-ghost rounded-lg p-2 ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" aria-label="Close">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </header>
+
+    <div class="px-6 py-5 overflow-y-auto" style="max-height:min(58vh, 520px);">
+
+      <h3 class="text-xs font-medium mb-4" style="color:var(--text-muted);">When you press Prepare drafts</h3>
+      <ol class="steps space-y-4 mb-8">
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Checks your sheet's header row</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">All nine column labels have to be in row 1 first. Until they are, the agent writes nothing at all, so it can never overwrite data you keep in unlabeled columns.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Picks who is eligible</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">Only rows that have an email address and a blank Status, and that nobody has unsubscribed. Anything already marked Sent, Replied, Unsubscribed or Needs verification is left alone.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Applies the daily cap</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">At most <span id="hiw-daily-limit">25</span> emails from your inbox in any 24 hours. Contacts over the cap wait for the next batch instead of being dropped.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Writes and checks each email</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">A language model drafts a subject line and a short email per contact, using your sender name, what you're reaching out about, your call-to-action link (if you set one), and the contact's research note. Each draft is validated (no placeholders, no spam tells, link present when you have one) before it's queued.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Queues them for your approval</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">Every draft lands in "Drafts awaiting approval" below. Nothing is emailed and the sheet is untouched. You read each one, edit any word, and only a Send email click puts it in an inbox.</p>
+          </div>
+        </li>
+      </ol>
+
+      <h3 class="text-xs font-medium mb-4" style="color:var(--text-muted);">When you approve a draft</h3>
+      <ol class="steps space-y-4 mb-8" style="--from:5;">
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Sends from your own Gmail</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">The email goes out from the Google account you connected, as a normal message on a normal thread, with a one-click unsubscribe link and List-Unsubscribe headers.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Marks the row the moment it sends</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">Status, thread ID, timestamp and the exact text that was sent, written immediately and retried three times. That is what stops anyone being emailed twice.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Re-checks the cap and opt-outs at send time</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">Right before each send, it confirms you're under the daily cap and the recipient hasn't unsubscribed since the draft was made. "Send all" does this per email and paces them apart.</p>
+          </div>
+        </li>
+      </ol>
+
+      <h3 class="text-xs font-medium mb-4" style="color:var(--text-muted);">After the emails go out</h3>
+      <ol class="steps space-y-4" style="--from:8;">
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Watches for replies</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">While this page is open it re-checks every sent thread about once every two minutes, looking for a new message from the person you contacted.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Drafts your response</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">When someone writes back, the model reads the whole conversation and drafts an answer to what they actually said. The row is marked Replied.</p>
+          </div>
+        </li>
+        <li class="flex gap-3">
+          <span class="step-num mt-0.5"></span>
+          <div>
+            <div class="text-sm font-medium mb-0.5">Waits for you to approve it</div>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">The draft lands in Needs review below. You can edit every word, and nothing is sent until you press Send reply.</p>
+          </div>
+        </li>
+      </ol>
+
+    </div>
+
+    <footer class="px-6 py-4 flex justify-end" style="border-top:1px solid var(--border); background:var(--bg-floating);">
+      <button data-close class="btn-primary rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">Got it</button>
+    </footer>
+
+  </div>
+</dialog>
+
+<template id="draft-card-template">
+  <div class="draft-card rounded-2xl p-6 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="font-medium text-sm dc-name"></div>
+        <div class="text-xs dc-email" style="color:var(--text-muted);"></div>
+      </div>
+      <span class="badge" style="background:var(--gold-dim); color:var(--gold);">Awaiting approval</span>
+    </div>
+    <div class="mb-3">
+      <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Subject</div>
+      <input class="dc-subject w-full text-sm rounded-lg px-4 py-2.5 focus-visible:outline-none focus:ring-2" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);">
+    </div>
+    <div class="mb-4">
+      <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Email</div>
+      <textarea class="dc-body w-full text-sm rounded-lg px-4 py-3 leading-relaxed resize-y focus-visible:outline-none focus:ring-2" rows="10" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);"></textarea>
+    </div>
+    <div class="flex items-center justify-end gap-3">
+      <span class="dc-status text-xs" style="color:var(--green);"></span>
+      <button class="dc-discard btn-ghost rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">Discard</button>
+      <button class="dc-send btn-primary rounded-lg px-4 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--accent-hover);">Send email</button>
+    </div>
+  </div>
+</template>
 
 <template id="review-card-template">
   <div class="review-card rounded-2xl p-6 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
@@ -150,6 +324,15 @@
 <script src="/static/nav.js"></script>
 <script>
   renderNav('Outreach Agent');
+
+  const howItWorks = document.getElementById('how-it-works');
+  document.getElementById('how-it-works-btn').addEventListener('click', () => howItWorks.showModal());
+  howItWorks.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', () => howItWorks.close()));
+  howItWorks.addEventListener('click', (e) => {
+    // A click on the backdrop is reported with the <dialog> itself as target,
+    // so this only fires outside the panel, never on the content inside it.
+    if (e.target === howItWorks) howItWorks.close();
+  });
 
   const fmtDate = (iso) => {
     if (!iso) return '—';
@@ -196,7 +379,10 @@
 
   let campaignsCache = [];
   let campaignPreview = null;
-  let campaignBlockedReason = null; // 409 detail (e.g. Google not connected) — shown when Send is clicked anyway
+  let campaignBlockedReason = null; // 409 detail (e.g. Google not connected) — shown when Prepare is clicked anyway
+  function setPrepareEnabled(enabled) {
+    document.getElementById('send-batch-btn').disabled = !enabled;
+  }
   async function loadCampaignSafety() {
     const el = document.getElementById('campaign-safety');
     try {
@@ -204,6 +390,8 @@
       if (res.status === 409) {
         const detail = (await res.json()).detail || 'Connect your Google account to get started.';
         campaignBlockedReason = detail;
+        campaignPreview = null;
+        setPrepareEnabled(false);
         el.style.color = 'var(--text-secondary)';
         el.innerHTML = `${esc(detail)} <a href="/settings" style="color:var(--accent);">Go to Settings</a>`;
         return;
@@ -211,13 +399,113 @@
       if (!res.ok) throw new Error('Could not load campaign safety');
       campaignBlockedReason = null;
       campaignPreview = await res.json();
+      // Keep the explainer honest: the cap is a server-side setting, so read
+      // it off the preview rather than hardcoding a number in the copy.
+      document.getElementById('hiw-daily-limit').textContent = campaignPreview.daily_limit;
+      // Settings the account must fill before anything can be drafted (a
+      // non-generic goal; the call-to-action link is optional). Block the
+      // button and say why, rather than letting a batch fail at generation time.
+      const blockers = campaignPreview.blockers || [];
+      if (blockers.length) {
+        setPrepareEnabled(false);
+        el.style.color = 'var(--gold)';
+        el.innerHTML = `${esc(blockers.join(' '))} <a href="/settings" style="color:var(--accent);">Go to Settings</a>`;
+        return;
+      }
+      setPrepareEnabled(true);
       el.style.color = 'var(--text-secondary)';
-      el.textContent = `${campaignPreview.eligible} recipient${campaignPreview.eligible === 1 ? '' : 's'} can send today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
+      el.textContent = `${campaignPreview.eligible} recipient${campaignPreview.eligible === 1 ? '' : 's'} can be drafted today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
         (campaignPreview.capped ? ` · ${campaignPreview.capped} held by the daily cap` : '');
     } catch (e) {
       el.style.color = 'var(--accent)';
       el.textContent = 'Could not load campaign safety.';
     }
+  }
+
+  async function loadDrafts() {
+    const list = document.getElementById('drafts-list');
+    try {
+      const drafts = await fetch('/api/outreach/drafts').then(r => r.json());
+      list.innerHTML = '';
+      if (!Array.isArray(drafts) || !drafts.length) {
+        list.innerHTML = `
+          <div class="rounded-xl p-8 text-center" style="background:var(--bg-elevated); border:1px dashed var(--border);">
+            <p class="text-sm font-medium mb-1">No drafts waiting</p>
+            <p class="text-xs" style="color:var(--text-muted);">Press <b>Prepare drafts</b> above to generate an email for each eligible contact.</p>
+          </div>`;
+      } else {
+        drafts.forEach(d => list.appendChild(renderDraft(d)));
+      }
+      updateDraftCount();
+    } catch (e) {
+      list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Couldn't load drafts.</div>`;
+    }
+  }
+
+  function renderDraft(d) {
+    const tpl = document.getElementById('draft-card-template').content.cloneNode(true);
+    const card = tpl.querySelector('.draft-card');
+    card.dataset.id = d.id;
+    tpl.querySelector('.dc-name').textContent = d.name || 'Unknown';
+    tpl.querySelector('.dc-email').textContent = d.email || '';
+    tpl.querySelector('.dc-subject').value = d.subject || '';
+    tpl.querySelector('.dc-body').value = d.body || '';
+
+    const sendBtn = tpl.querySelector('.dc-send');
+    const discardBtn = tpl.querySelector('.dc-discard');
+    const statusEl = tpl.querySelector('.dc-status');
+
+    sendBtn.addEventListener('click', async () => {
+      sendBtn.disabled = true; discardBtn.disabled = true;
+      sendBtn.textContent = 'Sending…';
+      statusEl.style.color = 'var(--green)'; statusEl.textContent = '';
+      try {
+        const res = await fetch(`/api/outreach/drafts/${d.id}/send`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subject: card.querySelector('.dc-subject').value,
+            body: card.querySelector('.dc-body').value,
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to send');
+        statusEl.textContent = 'Sent ✓';
+        card.style.opacity = '0.5';
+        sendBtn.textContent = 'Sent';
+        setTimeout(() => { card.remove(); updateDraftCount(); }, 900);
+        loadCampaigns();
+      } catch (e) {
+        sendBtn.disabled = false; discardBtn.disabled = false;
+        sendBtn.textContent = 'Send email';
+        statusEl.style.color = 'var(--accent)';
+        statusEl.textContent = e.message || 'Failed to send — try again';
+      }
+    });
+
+    discardBtn.addEventListener('click', async () => {
+      if (!confirm('Discard this draft without sending? The contact stays Pending and can be drafted again later.')) return;
+      sendBtn.disabled = true; discardBtn.disabled = true;
+      discardBtn.textContent = 'Discarding…';
+      try {
+        const res = await fetch(`/api/outreach/drafts/${d.id}/discard`, { method: 'POST' });
+        if (!res.ok) throw new Error('Failed');
+        card.style.opacity = '0.5';
+        setTimeout(() => { card.remove(); updateDraftCount(); }, 700);
+      } catch (e) {
+        sendBtn.disabled = false; discardBtn.disabled = false;
+        discardBtn.textContent = 'Discard';
+        statusEl.style.color = 'var(--accent)';
+        statusEl.textContent = 'Failed to discard — try again';
+      }
+    });
+
+    return card;
+  }
+
+  function updateDraftCount() {
+    const count = document.querySelectorAll('.draft-card').length;
+    document.getElementById('draft-count-badge').textContent = count;
+    animateCount(document.getElementById('stat-drafts'), count);
+    document.getElementById('send-all-btn').classList.toggle('hidden', count === 0);
   }
   async function loadCampaigns() {
     const body = document.getElementById('campaigns-body');
@@ -380,24 +668,24 @@
     await Promise.all([loadCampaigns(), loadCampaignSafety()]);
     setLoading(btn, false);
 
-    const sendCount = campaignPreview?.eligible || 0;
-    if (sendCount === 0) {
+    const draftCount = campaignPreview?.eligible || 0;
+    if (draftCount === 0) {
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--text-secondary)';
-      // A blocked preview (Google not connected, no sheet picked) is not the
+      // A blocked preview (Google not connected, generic settings) is not the
       // same as an empty sheet — say the real reason.
-      resultEl.textContent = campaignBlockedReason || 'No pending contacts are available to send today.';
+      resultEl.textContent = campaignBlockedReason || (campaignPreview?.blockers || []).join(' ') || 'No pending contacts are available to draft today.';
       return;
     }
-    if (!confirm(`Send a real outreach email to ${sendCount} contact${sendCount === 1 ? '' : 's'}? This batch is capped at ${campaignPreview.daily_limit} emails per inbox in 24 hours.`)) return;
+    if (!confirm(`Draft ${draftCount} outreach email${draftCount === 1 ? '' : 's'} for review? Nothing is sent yet — each draft lands below for you to read, edit and approve.`)) return;
 
-    setLoading(btn, true, 'Sending…');
+    setLoading(btn, true, 'Drafting…');
     resultEl.classList.add('hidden');
     try {
-      const res = await fetch('/api/outreach/campaigns/send', {
+      const res = await fetch('/api/outreach/campaigns/prepare', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to start batch');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to start drafting');
       const { job_id } = await res.json();
       const job = await pollJob(job_id);
       if (job.status === 'error') throw new Error(job.error);
@@ -405,13 +693,46 @@
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--green)';
       resultEl.textContent = data.total === 0
-        ? 'No pending contacts to send to.'
-        : `Sent ${data.sent} of ${data.total} emails.` + (data.failed?.length ? ` ${data.failed.length} failed.` : '');
-      await loadCampaigns();
+        ? 'No new contacts to draft — they may already be in the review queue below.'
+        : `Prepared ${data.prepared} of ${data.total} drafts. Review them below, then send.` + (data.failed?.length ? ` ${data.failed.length} couldn't be drafted.` : '');
+      await Promise.all([loadDrafts(), loadCampaignSafety()]);
     } catch (e) {
       resultEl.classList.remove('hidden');
       resultEl.style.color = 'var(--accent)';
-      resultEl.textContent = e.message || 'Failed to send batch.';
+      resultEl.textContent = e.message || 'Failed to prepare drafts.';
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  document.getElementById('send-all-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('send-all-btn');
+    const resultEl = document.getElementById('send-result');
+    const count = document.querySelectorAll('.draft-card').length;
+    if (!count) return;
+    if (!confirm(`Send all ${count} approved draft${count === 1 ? '' : 's'} now? They go out one at a time, spaced apart, from your Gmail. Anyone who unsubscribed in the meantime is skipped.`)) return;
+
+    setLoading(btn, true, 'Sending…');
+    resultEl.classList.add('hidden');
+    try {
+      const res = await fetch('/api/outreach/drafts/send-all', { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to start sending');
+      const { job_id } = await res.json();
+      // Sends are paced (multi-second gaps), so a bulk run can take a while --
+      // poll a little less aggressively than the default.
+      const job = await pollJob(job_id, 2000);
+      if (job.status === 'error') throw new Error(job.error);
+      const data = job.result;
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--green)';
+      resultEl.textContent = `Sent ${data.sent} draft${data.sent === 1 ? '' : 's'}.`
+        + (data.skipped?.length ? ` ${data.skipped.length} skipped.` : '')
+        + (data.failed?.length ? ` ${data.failed.length} failed.` : '');
+      await Promise.all([loadDrafts(), loadCampaigns(), loadCampaignSafety()]);
+    } catch (e) {
+      resultEl.classList.remove('hidden');
+      resultEl.style.color = 'var(--accent)';
+      resultEl.textContent = e.message || 'Failed to send drafts.';
     } finally {
       setLoading(btn, false);
     }
@@ -486,6 +807,7 @@
 
   loadCampaigns();
   loadCampaignSafety();
+  loadDrafts();
   loadReviews();
 </script>
 

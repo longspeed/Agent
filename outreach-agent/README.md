@@ -54,10 +54,15 @@ create extension if not exists pgcrypto;
 create table public.accounts (
     id uuid primary key default gen_random_uuid(),
     email text not null unique,
-    password_hash text not null,
+    -- Nullable: accounts created via "Sign in with Google" have no password
+    -- (accounts_db.link_or_create_google_account inserts password_hash = NULL).
+    password_hash text,
+    -- Set only for Google-linked accounts; used by get_account_by_google_id.
+    google_id text unique,
     google_token text,
     google_sheet_id text,
     sender_name text not null default 'the team',
+    sender_company text not null default '',
     meeting_purpose text not null default 'a quick intro call to see if there''s a fit to work together',
     calendar_booking_link text,
     notify_email text,
@@ -88,9 +93,61 @@ create table public.usage_events (
 );
 create index usage_events_account_idx on public.usage_events (account_id, created_at);
 
+-- Outreach emails awaiting human approval. Nothing is emailed from here until
+-- someone presses Send on the /outreach page.
+create table public.outreach_drafts (
+    id bigint generated always as identity primary key,
+    account_id uuid not null references public.accounts(id) on delete cascade,
+    row_index integer not null,
+    name text not null default '',
+    email text not null default '',
+    company text not null default '',
+    subject text not null default '',
+    body text not null default '',
+    status text not null default 'pending',  -- pending | sent | discarded
+    created_at timestamptz not null default now()
+);
+create index outreach_drafts_account_status_idx on public.outreach_drafts (account_id, status);
+-- Dedupe guard: preparing drafts twice (double-click, overlapping jobs) must
+-- never queue the same sheet row twice. Partial, so a row can be drafted again
+-- after an earlier draft was sent or discarded.
+create unique index outreach_drafts_pending_row_idx
+    on public.outreach_drafts (account_id, row_index) where status = 'pending';
+
+-- Addresses that asked to stop. Checked when building a batch AND again
+-- immediately before each send.
+create table public.suppressions (
+    id bigint generated always as identity primary key,
+    account_id uuid not null references public.accounts(id) on delete cascade,
+    email text not null,
+    source text not null default 'unsubscribe_link',
+    created_at timestamptz not null default now(),
+    unique (account_id, email)
+);
+
 alter table public.accounts enable row level security;
 alter table public.reviews enable row level security;
 alter table public.usage_events enable row level security;
+alter table public.outreach_drafts enable row level security;
+alter table public.suppressions enable row level security;
+```
+
+Upgrading an existing project (the tables above are new as of 2026-07-24):
+
+```sql
+alter table public.accounts add column if not exists sender_company text not null default '';
+-- then run the two create table statements above, their indexes, and their
+-- `enable row level security` lines.
+```
+
+If your project predates "Sign in with Google", also bring the accounts table
+in line with the code (harmless if the column already exists):
+
+```sql
+alter table public.accounts add column if not exists google_id text;
+create unique index if not exists accounts_google_id_key on public.accounts (google_id);
+-- Google-linked accounts have no password, so this column cannot be NOT NULL.
+alter table public.accounts alter column password_hash drop not null;
 ```
 
 RLS is enabled with no policies: the publishable/anon key can read nothing,

@@ -140,8 +140,9 @@ export function GettingStartedPage() {
           <p className="text-sm leading-relaxed text-sand max-w-2xl">
             Agent Hub emails a list of leads from your own Gmail and handles the replies. Bring a
             list you already have, or let it find one for you. Setup takes about ten minutes: you
-            need a Google account, and a calendar booking link (Cal.com, Calendly, or similar) if
-            you want meetings bookable straight from your emails.
+            need a Google account, and optionally a call-to-action link (a booking page like
+            Cal.com or Calendly, a signup, a demo, a resource) if you want to drive people
+            somewhere specific. Without one, each email just asks for a reply.
           </p>
         </div>
 
@@ -354,14 +355,17 @@ export function GettingStartedPage() {
                 head={['Field', 'What it does']}
                 rows={[
                   ['Sender first name', 'Signs every outreach email'],
-                  ['Calendar booking link', 'Dropped into emails so people can book you directly'],
-                  ['Meeting purpose', 'One sentence, used in every email, describing what you want from the call'],
+                  ['Company name', 'Shown under your name in the signature'],
+                  ['What you’re reaching out about', 'One sentence, used in every email: what you offer and what you want to happen'],
+                  ['Call-to-action link (optional)', 'Where people go next — a booking page, signup, demo, or doc. Blank = ask for a reply'],
                   ['Notification email', 'Where batch summaries and reply alerts go'],
                 ]}
               />
               <p>
-                Write the meeting purpose as a natural continuation of "I'd like to set up…". For
-                example: <em className="text-cream">a quick intro call to see if there's a fit to work together</em>.
+                Write it as what you offer plus the outcome you want. For example:{' '}
+                <em className="text-cream">show finance teams how to cut invoice matching from days to minutes, and book a 15-minute call</em>.
+                It doesn't have to be a meeting — "start a free trial", "see a demo", or just
+                "reply if useful" all work.
               </p>
               <p>
                 Click <strong className="text-cream">Save settings</strong>. The onboarding checklist

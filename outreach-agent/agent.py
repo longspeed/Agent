@@ -1,3 +1,4 @@
+import re
 import time
 
 import requests
@@ -8,6 +9,7 @@ from config import (
     CLIPROXY_API_KEY,
     CLIPROXY_BASE_URL,
     CLIPROXY_MODEL,
+    DEFAULT_MEETING_PURPOSE,
     OPENROUTER_API_KEY,
     OPENROUTER_MODEL,
 )
@@ -15,45 +17,75 @@ from config import (
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_RETRIES = 4
 
-OUTREACH_SYSTEM = """You are an expert SDR (sales development rep) who writes cold outreach
-emails that get replies. You know the craft: short, specific, no fluff, no buzzwords,
-no "I hope this email finds you well," no generic flattery. One clear idea, one clear ask.
+OUTREACH_SYSTEM = """You are a senior SDR who writes cold emails that get replied to. You
+write like one person emailing one person -- not like a template with the name swapped in.
 
-Rules:
-- 3-5 sentences total. Every sentence earns its place.
-- Never invent facts about the recipient, their company, or any event/interaction that didn't
-  happen. You are only given a name, and optionally a company name -- do not fabricate anything
-  beyond that (no fake shared connections, events, or details you weren't given).
-- Open by addressing the recipient by name and, only if a company name was given, naturally
-  mention it. If no company was given, keep the opener general but still warm and direct --
-  do not pretend to know something about them.
-- State the reason for the meeting in one plain sentence: what's in it for them, not a feature list.
-- Make the ask a single, low-friction sentence pointing to the scheduling link. Frame it as
-  "grab 15 minutes" or similar, not "let's hop on a call to discuss synergies."
-- No corporate jargon: avoid "synergy," "circle back," "touch base," "leverage," "reach out"
-  (ironic, but avoid it in the body), "excited to," "passionate about."
-- Plain text only, no markdown, no bullet points, no emoji.
-- Sign off with just the sender's first name, no "Best regards," no company boilerplate signature.
+What makes these work: a real reason for writing to THIS person, one concrete idea, and an
+ask so small it is easier to say yes than to think about it.
 
-Output exactly two parts, nothing else:
-Line 1: "Subject: <subject line>" (subject under 8 words, specific, not clickbait, no emoji)
-Then a blank line, then the email body.
+Truth rules (these outrank everything else):
+- You are given a name, sometimes a company, sometimes one researched note about them, a
+  description of what the sender offers, and the goal of the email. That is the entirety of
+  what you know.
+- Never invent anything about the recipient: role, tools, headcount, funding, recent posts,
+  events you both attended, mutual connections, or any prior interaction. None of it.
+- Never invent anything about the sender either: no customer names, no percentages, no case
+  studies, no pricing, no timelines. If it was not given to you, it does not go in the email.
+
+Structure, 3-5 sentences total:
+1. Open with why you are writing to them specifically. If a research note was given, that is
+   your reason -- state it plainly, no flattery. If there is no note, be straightforward
+   about writing cold; never fake familiarity.
+2. One sentence on what the sender offers, framed as what it changes for someone in their
+   position. Not a feature list, not adjectives.
+3. One specific, low-friction ask that fits the sender's goal -- it will NOT always be a
+   meeting. If a call-to-action link is given, name the next step in plain words and put the
+   link in as a bare URL (book a time, start a free trial, see a demo, grab the guide,
+   whatever the goal is). If no link is given, ask them to reply. Keep the commitment small:
+   it should be easier to say yes than to think about it. Never use markdown for the link.
+
+Voice:
+- Plain, direct, unexcited. Short words. Contractions are fine.
+- Do not open with "I", and do not spend the first sentence talking about the sender.
+- No flattery ("love what you're building"), no manufactured enthusiasm, no apologising for
+  emailing.
+- Banned outright: "I hope this email finds you well", "quick question", "circle back",
+  "touch base", "synergy", "leverage", "reach out", "excited to", "passionate about",
+  "just following up", "game-changer", "seamless", "cutting-edge", "best-in-class",
+  "revolutionize", and the "it's not just X, it's Y" construction.
+- No em dashes and no en dashes. Use a comma, a full stop, or a semicolon.
+- Plain text only: no markdown, no bullets, no emoji, no bold.
+- No placeholders, ever. Never write [Name], {{company}}, <role>, or "Your Name". If you do
+  not know something, leave it out of the sentence entirely.
+- Sign off with the sender's first name on its own line. If a company name was given, put it
+  on the next line. Nothing else: no "Best regards", no title, no phone number.
+
+Subject line:
+- Under 8 words, sentence case, specific to the reason you are writing.
+- It should read like something a colleague would send, not a campaign.
+- No emoji, no clickbait, no ALL CAPS, not "Quick question", and not just the company name.
+
+Output exactly this and nothing else:
+Subject: <the subject line>
+<blank line>
+<the email body>
 """
 
 REPLY_SYSTEM = """You draft the reply the sender will send to a prospect who wrote back on a
-cold outreach thread. The thread's end goal is a booked meeting via the scheduling link, but
-this reply's only job is to respond to what the prospect actually wrote -- a draft that
-ignores their words or re-pitches on autopilot is worse than no draft.
+cold outreach thread. The thread has a goal the sender set -- it might be a call, a demo, a
+trial signup, a reply, or something else -- but this reply's only job is to respond to what
+the prospect actually wrote. A draft that ignores their words or re-pitches on autopilot is
+worse than no draft.
 
 Read their newest message carefully and match the reply to what it actually is:
 
-- They want to meet or asked how to book: confirm in one short line and give the scheduling
-  link. If they proposed a specific time, accept it and use the link only to lock it in.
-  No extra selling -- they already said yes.
+- They want to move forward or asked how: confirm in one short line and give the call-to-action
+  link if there is one. If they proposed a specific time and the goal is a meeting, accept it
+  and use the link only to lock it in. No extra selling -- they already said yes.
 - They asked questions: answer every question they asked, in their order, before anything
   else. Use only facts provided in the context or earlier in the thread. If the information
   given doesn't contain the answer (pricing, integrations, customer names, anything), say so
-  plainly and offer to cover it on the call -- never guess and never invent details.
+  plainly and offer to cover it live or in a follow-up -- never guess and never invent details.
 - They have an objection or hesitation ("not now", "we already use X", "too busy"): name the
   specific thing they said, respond to it honestly in a sentence if the context gives you a
   real response, then make the smallest possible next ask (a yes/no question, or "worth
@@ -72,8 +104,8 @@ Style:
   formal, detailed email earns a fuller one. When unsure, shorter.
 - Reference their actual words where natural, so it reads like a person who listened --
   but never quote their message back at length.
-- Include the scheduling link only when they show interest or ask about logistics. If no
-  scheduling link is provided, ask for their availability instead.
+- Include the call-to-action link only when they show interest or ask about next steps. If
+  there is no link, tell them the next step in a plain sentence instead.
 - No corporate jargon, no manufactured enthusiasm ("Great question!"), no apologizing for
   emailing, no "just following up."
 - Plain text only: no subject line, no markdown, no bullet points, no emoji.
@@ -140,34 +172,209 @@ def _chat(system, user_prompt):
 def _sender_context(account):
     return {
         "sender_name": account.get("sender_name") or "the team",
-        "meeting_purpose": account.get("meeting_purpose")
-        or "a quick intro call to see if there's a fit to work together",
+        "sender_company": (account.get("sender_company") or "").strip(),
+        "meeting_purpose": (account.get("meeting_purpose") or "").strip(),
         "calendar_link": (account.get("calendar_booking_link") or "").strip(),
     }
 
 
-def generate_outreach_email(account, name, company):
-    ctx = _sender_context(account)
-    if not ctx["calendar_link"]:
-        raise RuntimeError("Set a calendar booking link in Settings before sending outreach")
+# Tolerant of everything models actually emit here: "**Subject:**", "subject -",
+# a quoted subject, an en/em dash separator. The strict prefix strip this
+# replaced only matched a literal "Subject:".
+_SUBJECT_LINE = re.compile(
+    r"^\s*(?:\*\*|__|#{1,3}\s*)?\s*subject\s*(?:\*\*|__)?\s*[:\-–—]\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
 
-    user_prompt = (
+
+def _split_subject(text):
+    """Returns (subject_or_None, body).
+
+    When the first line is not a recognisable subject line the body is returned
+    WHOLE and subject is None. That asymmetry is the point: the previous
+    implementation always consumed line 1, so any generation that omitted the
+    "Subject:" prefix silently lost its opening sentence into the subject
+    header. Losing the subject is recoverable (we retry); losing a sentence out
+    of the middle of a sent email is not.
+    """
+    first, _, rest = text.partition("\n")
+    match = _SUBJECT_LINE.match(first)
+    if not match:
+        return None, text.strip()
+    # "**Subject:** hi" puts the closing markdown after the colon, so it lands
+    # in the capture -- strip any stray asterisks/underscores and quotes off it.
+    subject = match.group(1).strip().strip("*_").strip().strip('"').strip("'")
+    return subject, rest.strip()
+
+
+# Phrases that mark an email as machine-written to anyone who reads cold email.
+# Kept to things that are always wrong in this context, because every entry
+# here costs a regeneration.
+_BANNED_PHRASES = (
+    "hope this email finds you well", "hope this finds you well",
+    "hope you're doing well", "hope you are doing well",
+    "quick question", "circle back", "touch base", "synergy", "synergies",
+    "leverage", "reach out", "excited to", "passionate about",
+    "just following up", "game-changer", "game changer", "cutting-edge",
+    "best-in-class", "revolutionize", "revolutionise", "seamless",
+    "i wanted to reach", "let's hop on",
+)
+
+# [Name], {{company}}, <role>, "Your Name" -- an unfilled template escaping into
+# a real inbox is the single most damaging thing that can come out of this.
+_PLACEHOLDER = re.compile(
+    r"\[[^\]\n]{0,40}\]|\{\{|\}\}|<[a-z][a-z _-]{1,28}>|your name|your company|\bxyz\b",
+    re.IGNORECASE,
+)
+
+# Markdown the prompt forbids but models emit anyway: bold, headings, links,
+# and bulleted lines.
+_MARKDOWN = re.compile(r"\*\*|__|\]\(|^\s*[-*+]\s+|^\s*#{1,6}\s+", re.MULTILINE)
+
+_MIN_BODY_CHARS = 120
+_MAX_BODY_CHARS = 1400
+_MAX_SUBJECT_CHARS = 90
+
+
+def _validate_outreach(subject, body, calendar_link, unsubscribe_url=""):
+    """Returns a list of human-readable problems with a generated email; empty
+    means it is safe to queue. Every check here guards something that cannot be
+    walked back once the message leaves Gmail."""
+    problems = []
+    lowered = body.lower()
+
+    if not subject:
+        problems.append('No "Subject:" line was produced.')
+    elif len(subject) > _MAX_SUBJECT_CHARS:
+        problems.append(f"Subject is {len(subject)} characters; keep it under {_MAX_SUBJECT_CHARS}.")
+    elif "subject" in subject.lower()[:8]:
+        problems.append(f'Subject still contains its own label: {subject!r}.')
+
+    if len(body) < _MIN_BODY_CHARS:
+        problems.append(f"Body is only {len(body)} characters; it reads as truncated.")
+    elif len(body) > _MAX_BODY_CHARS:
+        problems.append(f"Body is {len(body)} characters; cut it to 3-5 sentences.")
+
+    # The entire call-to-action is this link. A model that paraphrases it
+    # ("book a time on my calendar") produces a plausible email with no way to act.
+    if calendar_link and calendar_link not in body:
+        problems.append("The scheduling link is missing from the body; include it verbatim.")
+
+    if unsubscribe_url and unsubscribe_url not in body:
+        problems.append("The unsubscribe line is missing from the body.")
+
+    found = [p for p in _BANNED_PHRASES if p in lowered]
+    if found:
+        problems.append("Remove these banned phrases: " + ", ".join(found) + ".")
+
+    if "—" in body or "–" in body:
+        problems.append("Remove the em/en dashes; use a comma or a full stop.")
+
+    placeholder = _PLACEHOLDER.search(body)
+    if placeholder:
+        problems.append(f"Unfilled placeholder in the body: {placeholder.group(0)!r}.")
+
+    if _MARKDOWN.search(body):
+        problems.append("Remove markdown formatting; this is a plain-text email.")
+
+    return problems
+
+
+def _opt_out_line(unsubscribe_url):
+    """Appended in code, never generated. A one-click opt-out is a legal
+    obligation in most of the jurisdictions this app is used from, and a link
+    the model retypes is a link it will eventually mangle."""
+    return f"Not the right time? Unsubscribe here and I won't email again: {unsubscribe_url}"
+
+
+def account_send_blockers(account):
+    """Settings that must be filled before any outreach can be generated, as a
+    list of human-readable reasons (empty = ready). The campaign preview shows
+    these so the batch button can be disabled with an explanation, instead of
+    letting the operator kick off a run that fails every row at generation
+    time. generate_outreach_email enforces the same condition itself, so the
+    gate holds even if a caller skips the preview.
+
+    The call-to-action link is intentionally NOT required: outreach doesn't have
+    to drive to a booking page -- with no link the email simply asks for a
+    reply. Only a real, non-generic goal is mandatory."""
+    ctx = _sender_context(account)
+    blockers = []
+    if not ctx["meeting_purpose"] or ctx["meeting_purpose"] == DEFAULT_MEETING_PURPOSE:
+        blockers.append(
+            "Describe what you're reaching out about in Settings - the default text is too "
+            "generic to write a useful email from."
+        )
+    return blockers
+
+
+def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_url=""):
+    ctx = _sender_context(account)
+    # An untouched default goal gives the model no honest way to write "here's
+    # what's in it for you" -- refuse rather than send content-free mail. The
+    # CTA link is optional (see account_send_blockers).
+    blockers = account_send_blockers(account)
+    if blockers:
+        raise RuntimeError(" ".join(blockers))
+
+    base_prompt = (
         f"Recipient: {name}"
         + (f" at {company}" if company else "")
         + f"\nSender: {ctx['sender_name']}"
-        + f"\nReason for the meeting: {ctx['meeting_purpose']}"
-        + f"\nScheduling link to include as the call-to-action: {ctx['calendar_link']}"
-        + "\n\nWrite the email."
+        + (f"\nSender's company (use in the signature): {ctx['sender_company']}" if ctx["sender_company"] else "")
+        + f"\nWhat the sender offers and wants to happen (the goal): {ctx['meeting_purpose']}"
     )
+    if ctx["calendar_link"]:
+        base_prompt += (
+            f"\nCall-to-action link to include verbatim as the next step: {ctx['calendar_link']}"
+        )
+    else:
+        base_prompt += (
+            "\nNo call-to-action link is set: make the ask a simple reply to this email, "
+            "not a link."
+        )
+    if lead_reason:
+        # Sourced by leads.py from web search, so it is the one verified thing
+        # we know about this person -- and also machine-extracted, hence the
+        # explicit ceiling on how far it may be pushed.
+        base_prompt += (
+            f"\n\nResearch note about this person (the reason you are writing to them): {lead_reason}"
+            "\nUse this as your opening reason for writing. Do not extrapolate past it, do not"
+            " restate it as something you personally saw or read, and do not treat it as a"
+            " relationship you already have."
+        )
+    base_prompt += "\n\nWrite the email."
 
-    text = _chat(OUTREACH_SYSTEM, user_prompt)
+    attempts = []
+    for attempt in range(2):
+        user_prompt = base_prompt
+        if attempts:
+            # Second pass: show the model its own output and exactly what was
+            # wrong with it. Far more reliable than re-rolling the same prompt.
+            user_prompt += (
+                "\n\nYour previous attempt was rejected:\n---\n"
+                + attempts[-1]["text"]
+                + "\n---\nFix all of these and output the corrected email in the required format:\n"
+                + "\n".join(f"- {p}" for p in attempts[-1]["problems"])
+            )
 
-    # Split on the first newline, not "\n\n": models regularly omit the blank
-    # line after the subject, and partitioning on "\n\n" then swallows the
-    # entire body into the subject.
-    subject_line, _, body = text.partition("\n")
-    subject = subject_line.removeprefix("Subject:").strip()
-    return subject, body.strip()
+        text = _chat(OUTREACH_SYSTEM, user_prompt)
+        subject, body = _split_subject(text)
+        if unsubscribe_url:
+            body = f"{body}\n\n{_opt_out_line(unsubscribe_url)}"
+
+        problems = _validate_outreach(subject, body, ctx["calendar_link"], unsubscribe_url)
+        if not problems:
+            return subject, body
+        attempts.append({"text": text, "problems": problems})
+
+    # Raising leaves the sheet row untouched and surfaces in the batch's failed
+    # list, matching how every other per-contact failure behaves: nothing was
+    # sent, so the row stays safe to retry.
+    raise RuntimeError(
+        "Could not generate a usable email for "
+        f"{name or 'this contact'} after 2 attempts: " + " ".join(attempts[-1]["problems"])
+    )
 
 
 def draft_reply(account, name, company, customer_reply, history=()):
@@ -181,8 +388,11 @@ def draft_reply(account, name, company, customer_reply, history=()):
     )
     user_prompt = (
         f"Sender's first name (sign with this): {ctx['sender_name']}\n"
-        f"What the sender offers / why they wanted the meeting: {ctx['meeting_purpose']}\n"
-        f"Scheduling link: {ctx['calendar_link'] or '(none set)'}\n"
+        # Unlike outreach, a reply is never blocked on this being filled in:
+        # the prospect already engaged, and leaving them hanging because a
+        # settings field is generic would be the worse failure.
+        f"What the sender offers and the goal of the outreach: {ctx['meeting_purpose'] or DEFAULT_MEETING_PURPOSE}\n"
+        f"Call-to-action link: {ctx['calendar_link'] or '(none set)'}\n"
         f"Prospect: {name}"
         + (f" at {company}" if company else "")
         + f"\n\nThe conversation so far, oldest first:\n{conversation}\n\n"

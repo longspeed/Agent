@@ -35,6 +35,18 @@ APP_SECRET_KEY = os.environ["APP_SECRET_KEY"]
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")  # only needed for the lead sourcing agent
 DAILY_SEND_LIMIT = int(os.environ.get("DAILY_SEND_LIMIT", "25"))
 
+# Must stay byte-identical to the `meeting_purpose` column default in the
+# accounts table (see README). An account still carrying this string has never
+# told us what the meeting is actually for, and the model cannot write "what's
+# in it for them" out of it -- agent.py refuses to generate until it changes.
+DEFAULT_MEETING_PURPOSE = "a quick intro call to see if there's a fit to work together"
+
+# Absolute, publicly reachable origin for links that must survive outside the
+# app -- today just the unsubscribe link baked into every outreach email. It
+# has to work from a stranger's mail client, so localhost is only ever right in
+# development.
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
 

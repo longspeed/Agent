@@ -1,3 +1,4 @@
+import html
 import os
 import posixpath
 import sys
@@ -15,7 +16,9 @@ from googleapiclient.errors import HttpError
 from pydantic import BaseModel
 
 import accounts_db
+import agent
 import auth
+import drafts_db
 import drive
 import gmail
 import google_auth
@@ -25,6 +28,7 @@ import reviews_db
 import send_outreach
 import sheet_template
 import sheets
+import suppressions_db
 import usage
 import watch_replies
 
@@ -66,6 +70,11 @@ PUBLIC_PATHS.add("/static/legal.css")
 # The getting-started guide is the product documentation the marketing site
 # links to as "Docs", so a prospect has to be able to read it before signing up.
 PUBLIC_PATHS.add("/getting-started")
+
+# The one-click opt-out endpoint. It MUST be reachable with no session: the
+# person clicking it is an email recipient, never a logged-in user of this app.
+# Authenticity comes from the signed token in the URL, not from a cookie.
+PUBLIC_PATHS.add("/unsubscribe")
 
 # Prefixes served without auth. /static/landing/ is the marketing bundle;
 # /static/app/assets/ holds the compiled React chunks the guide needs (it shares
@@ -323,6 +332,7 @@ def me(request: Request):
 
 class SettingsBody(BaseModel):
     sender_name: str | None = None
+    sender_company: str | None = None
     meeting_purpose: str | None = None
     calendar_booking_link: str | None = None
     notify_email: str | None = None
@@ -378,7 +388,7 @@ def get_plan(request: Request):
         "price_monthly_usd": 49,
         "daily_send_limit": sheets.DAILY_SEND_LIMIT,
         "lead_searches_per_hour": 10,
-        "note": "Human-approved leads, human-reviewed replies, daily send cap. Checkout is coming next.",
+        "note": "Human-approved leads, human-reviewed emails and replies, one-click opt-out, daily send cap. Checkout is coming next.",
     }
 
 
@@ -521,7 +531,8 @@ def list_campaigns(request: Request):
 
 
 def _campaign_preview(account: dict) -> dict:
-    readiness = sheets.campaign_readiness(account)
+    suppressed = suppressions_db.list_suppressed_emails(account["id"])
+    readiness = sheets.campaign_readiness(account, suppressed_emails=suppressed)
     return {
         "eligible": len(readiness["eligible"]),
         "eligible_total": readiness["eligible_total"],
@@ -529,6 +540,10 @@ def _campaign_preview(account: dict) -> dict:
         "daily_limit": readiness["daily_limit"],
         "remaining_today": readiness["remaining_today"],
         "capped": readiness["capped"],
+        # Settings that must be filled before anything can be drafted. When
+        # non-empty the UI disables the prepare button and shows why, rather
+        # than letting a batch fail every row at generation time.
+        "blockers": agent.account_send_blockers(account),
     }
 
 
@@ -537,32 +552,38 @@ def campaign_preview(request: Request):
     return _campaign_preview(_account(request))
 
 
-class SendCampaignBody(BaseModel):
+class PrepareCampaignBody(BaseModel):
     confirmed: bool = False
 
 
-@app.post("/api/outreach/campaigns/send", status_code=202)
-def send_campaigns(request: Request, payload: SendCampaignBody):
+@app.post("/api/outreach/campaigns/prepare", status_code=202)
+def prepare_campaigns(request: Request, payload: PrepareCampaignBody):
+    """Generate + validate an email per eligible contact and queue them for
+    review. Nothing is emailed here; approval happens per-draft below."""
     account = _account(request)
-    if not ratelimit.check(f"batch-send:{account['id']}", limit=5, window_seconds=3600):
-        raise HTTPException(status_code=429, detail="Too many send batches this hour. Try again later.")
+    if not ratelimit.check(f"batch-prepare:{account['id']}", limit=5, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many draft batches this hour. Try again later.")
     preview = _campaign_preview(account)
     if not payload.confirmed:
-        raise HTTPException(status_code=400, detail="Review the batch and confirm before sending.")
+        raise HTTPException(status_code=400, detail="Review the batch and confirm before preparing drafts.")
+    if preview["blockers"]:
+        raise HTTPException(status_code=409, detail=" ".join(preview["blockers"]))
     if not preview["eligible"]:
-        raise HTTPException(status_code=409, detail="No approved contacts are available to send today. Approve leads on the Lead Agent page or wait for the daily limit to reset.")
+        raise HTTPException(status_code=409, detail="No approved contacts are available to draft today. Approve leads on the Lead Agent page or wait for the daily limit to reset.")
 
+    # The lock still serializes one prepare batch per account -- generating 25
+    # drafts twice concurrently would waste LLM calls and race the dedupe.
     with _send_lock_guard:
         if account["id"] in _accounts_sending:
             raise HTTPException(
                 status_code=409,
-                detail="A batch is already sending for this account — wait for it to finish.",
+                detail="A batch is already preparing for this account — wait for it to finish.",
             )
         _accounts_sending.add(account["id"])
 
     def run():
         try:
-            return send_outreach.main(account)
+            return send_outreach.prepare_drafts(account)
         finally:
             with _send_lock_guard:
                 _accounts_sending.discard(account["id"])
@@ -572,6 +593,83 @@ def send_campaigns(request: Request, payload: SendCampaignBody):
     except Exception:
         # If the job thread never spawned, run()'s finally never fires --
         # release here or the account is wedged on 409 until restart.
+        with _send_lock_guard:
+            _accounts_sending.discard(account["id"])
+        raise
+
+
+@app.get("/api/outreach/drafts")
+def list_drafts(request: Request):
+    return drafts_db.list_pending_drafts(request.state.account_id)
+
+
+class SendDraftBody(BaseModel):
+    subject: str
+    body: str
+
+
+def _guard_draft_send(account: dict, draft: dict):
+    """Shared pre-send checks for a single approved draft. Both run at SEND
+    time, not draft time: the cap can be reached and an address can opt out
+    between preparing a batch and approving it."""
+    if suppressions_db.is_suppressed(account["id"], draft["email"]):
+        drafts_db.discard(account["id"], draft["id"])
+        raise HTTPException(status_code=409, detail=f"{draft['email']} unsubscribed after this draft was prepared; it won't be sent.")
+    readiness = sheets.campaign_readiness(account, suppressed_emails=suppressions_db.list_suppressed_emails(account["id"]))
+    if readiness["remaining_today"] <= 0:
+        raise HTTPException(status_code=409, detail="Daily send limit reached. Try again after it resets.")
+
+
+@app.post("/api/outreach/drafts/{draft_id}/send")
+def send_draft(request: Request, draft_id: int, payload: SendDraftBody):
+    account = _account(request)
+    draft = drafts_db.get_draft(account["id"], draft_id)
+    if not draft or draft["status"] != "pending":
+        raise HTTPException(status_code=404, detail="Draft not found or already handled")
+    _guard_draft_send(account, draft)
+
+    _, sent_body = send_outreach.send_prepared_draft(
+        account, draft, subject=payload.subject, body=payload.body
+    )
+    drafts_db.mark_sent(account["id"], draft_id, payload.subject, sent_body)
+    return {"ok": True}
+
+
+@app.post("/api/outreach/drafts/{draft_id}/discard")
+def discard_draft(request: Request, draft_id: int):
+    account = _account(request)
+    draft = drafts_db.get_draft(account["id"], draft_id)
+    if not draft or draft["status"] != "pending":
+        raise HTTPException(status_code=404, detail="Draft not found or already handled")
+    drafts_db.discard(account["id"], draft_id)
+    return {"ok": True}
+
+
+@app.post("/api/outreach/drafts/send-all", status_code=202)
+def send_all_drafts(request: Request):
+    """Send every pending draft, human-paced, as a background job. Cap and
+    suppression are re-checked per draft inside send_all_prepared."""
+    account = _account(request)
+    if not ratelimit.check(f"batch-send:{account['id']}", limit=5, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many send batches this hour. Try again later.")
+    if not drafts_db.list_pending_drafts(account["id"]):
+        raise HTTPException(status_code=409, detail="No drafts are waiting to be sent.")
+
+    with _send_lock_guard:
+        if account["id"] in _accounts_sending:
+            raise HTTPException(status_code=409, detail="A batch is already running for this account — wait for it to finish.")
+        _accounts_sending.add(account["id"])
+
+    def run():
+        try:
+            return send_outreach.send_all_prepared(account)
+        finally:
+            with _send_lock_guard:
+                _accounts_sending.discard(account["id"])
+
+    try:
+        return {"job_id": start_job(account["id"], run)}
+    except Exception:
         with _send_lock_guard:
             _accounts_sending.discard(account["id"])
         raise
@@ -634,6 +732,97 @@ def dismiss_reply(request: Request, review_id: int):
 
     reviews_db.dismiss(account["id"], review_id)
     return {"ok": True}
+
+
+# --- One-click opt-out (public, no session) -----------------------------------
+# The recipient of an outreach email clicks this; there is no logged-in user.
+# The signed token in the URL is the only credential. GET only ever renders a
+# page -- the actual suppression happens on POST -- because mail clients and
+# security scanners routinely prefetch GET links, and a GET that unsubscribed
+# would silently opt people out who never clicked. The POST doubles as the RFC
+# 8058 One-Click endpoint (List-Unsubscribe-Post), which Gmail fires directly.
+
+def _unsub_page(title: str, message: str, token: str = "", status: int = 200) -> Response:
+    button = (
+        f'<form method="post" action="/unsubscribe">'
+        f'<input type="hidden" name="t" value="{html.escape(token)}">'
+        f'<button type="submit">Unsubscribe me</button></form>'
+        if token else ""
+    )
+    body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{html.escape(title)}</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #0f0e0c; color: #ece7df; display: grid; place-items: center;
+    min-height: 100vh; margin: 0; padding: 1.5rem; }}
+  .card {{ max-width: 30rem; background: #1a1815; border: 1px solid #302c26;
+    border-radius: 1rem; padding: 2.5rem; text-align: center; }}
+  h1 {{ font-size: 1.35rem; margin: 0 0 0.75rem; }}
+  p {{ color: #b8b0a4; line-height: 1.6; margin: 0 0 1.5rem; }}
+  button {{ font: inherit; background: #d97757; color: #0f0e0c; border: 0;
+    border-radius: 0.6rem; padding: 0.7rem 1.4rem; font-weight: 600; cursor: pointer; }}
+  button:hover {{ background: #e0876a; }}
+</style></head>
+<body><div class="card"><h1>{html.escape(title)}</h1><p>{message}</p>{button}</div></body></html>"""
+    return Response(content=body, media_type="text/html", status_code=status)
+
+
+def _resolve_unsub_token(token: str | None):
+    """(account, email) for a valid token, or (None, None). Accepts a
+    tampered/garbage token by returning None rather than raising, so the
+    handler can show a friendly page instead of a 500."""
+    parsed = auth.verify_unsubscribe_token(token)
+    if not parsed:
+        return None, None
+    account_id, email = parsed
+    return accounts_db.get_account(account_id), email
+
+
+@app.get("/unsubscribe")
+def unsubscribe_confirm(t: str = ""):
+    account, email = _resolve_unsub_token(t)
+    if not account:
+        return _unsub_page(
+            "Link expired or invalid",
+            "We couldn't read this unsubscribe link. If you keep receiving emails, "
+            "reply to one and ask to be removed.",
+            status=400,
+        )
+    if suppressions_db.is_suppressed(account["id"], email):
+        return _unsub_page("Already unsubscribed", f"<b>{html.escape(email)}</b> is already opted out. No more emails will be sent.")
+    return _unsub_page(
+        "Confirm unsubscribe",
+        f"Stop sending outreach emails to <b>{html.escape(email)}</b>? This can't be undone by you, "
+        "but the sender can re-add you on request.",
+        token=t,
+    )
+
+
+@app.post("/unsubscribe")
+async def unsubscribe_apply(request: Request):
+    # Token can arrive as a form field (our confirmation page) or a query
+    # param (Gmail's One-Click POST hits the List-Unsubscribe URL directly).
+    form = await request.form()
+    token = form.get("t") or request.query_params.get("t", "")
+    account, email = _resolve_unsub_token(token)
+    if not account:
+        return _unsub_page(
+            "Link expired or invalid",
+            "We couldn't process this unsubscribe request. Reply to one of the emails to be removed.",
+            status=400,
+        )
+    suppressions_db.add(account["id"], email, source="unsubscribe_link")
+    # Reflect it in the sheet too, best-effort -- the suppression above is the
+    # authoritative stop, so a sheet hiccup must not turn into an error page for
+    # someone who just opted out.
+    try:
+        sheets.mark_unsubscribed(account, email)
+    except Exception as e:  # noqa: BLE001 - opt-out must always succeed for the user
+        print(f"unsubscribe: sheet update failed for {email}: {e}")
+    return _unsub_page("You're unsubscribed", f"<b>{html.escape(email)}</b> won't receive any more emails. Thanks.")
 
 
 # --- Lead sourcing agent --------------------------------------------------------

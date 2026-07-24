@@ -14,12 +14,20 @@ def _get_service(account):
     return build("gmail", "v1", credentials=get_credentials(account))
 
 
-def send_email(account, to, subject, body):
-    """Sends a new email from the account's connected Gmail. Returns the thread id."""
+def send_email(account, to, subject, body, unsubscribe_url=""):
+    """Sends a new email from the account's connected Gmail. Returns the thread id.
+
+    When unsubscribe_url is given, adds the RFC 2369 / RFC 8058 headers so Gmail
+    and other clients render their own native "Unsubscribe" control and honour a
+    one-click POST -- both of which materially help deliverability for cold mail.
+    """
     service = _get_service(account)
     message = MIMEText(body)
     message["to"] = to
     message["subject"] = subject
+    if unsubscribe_url:
+        message["List-Unsubscribe"] = f"<{unsubscribe_url}>"
+        message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
     sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()

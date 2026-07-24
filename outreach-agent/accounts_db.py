@@ -27,6 +27,7 @@ class AccountLinkBlocked(Exception):
 # Settings a customer may edit about themselves via the API.
 EDITABLE_SETTINGS = (
     "sender_name",
+    "sender_company",
     "meeting_purpose",
     "calendar_booking_link",
     "notify_email",

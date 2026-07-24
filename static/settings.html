@@ -115,12 +115,18 @@
         <input id="sender_name" type="text" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="Alex">
       </label>
       <label class="text-sm">
-        <span class="block mb-1.5" style="color:var(--text-secondary);">Calendar booking link</span>
-        <input id="calendar_booking_link" type="url" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="https://cal.com/you/15min">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Company name (shown under your name in the signature)</span>
+        <input id="sender_company" type="text" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="Ledgerline">
       </label>
       <label class="text-sm">
-        <span class="block mb-1.5" style="color:var(--text-secondary);">Meeting purpose (one sentence used in every email)</span>
-        <input id="meeting_purpose" type="text" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="a quick intro call to see if there's a fit to work together">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">What you're reaching out about (one sentence, used in every email)</span>
+        <input id="meeting_purpose" type="text" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="show finance teams how to cut invoice matching from days to minutes">
+        <span class="block mt-1.5 text-xs" style="color:var(--text-muted);">Say what you offer, who it helps, and what you want to happen (a call, a demo, a trial, a reply). The generic default is rejected at send time because it produces empty-sounding emails.</span>
+      </label>
+      <label class="text-sm">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Call-to-action link <span style="color:var(--text-muted);">(optional)</span></span>
+        <input id="calendar_booking_link" type="url" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="https://cal.com/you/15min  ·  or a signup / demo / doc link">
+        <span class="block mt-1.5 text-xs" style="color:var(--text-muted);">Where you want people to go: a booking page, a signup, a demo, a resource. Leave it blank and each email simply asks for a reply.</span>
       </label>
       <label class="text-sm">
         <span class="block mb-1.5" style="color:var(--text-secondary);">Notification email (batch summaries & reply alerts)</span>
@@ -161,7 +167,7 @@
   renderNav('Settings');
 
   const $ = (id) => document.getElementById(id);
-  const FIELDS = ['google_sheet_id', 'sender_name', 'calendar_booking_link', 'meeting_purpose', 'notify_email'];
+  const FIELDS = ['google_sheet_id', 'sender_name', 'sender_company', 'calendar_booking_link', 'meeting_purpose', 'notify_email'];
   const esc = (s) => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
   let sheetsCache = [];
   let googleConnected = false;

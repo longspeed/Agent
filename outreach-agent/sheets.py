@@ -105,15 +105,25 @@ def sent_in_last_24_hours(rows):
     return total
 
 
-def campaign_readiness(account):
+def campaign_readiness(account, suppressed_emails=None):
     """Return the current sendable rows and the conservative daily allowance.
 
-    Sendable means: approved (blank Status) and has an email address. There's
-    no verification gate -- the sheet owner is trusted to only approve leads
-    they're comfortable emailing.
+    Sendable means: approved (blank Status), has an email address, and not on
+    the opt-out list. There's no verification gate -- the sheet owner is trusted
+    to only approve leads they're comfortable emailing.
+
+    suppressed_emails is an optional set of lower-cased opted-out addresses; the
+    caller supplies it (rather than this module querying Supabase) so the sheet
+    layer stays free of a database dependency.
     """
+    suppressed = suppressed_emails or set()
     rows = get_all_rows(account)
-    eligible = [(idx, row) for idx, row in rows if not row[COL_STATUS].strip() and row[COL_EMAIL].strip()]
+    eligible = [
+        (idx, row) for idx, row in rows
+        if not row[COL_STATUS].strip()
+        and row[COL_EMAIL].strip()
+        and row[COL_EMAIL].strip().lower() not in suppressed
+    ]
     sent_today = sent_in_last_24_hours(rows)
     remaining = max(0, DAILY_SEND_LIMIT - sent_today)
     return {
@@ -214,6 +224,24 @@ def update_row(account, row_index, status=None, thread_id=None, sent_at=None, em
             "data": [{"range": cell_range, "values": [[value]]} for cell_range, value in cells],
         },
     ).execute()
+
+
+def mark_unsubscribed(account, email):
+    """Best-effort: set every row matching this email to status "Unsubscribed"
+    so it drops out of future batches and is visible in the sheet. Returns the
+    number of rows updated. Called from the public unsubscribe handler, so it
+    must never raise on a missing/duplicate address -- a recipient opting out
+    cannot be shown an error because our sheet is in an unexpected state; the
+    suppression list is the authoritative stop, this is the human-visible echo."""
+    wanted = (email or "").strip().lower()
+    if not wanted:
+        return 0
+    updated = 0
+    for idx, row in get_all_rows(account):
+        if row[COL_EMAIL].strip().lower() == wanted:
+            update_row(account, idx, status="Unsubscribed", expect_email=email)
+            updated += 1
+    return updated
 
 
 def append_rows(account, rows):

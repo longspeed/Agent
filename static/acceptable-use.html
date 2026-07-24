@@ -60,10 +60,14 @@
   honouring it promptly, and having a lawful basis for contacting them.</p>
 
   <div class="note">
-    <p><strong>Agent Hub does not add an unsubscribe link for you.</strong> It
-    is not implemented yet. If your jurisdiction requires one, include it in your
-    meeting purpose or message content and handle opt-outs manually until the
-    feature exists. We would rather tell you than let you assume it is handled.</p>
+    <p><strong>Agent Hub adds a one-click unsubscribe link to every outreach
+    email</strong>, and sets the <code>List-Unsubscribe</code> headers so mail
+    clients show their own opt-out control. When someone unsubscribes, that
+    address is suppressed for your account and skipped on every future batch,
+    and the matching sheet row is marked Unsubscribed. You remain the sender and
+    are still responsible for honouring opt-outs made by other means (a direct
+    reply asking to stop, for example) and for having a lawful basis to contact
+    people in the first place.</p>
   </div>
 
   <h2>Enforcement</h2>
