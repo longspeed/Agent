@@ -453,6 +453,37 @@ def test_validator_requires_optout_when_expected():
     assert agent._validate_outreach("s", with_optout, link, unsub) == []
 
 
+def test_validator_rejects_foreign_script():
+    # Georgian token injected mid-sentence, exactly like the free model produced.
+    body = GOOD_EMAIL_BODY.replace("the reason", "the დღის reason")
+    problems = agent._validate_outreach("Cutting invoice matching", body, "https://cal.com/oanh/15min")
+    assert any("garbled" in p or "non-English" in p for p in problems)
+    # And in the subject.
+    assert agent._validate_outreach("Quick 你好 intro", GOOD_EMAIL_BODY, "https://cal.com/oanh/15min")
+
+
+def test_validator_rejects_reaching_out_variant():
+    # "reaching out" must be caught even though "reach out" is the base ban and
+    # is NOT a substring of "reaching out".
+    body = GOOD_EMAIL_BODY.replace("the reason I'm writing", "reaching out")
+    problems = agent._validate_outreach("s", body, "https://cal.com/oanh/15min")
+    assert any("reaching out" in p for p in problems)
+
+
+def test_validator_rejects_empty_filler():
+    body = ("Hi John, I wanted to set up a brief meeting to bring clarity to your upcoming "
+            "decisions. Let me know if you want to slot something in. https://cal.com/oanh/15min")
+    problems = agent._validate_outreach("A brief meeting", body, "https://cal.com/oanh/15min")
+    assert any("filler" in p for p in problems)
+
+
+def test_account_send_blockers_requires_real_sender_name():
+    # Unset name defaults to "the team" and is blocked; a real name clears it.
+    assert agent.account_send_blockers({"sender_name": "", "meeting_purpose": "sell CLIs to devs"})
+    assert agent.account_send_blockers({"sender_name": "the team", "meeting_purpose": "sell CLIs to devs"})
+    assert agent.account_send_blockers({"sender_name": "Long", "meeting_purpose": "sell CLIs to devs"}) == []
+
+
 # ---------------------------------------------------------------------- sheets
 
 def _row(status="", email="j@x.com", sent_at="", thread="", name="John", body="", company="Acme"):

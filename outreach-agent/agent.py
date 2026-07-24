@@ -45,13 +45,21 @@ Structure, 3-5 sentences total:
    it should be easier to say yes than to think about it. Never use markdown for the link.
 
 Voice:
+- Write the ENTIRE email in English. Never output a word, token, or character from another
+  language or script (no Cyrillic, Georgian, Greek, CJK, Arabic, etc.). One stray foreign
+  character makes the whole email look broken.
 - Plain, direct, unexcited. Short words. Contractions are fine.
 - Do not open with "I", and do not spend the first sentence talking about the sender.
 - No flattery ("love what you're building"), no manufactured enthusiasm, no apologising for
   emailing.
+- Every sentence must carry a concrete specific: a named problem, a number, a real outcome,
+  or the researched fact you were given. Empty filler is banned -- "bring clarity to your
+  decisions", "a brief meeting to discuss", "slot something in", "pick your brain", "see if
+  there's a fit", "discuss how we can help". If you have nothing specific to say, the goal
+  you were given is too vague; write the most concrete honest version you can, never filler.
 - Banned outright: "I hope this email finds you well", "quick question", "circle back",
-  "touch base", "synergy", "leverage", "reach out", "excited to", "passionate about",
-  "just following up", "game-changer", "seamless", "cutting-edge", "best-in-class",
+  "touch base", "synergy", "leverage", "reach out", "reaching out", "excited to", "passionate
+  about", "just following up", "game-changer", "seamless", "cutting-edge", "best-in-class",
   "revolutionize", and the "it's not just X, it's Y" construction.
 - No em dashes and no en dashes. Use a comma, a full stop, or a semicolon.
 - Plain text only: no markdown, no bullets, no emoji, no bold.
@@ -214,11 +222,31 @@ _BANNED_PHRASES = (
     "hope this email finds you well", "hope this finds you well",
     "hope you're doing well", "hope you are doing well",
     "quick question", "circle back", "touch base", "synergy", "synergies",
-    "leverage", "reach out", "excited to", "passionate about",
-    "just following up", "game-changer", "game changer", "cutting-edge",
-    "best-in-class", "revolutionize", "revolutionise", "seamless",
-    "i wanted to reach", "let's hop on",
+    "leverage", "reach out", "reaching out", "reached out", "excited to",
+    "passionate about", "just following up", "game-changer", "game changer",
+    "cutting-edge", "best-in-class", "revolutionize", "revolutionise",
+    "seamless", "i wanted to reach", "let's hop on",
 )
+
+# Empty, say-nothing filler -- the tell of an email with no real reason behind
+# it. Every one of these is a phrase that fills space while conveying zero
+# specifics; each showed up in outputs that read as generic mail-merge.
+_FILLER_PHRASES = (
+    "bring clarity", "slot something in", "pick your brain",
+    "hop on a quick call", "brief meeting", "brief chat", "brief call",
+    "upcoming decisions", "see if there's a fit", "see if there is a fit",
+    "wanted to connect", "wanted to introduce myself", "discuss how we can help",
+    "explore how we can", "explore synergies", "the right person",
+)
+
+# Any character outside Latin script + common typographic punctuation. A weak
+# model sometimes injects a token from another script mid-sentence
+# ("Reaching out დღის ..." -- real output from the free model); no legitimate
+# cold email to a Latin-script recipient should contain them. Catches Cyrillic,
+# Georgian, Greek, CJK, Arabic, Hebrew, Devanagari, emoji, etc. in one shot.
+# Allowed: Basic Latin + Latin-1/Extended-A/B (\x00-ɏ), the punctuation
+# block that holds dashes/curly quotes/ellipsis (‐-‧), euro, trademark.
+_NON_LATIN = re.compile("[^\x00-ɏ‐-‧€™]")
 
 # [Name], {{company}}, <role>, "Your Name" -- an unfilled template escaping into
 # a real inbox is the single most damaging thing that can come out of this.
@@ -263,9 +291,26 @@ def _validate_outreach(subject, body, calendar_link, unsubscribe_url=""):
     if unsubscribe_url and unsubscribe_url not in body:
         problems.append("The unsubscribe line is missing from the body.")
 
+    # Garbled/foreign-script tokens a weak model injects mid-sentence. Checked
+    # against the subject too. This is a hard fail: a single such character
+    # makes the whole email look broken.
+    stray = _NON_LATIN.findall((subject or "") + "\n" + body)
+    if stray:
+        uniq = "".join(dict.fromkeys(stray))
+        problems.append(
+            f"Remove non-English/garbled characters ({uniq[:15]!r}); write the whole email in plain English."
+        )
+
     found = [p for p in _BANNED_PHRASES if p in lowered]
     if found:
         problems.append("Remove these banned phrases: " + ", ".join(found) + ".")
+
+    filler = [p for p in _FILLER_PHRASES if p in lowered]
+    if filler:
+        problems.append(
+            "Cut this empty filler and say something concrete instead (a specific problem, "
+            "number, or outcome): " + ", ".join(filler) + "."
+        )
 
     if "—" in body or "–" in body:
         problems.append("Remove the em/en dashes; use a comma or a full stop.")
@@ -300,6 +345,14 @@ def account_send_blockers(account):
     reply. Only a real, non-generic goal is mandatory."""
     ctx = _sender_context(account)
     blockers = []
+    # An unset sender name defaults to "the team" (see _sender_context), which
+    # signs every email like a faceless bot -- the fastest way to get a cold
+    # email deleted. Require a real name.
+    if not ctx["sender_name"] or ctx["sender_name"].strip().lower() == "the team":
+        blockers.append(
+            "Add your first name in Settings - outreach is signed 'the team' until you do, "
+            "which reads as a bot."
+        )
     if not ctx["meeting_purpose"] or ctx["meeting_purpose"] == DEFAULT_MEETING_PURPOSE:
         blockers.append(
             "Describe what you're reaching out about in Settings - the default text is too "
