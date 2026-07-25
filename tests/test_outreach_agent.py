@@ -1174,26 +1174,50 @@ def test_unsubscribe_confirm_valid_shows_confirm_page():
     assert b"Confirm unsubscribe" in resp.body and b"p@x.com" in resp.body
 
 
-def test_unsubscribe_apply_suppresses_and_marks_sheet():
+# A request whose body/query mirror what Starlette hands the endpoint, WITHOUT
+# faking request.form() -- the old fakes did, which hid that request.form()
+# needs python-multipart and 500s in production (found by /qa 2026-07-25).
+class _FakeUnsubReq:
+    def __init__(self, body=b"", query=None):
+        self._body = body
+        self.query_params = query or {}
+    async def body(self):
+        return self._body
+
+
+def test_unsubscribe_apply_reads_token_from_form_body():
+    """Confirm-page POST: token arrives as a urlencoded body field. Must parse
+    without python-multipart."""
     import server
     import asyncio
     added, marked = [], []
-
-    class FakeReq:
-        query_params = {}
-        async def form(self):
-            return {"t": "tok"}
-
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server.auth, "verify_unsubscribe_token", lambda t: ("acct-1", "p@x.com")))
         stack.enter_context(patched(server.accounts_db, "get_account", lambda aid: dict(ACCOUNT)))
         stack.enter_context(patched(server.suppressions_db, "add",
             lambda aid, email, source="unsubscribe_link": added.append((aid, email))))
         stack.enter_context(patched(server.sheets, "mark_unsubscribed", lambda account, email: marked.append(email)))
-        resp = asyncio.run(server.unsubscribe_apply(FakeReq()))
+        resp = asyncio.run(server.unsubscribe_apply(_FakeUnsubReq(body=b"t=sometoken")))
     assert resp.status_code == 200
     assert b"unsubscribed" in resp.body.lower()
     assert added == [("acct-1", "p@x.com")] and marked == ["p@x.com"]
+
+
+def test_unsubscribe_apply_reads_token_from_query_one_click():
+    """Gmail RFC 8058 one-click: token in the query string, body is
+    'List-Unsubscribe=One-Click'. Must still suppress."""
+    import server
+    import asyncio
+    added = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.auth, "verify_unsubscribe_token", lambda t: ("acct-1", "p@x.com")))
+        stack.enter_context(patched(server.accounts_db, "get_account", lambda aid: dict(ACCOUNT)))
+        stack.enter_context(patched(server.suppressions_db, "add",
+            lambda aid, email, source="unsubscribe_link": added.append(email)))
+        stack.enter_context(patched(server.sheets, "mark_unsubscribed", lambda a, e: None))
+        req = _FakeUnsubReq(body=b"List-Unsubscribe=One-Click", query={"t": "sometoken"})
+        resp = asyncio.run(server.unsubscribe_apply(req))
+    assert resp.status_code == 200 and added == ["p@x.com"]
 
 
 def test_unsubscribe_apply_still_succeeds_when_sheet_write_fails():
@@ -1202,11 +1226,6 @@ def test_unsubscribe_apply_still_succeeds_when_sheet_write_fails():
     import server
     import asyncio
     added = []
-
-    class FakeReq:
-        query_params = {}
-        async def form(self):
-            return {"t": "tok"}
 
     def boom(account, email):
         raise RuntimeError("sheet unreachable")
@@ -1217,7 +1236,7 @@ def test_unsubscribe_apply_still_succeeds_when_sheet_write_fails():
         stack.enter_context(patched(server.suppressions_db, "add",
             lambda aid, email, source="unsubscribe_link": added.append(email)))
         stack.enter_context(patched(server.sheets, "mark_unsubscribed", boom))
-        resp = asyncio.run(server.unsubscribe_apply(FakeReq()))
+        resp = asyncio.run(server.unsubscribe_apply(_FakeUnsubReq(body=b"t=sometoken")))
     assert resp.status_code == 200 and added == ["p@x.com"]
 
 

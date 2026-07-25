@@ -5,6 +5,7 @@ import sys
 import threading
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qs
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "outreach-agent"))
@@ -804,10 +805,15 @@ def unsubscribe_confirm(t: str = ""):
 
 @app.post("/unsubscribe")
 async def unsubscribe_apply(request: Request):
-    # Token can arrive as a form field (our confirmation page) or a query
-    # param (Gmail's One-Click POST hits the List-Unsubscribe URL directly).
-    form = await request.form()
-    token = form.get("t") or request.query_params.get("t", "")
+    # Token can arrive as a query param (Gmail's RFC 8058 One-Click POST hits
+    # the List-Unsubscribe URL directly, token in the query, body is just
+    # "List-Unsubscribe=One-Click") or as a form field (our confirmation page).
+    # Parse the urlencoded body by hand rather than request.form(), which would
+    # require the python-multipart dependency just for this one field.
+    token = request.query_params.get("t", "")
+    if not token:
+        raw = (await request.body()).decode("utf-8", "replace")
+        token = parse_qs(raw).get("t", [""])[0]
     account, email = _resolve_unsub_token(token)
     if not account:
         return _unsub_page(
