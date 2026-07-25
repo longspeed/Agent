@@ -29,6 +29,7 @@ EDITABLE_SETTINGS = (
     "sender_name",
     "sender_company",
     "meeting_purpose",
+    "custom_instructions",
     "calendar_booking_link",
     "notify_email",
     "google_sheet_id",

@@ -334,6 +334,7 @@ class SettingsBody(BaseModel):
     sender_name: str | None = None
     sender_company: str | None = None
     meeting_purpose: str | None = None
+    custom_instructions: str | None = None
     calendar_booking_link: str | None = None
     notify_email: str | None = None
     google_sheet_id: str | None = None

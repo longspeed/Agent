@@ -124,6 +124,11 @@
         <span class="block mt-1.5 text-xs" style="color:var(--text-muted);">Say what you offer, who it helps, and what you want to happen (a call, a demo, a trial, a reply). The generic default is rejected at send time because it produces empty-sounding emails.</span>
       </label>
       <label class="text-sm">
+        <span class="block mb-1.5" style="color:var(--text-secondary);">Custom instructions <span style="color:var(--text-muted);">(optional)</span></span>
+        <textarea id="custom_instructions" rows="3" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150 resize-y" placeholder="How you want your emails written. E.g. Casual, founder-to-founder tone. Mention we're YC-backed. Keep it under 4 sentences."></textarea>
+        <span class="block mt-1.5 text-xs" style="color:var(--text-muted);">Steers tone, content, length, and language on every email. The safety rules (plain text, honesty, the unsubscribe link, no placeholders) always win, so this can't break an email — it only shapes it.</span>
+      </label>
+      <label class="text-sm">
         <span class="block mb-1.5" style="color:var(--text-secondary);">Call-to-action link <span style="color:var(--text-muted);">(optional)</span></span>
         <input id="calendar_booking_link" type="url" class="field w-full rounded-lg px-4 py-2.5 text-sm ease-spring transition-colors duration-150" placeholder="https://cal.com/you/15min  ·  or a signup / demo / doc link">
         <span class="block mt-1.5 text-xs" style="color:var(--text-muted);">Where you want people to go: a booking page, a signup, a demo, a resource. Leave it blank and each email simply asks for a reply.</span>
@@ -167,7 +172,7 @@
   renderNav('Settings');
 
   const $ = (id) => document.getElementById(id);
-  const FIELDS = ['google_sheet_id', 'sender_name', 'sender_company', 'calendar_booking_link', 'meeting_purpose', 'notify_email'];
+  const FIELDS = ['google_sheet_id', 'sender_name', 'sender_company', 'calendar_booking_link', 'meeting_purpose', 'custom_instructions', 'notify_email'];
   const esc = (s) => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
   let sheetsCache = [];
   let googleConnected = false;

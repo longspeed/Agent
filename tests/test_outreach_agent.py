@@ -389,6 +389,35 @@ def test_generate_outreach_embeds_unsubscribe_line():
     assert unsub in body
 
 
+def test_custom_instructions_reach_the_outreach_prompt():
+    captured = {}
+    account = dict(ACCOUNT, custom_instructions="Casual founder-to-founder tone. Mention we're YC-backed.")
+    with patched(agent, "_chat", lambda s, u: captured.update(prompt=u) or GOOD_EMAIL):
+        agent.generate_outreach_email(account, "John", "Acme")
+    assert "YC-backed" in captured["prompt"]
+    assert "sender gave these instructions" in captured["prompt"].lower()
+
+
+def test_custom_instructions_omitted_when_blank():
+    captured = {}
+    with patched(agent, "_chat", lambda s, u: captured.update(prompt=u) or GOOD_EMAIL):
+        agent.generate_outreach_email(ACCOUNT, "John", "Acme")  # fixture has none
+    assert "sender gave these instructions" not in captured["prompt"].lower()
+
+
+def test_custom_instructions_are_length_capped():
+    ctx = agent._sender_context(dict(ACCOUNT, custom_instructions="x" * 5000))
+    assert len(ctx["custom_instructions"]) == 600, "must be bounded so it can't swamp the prompt"
+
+
+def test_custom_instructions_reach_the_reply_prompt():
+    captured = {}
+    account = dict(ACCOUNT, custom_instructions="Keep replies to two short lines.")
+    with patched(agent, "_chat", lambda s, u: captured.update(prompt=u) or "ok"):
+        agent.draft_reply(account, "John", "Acme", "sounds good", [])
+    assert "two short lines" in captured["prompt"]
+
+
 def test_generate_outreach_retries_then_raises_on_bad_output():
     calls = {"n": 0}
     def bad_chat(system, user_prompt):

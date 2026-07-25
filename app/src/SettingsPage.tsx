@@ -6,6 +6,7 @@ interface AccountSettings {
   sender_name: string | null
   sender_company: string | null
   meeting_purpose: string | null
+  custom_instructions: string | null
   calendar_booking_link: string | null
   notify_email: string | null
   google_sheet_id: string | null
@@ -37,6 +38,7 @@ const EMPTY_FORM: AccountSettings = {
   sender_name: '',
   sender_company: '',
   meeting_purpose: '',
+  custom_instructions: '',
   calendar_booking_link: '',
   notify_email: '',
   google_sheet_id: '',
@@ -99,6 +101,7 @@ export function SettingsPage() {
       sender_name: meRes.settings.sender_name || '',
       sender_company: meRes.settings.sender_company || '',
       meeting_purpose: meRes.settings.meeting_purpose || '',
+      custom_instructions: meRes.settings.custom_instructions || '',
       calendar_booking_link: meRes.settings.calendar_booking_link || '',
       notify_email: meRes.settings.notify_email || '',
       google_sheet_id: meRes.settings.google_sheet_id || '',
@@ -129,6 +132,7 @@ export function SettingsPage() {
       sender_name: form.sender_name?.trim() ?? '',
       sender_company: form.sender_company?.trim() ?? '',
       meeting_purpose: form.meeting_purpose?.trim() ?? '',
+      custom_instructions: form.custom_instructions?.trim() ?? '',
       calendar_booking_link: form.calendar_booking_link?.trim() ?? '',
       notify_email: form.notify_email?.trim() ?? '',
       google_sheet_id: form.google_sheet_id?.trim() ?? '',
@@ -403,6 +407,22 @@ export function SettingsPage() {
                 Say what you offer, who it helps, and what you want to happen (a call, a demo, a
                 trial, a reply). The generic default is rejected at send time because it produces
                 empty-sounding emails.
+              </span>
+            </label>
+
+            <label className="text-sm">
+              <span className="block mb-1.5 text-sand">Custom instructions <span className="text-sand/50">(optional)</span></span>
+              <textarea
+                rows={3}
+                value={form.custom_instructions ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, custom_instructions: e.target.value }))}
+                placeholder="How you want your emails written. E.g. Casual, founder-to-founder tone. Mention we're YC-backed. Keep it under 4 sentences. Never use the word 'solution'."
+                className="w-full rounded-lg px-4 py-2.5 text-sm bg-floating border border-line focus:outline-none focus:border-accent resize-y"
+              />
+              <span className="block mt-1.5 text-xs text-sand/60">
+                Steers tone, content, length, and language on every email. The safety rules
+                (plain text, honesty, the unsubscribe link, no placeholders) always win, so this
+                can't break an email — it only shapes it.
               </span>
             </label>
 

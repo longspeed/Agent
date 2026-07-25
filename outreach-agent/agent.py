@@ -45,9 +45,10 @@ Structure, 3-5 sentences total:
    it should be easier to say yes than to think about it. Never use markdown for the link.
 
 Voice:
-- Write the ENTIRE email in English. Never output a word, token, or character from another
-  language or script (no Cyrillic, Georgian, Greek, CJK, Arabic, etc.). One stray foreign
-  character makes the whole email look broken.
+- Write the ENTIRE email in ONE consistent language: English by default, or the language the
+  sender's own instructions ask for. Never MIX languages or inject a stray word, token, or
+  character from a different script mid-sentence -- a lone Cyrillic/Georgian/CJK/Arabic
+  character in an otherwise-English email is always a bug, not a translation.
 - Plain, direct, unexcited. Short words. Contractions are fine.
 - Do not open with "I", and do not spend the first sentence talking about the sender.
 - No flattery ("love what you're building"), no manufactured enthusiasm, no apologising for
@@ -183,7 +184,27 @@ def _sender_context(account):
         "sender_company": (account.get("sender_company") or "").strip(),
         "meeting_purpose": (account.get("meeting_purpose") or "").strip(),
         "calendar_link": (account.get("calendar_booking_link") or "").strip(),
+        # Free-form sender preferences (tone, things to always mention/avoid,
+        # length, language). Capped so it can't balloon the prompt or be used to
+        # bury the system rules under a wall of text.
+        "custom_instructions": (account.get("custom_instructions") or "").strip()[:600],
     }
+
+
+def _custom_instructions_block(instructions):
+    """Renders the sender's custom instructions as a bounded, clearly-fenced
+    prompt section. Framed as preferences that never override the hard rules --
+    and the validator enforces those rules regardless of what lands here, so a
+    sender cannot prompt their way past plain-text/opt-out/no-placeholder."""
+    if not instructions:
+        return ""
+    return (
+        "\n\nThe sender gave these instructions for how they want their emails written. "
+        "Follow them for tone, content, length, and language, but NEVER at the expense of "
+        "the rules in the system message (the truth rules, plain text, the unsubscribe line, "
+        "no placeholders, one consistent script):\n"
+        f'"""{instructions}"""'
+    )
 
 
 # Tolerant of everything models actually emit here: "**Subject:**", "subject -",
@@ -396,6 +417,7 @@ def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_
             " restate it as something you personally saw or read, and do not treat it as a"
             " relationship you already have."
         )
+    base_prompt += _custom_instructions_block(ctx["custom_instructions"])
     base_prompt += "\n\nWrite the email."
 
     attempts = []
@@ -449,7 +471,8 @@ def draft_reply(account, name, company, customer_reply, history=()):
         f"Prospect: {name}"
         + (f" at {company}" if company else "")
         + f"\n\nThe conversation so far, oldest first:\n{conversation}\n\n"
-        f"Their newest message -- the one to answer now:\n{gmail.strip_quoted(customer_reply)}\n\n"
-        "Draft the sender's reply."
+        f"Their newest message -- the one to answer now:\n{gmail.strip_quoted(customer_reply)}"
+        + _custom_instructions_block(ctx["custom_instructions"])
+        + "\n\nDraft the sender's reply."
     )
     return _chat(REPLY_SYSTEM, user_prompt)

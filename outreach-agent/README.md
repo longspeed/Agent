@@ -64,6 +64,9 @@ create table public.accounts (
     sender_name text not null default 'the team',
     sender_company text not null default '',
     meeting_purpose text not null default 'a quick intro call to see if there''s a fit to work together',
+    -- Free-form sender preferences injected into the writing prompt (tone,
+    -- length, things to always mention/avoid, language).
+    custom_instructions text not null default '',
     calendar_booking_link text,
     notify_email text,
     created_at timestamptz not null default now()
@@ -136,6 +139,7 @@ Upgrading an existing project (the tables above are new as of 2026-07-24):
 
 ```sql
 alter table public.accounts add column if not exists sender_company text not null default '';
+alter table public.accounts add column if not exists custom_instructions text not null default '';
 -- then run the two create table statements above, their indexes, and their
 -- `enable row level security` lines.
 ```
