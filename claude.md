@@ -61,6 +61,11 @@
   change to `outreach-agent/*.py`. Added 2026-07-19.
 - typecheck: `python -m py_compile server.py outreach-agent/*.py` (syntax
   errors only — not a real type checker; Python has no static types here)
+- model eval: `python outreach-agent/eval_models.py --n 50` — scores each
+  configured LLM provider on first-pass/final acceptance by the same
+  `agent._validate_outreach` that gates production drafts, and reports
+  calls-per-accepted-email (the number that matters on a requests-per-day free
+  tier). Makes live API calls, so it spends quota. Added 2026-07-26.
 
 No linter or dead-code tool is configured (nothing on PATH, no config
 files). Update this section if `ruff`/`pytest` get added.

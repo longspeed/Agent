@@ -4,6 +4,47 @@ Deferred from the multi-tenant hotfix pass (2026-07-16, `/plan-ceo-review`).
 None of these block a single real customer from using the app end-to-end —
 they matter once there's more than one customer, or once sending volume grows.
 
+## Guard audit: where each safety check gets its inputs (2026-07-26)
+
+The same bug was found four times at four altitudes, and every instance was the
+same shape: **a gating predicate reading a value the operator can edit.** The
+lead sheet is a Google Sheet the customer owns, so any threshold measured against
+it can be cleared by editing it — and in a conjunctive guard, the weakest term
+decides. Hardening one term is worthless if an earlier one can be driven false,
+because the hardened code never runs.
+
+The five: the acknowledgement watermark (compared against "Bounced" rows), the
+bounce numerator (same rows, and it short-circuited the watermark before it was
+reached), `remaining -= 1` on the send path, the daily cap's starting value, and
+the bounce **denominator** — which moved the rate in the *other* direction, since
+pasting rows that carry a status and a date dilutes it.
+
+The accidental cases matter more than the adversarial ones. Nobody has to be
+trying: Google Sheets applying a date format to the SentAt column for readability
+resets the daily allowance, and marking rows "Sent" to exclude them from a
+campaign (a blank status is what makes a row eligible, so this is the natural
+gesture) diluted the bounce rate to nothing.
+
+**Known consequence of the fix:** `outreach_drafts` only became a complete send
+log on 2026-07-26, so accounts whose sending predates it start with an empty
+denominator and the bounce pause cannot fire until `MIN_SENDS_FOR_PAUSE` sends
+have flowed through it. `stats()` reports `armed` and `min_sends_to_arm` so this
+is answerable rather than silent. Hard-bounce *suppression* is unaffected — it
+never depended on the rate.
+
+When touching any guard, trace **every** value in its predicate to a source, not
+just the one a bug report named:
+
+| Guard | Inputs and their sources | Status |
+| --- | --- | --- |
+| Bounce pause | numerator ← `suppressions.created_at`, denominator ← `outreach_drafts.sent_at`, watermark ← `accounts.bounce_ack_count` | Hard. No sheet input to the verdict; the sheet is read only for the discrepancy message. |
+| Daily send cap | `sent_today` ← `outreach_drafts.sent_at` (append-only), limit ← env | Hard. `sent_today` is a required argument with no default, by test. |
+| Duplicate send | draft `status` ← `outreach_drafts` (written before the sheet), plus sheet status as a second layer | Hard, layered. |
+| Reply drafting privacy | provider tier ← env | Hard. |
+| Reply-check scope | row status ← sheet | **Soft, accepted.** Costs a missed reply, never an unwanted email. |
+| Send consent gate | header row ← sheet | **Soft by design.** The header *is* the customer's consent signal; making it unforgeable would defeat its purpose. |
+| Rate limits | hit timestamps ← process memory | **Soft, known.** Resets on restart; per-process. See the entry below — blocking at ~50 users. |
+
 ## Deferred from the product CEO review (2026-07-19, HOLD SCOPE)
 
 ### Google verification path (blocks billing)
@@ -63,11 +104,27 @@ two secrets.
 every connected Gmail. Rotating it today also permanently breaks every stored
 token.
 **Pros:** Standard key-separation hygiene; makes rotation safe.
-**Cons:** Existing accounts must reconnect Google once when split.
+**Cons:** ~~Existing accounts must reconnect Google once when split.~~ See below.
 **Context:** `outreach-agent/config.py`, `accounts_db.py` Fernet derivation.
 **Effort:** S → S
-**Priority:** P2
-**Depends on:** Nothing blocking.
+**Priority:** P2 → **P1** (eng review 2026-07-28: a VPS holding this one secret
+holds session forgery *and* decryption of every stored Gmail token, so the
+split moves in front of the deploy rather than after it)
+**Depends on:** Nothing blocking. **Blocks:** the VPS deploy.
+
+> **How to do it, decided 2026-07-28.** Do **not** re-key the stored tokens.
+> Introduce `SESSION_SIGNING_KEY` as the new secret and leave the Fernet
+> derivation on the existing `APP_SECRET_KEY` value. That achieves the
+> separation with **zero re-consent** — no stored token is ever re-encrypted.
+>
+> Rotating the token key instead would be a forced reconnect for every account
+> delivered as an unhandled 500: `accounts_db.py:81` derives the Fernet key at
+> import, and `google_auth.get_credentials` catches `RefreshError` but **not**
+> `cryptography.fernet.InvalidToken`, which is what `decrypt_secret` raises
+> when the key changes. On the headless worker that is an infinite
+> `InvalidToken` loop with `consecutive_failures` climbing and no remedy.
+> Add the `InvalidToken` catch alongside `RefreshError` regardless, so a
+> future rotation degrades to "reconnect Google" instead of a 500.
 
 ### Reply-detection correctness: scan since last outgoing, not newest-only
 **What:** `gmail.get_latest_reply_with_history` only inspects `messages[-1]`.
@@ -90,6 +147,26 @@ app only).
 **Priority:** P2
 **Depends on:** Nothing blocking.
 
+> **SUPERSEDED 2026-07-28.** Do not implement the approach described above.
+> "Scan all messages after our last outgoing message" **does not fix drop path
+> (a)**: when the message that landed since is the operator's own manual reply,
+> the contact's reply is still behind the boundary. Any ordering-derived
+> boundary has this hole. The `historyId` cursor is also mis-specified —
+> Gmail's historyId is mailbox-level (`users.history.list` takes one
+> `startHistoryId`), not per-thread.
+>
+> **The agreed rule is dedupe-driven:** the newest message from the contact
+> that has no review row yet, keyed on the **Gmail message id** (not the body
+> text — `find_review_id`'s exact-`customer_reply` match collides on short
+> replies, cannot be uniquely indexed past ~2704 bytes, and sends multi-KB
+> bodies through a PostgREST GET parameter). Sender classification runs
+> **before** reply candidacy with precedence `daemon > auto-responder >
+> on-sheet > off-sheet`, or `find_bounce` (gated on `if not reply_text`)
+> becomes unreachable and bounce suppression dies silently. A contact message
+> that one of our own messages postdates is queued `answered_elsewhere` —
+> visible, no draft, no notification — or the fix trades a missed reply for
+> double-replying a prospect.
+
 ### Operational hygiene bundle
 **What:** (a) structured logging — timestamp + account id + action + outcome
 on send/reply paths instead of bare `print()`; (b) `JOBS` dict cleanup (drop
@@ -99,13 +176,19 @@ markup — strip tags in `gmail._extract_body`'s fallback; (d) narrow
 guarded write re-reads the whole sheet (~2 Sheets calls per send; fine at
 25-row scale, brushes read quota at 500-row sheets with concurrent polling).
 **Why:** None bites at current scale; all four bite with the second tenant.
+**Updated 2026-07-27 (CEO review):** (d) is promoted to **P2** and is now a
+phase-1 dependency, not hygiene. The background watcher turns "every guarded
+write re-reads the whole sheet" from occasional into continuous, per account,
+every cycle. (a) is superseded for the worker specifically by the
+`worker_events` entry below; it still stands for the send path in `server.py`.
 **Pros:** Debuggability three weeks after the fact; less quota burn.
 **Cons:** Pure hygiene, no user-visible change.
 **Context:** `server.py`, `outreach-agent/watch_replies.py`, `gmail.py`,
 `outreach-agent/sheets.py`.
 **Effort:** M (human) → S (CC + gstack)
-**Priority:** P3
+**Priority:** P3 overall; **(d) is P2**
 **Depends on:** Nothing; natural trigger is "before the second real tenant."
+(d) is now triggered by the background watcher instead.
 
 ### Sheet read pagination + table virtualization
 **What:** Paginate Sheets reads and virtualize the campaigns/leads table
@@ -402,3 +485,191 @@ It has no Google token and no sheet, so it can send nothing.
 **Why:** It is a real row in the accounts table, and self-service account
 deletion does not exist yet, so it needs removing by hand.
 **Effort:** S · **Priority:** P3
+
+## Deferred from the daily-use build CEO review (2026-07-27, `/plan-ceo-review`)
+
+Filed while planning the reply-detection / background-watcher / notification
+work. Mode was HOLD SCOPE over all seven phases; these are the items explicitly
+kept out of that scope, plus two existing entries this plan promotes.
+
+### Land the current branch before phase 0
+**What:** `feat/outreach-drafting-optout` carries +8,860/-448 across 55 files,
+unmerged and never shipped, and all seven phases of the daily-use build land on
+top of it.
+**Why:** Every phase compounds review surface on a base that has never been
+exercised in production. A defect in the base and a defect in phase 1 are
+indistinguishable from the outside.
+**Pros:** Bounds the blast radius of everything that follows; makes the first
+worker deploy a change to a known-good base.
+**Cons:** Landing costs a review cycle before any of the new work starts.
+**Context:** `git diff main --stat` on the branch. Nothing in the daily-use
+plan sequences this.
+**Effort:** S (human) → S (CC + gstack) · **Priority:** P1
+**Depends on:** Nothing. Blocks phase 0.
+
+### Migration tooling
+**What:** No migration tool exists. `outreach-agent/README.md` documents
+hand-run `alter table` against the live database, and `accounts_db.
+_MIGRATED_COLUMNS` needs a boot-check entry per column.
+**Why:** The daily-use build adds roughly ten columns across four tables
+(`original_subject`, `original_body`, `original_draft_reply`, `sending_address`,
+`token_granted_at`, `worker_heartbeat_at`, `last_cycle_errors`, `last_error`,
+`push_subscription`, `notifications_stale_at`, `last_queue_opened_at`) with no
+staging project to rehearse against.
+**Pros:** Makes a ten-column change routine instead of ten careful manual steps.
+**Cons:** Real infra work for a schema that is still moving.
+**Context:** `outreach-agent/accounts_db.py` `_MIGRATED_COLUMNS`;
+`outreach-agent/README.md` migration section.
+**Effort:** M (human) → S (CC + gstack) · **Priority:** P2
+**Depends on:** Nothing blocking.
+
+### get_credentials should update the caller's account dict
+**What:** `google_auth.get_credentials` persists a refreshed token to Supabase
+but does not write it back into the `account` dict it was handed, while
+`accounts_db.get_google_token` reads the token *from that dict*.
+**Why:** Any long-lived holder of an account dict therefore re-reads a stale
+token every time, forces an OAuth refresh, and never sees its own write. The
+worker avoids this by re-reading the row each cycle (decided in review), but the
+shape stays present for every future caller. Two lines at the source fixes it
+everywhere.
+**Pros:** Removes the defect rather than routing around it.
+**Cons:** None material.
+**Context:** `outreach-agent/google_auth.py:56-78`,
+`outreach-agent/accounts_db.py:241-245`.
+**Effort:** S → S · **Priority:** P2
+**Depends on:** Nothing blocking.
+
+### Batch the reply-review lookup per cycle
+**What:** The new detector rule ("newest contact message with no review") calls
+`reviews_db.find_review_id` once per contact message per row per cycle — roughly
+50 Supabase round trips per account per cycle at 25 rows.
+**Why:** One query per account per cycle, fetching that account's reviewed
+`(thread_id, customer_reply)` pairs into a set, replaces all of them. Needs a
+composite index on `reviews(account_id, thread_id)`, which the hot path does not
+have today. (Corrected 2026-07-28: an earlier draft of this entry named a
+non-existent `outreach_replies` table. The reviews table is `reviews` —
+`reviews_db.py:8`. It already has `reviews_account_status_idx (account_id,
+status)`, which covers the status-based queue queries; only the thread_id
+lookup is unindexed.)
+
+**Superseded 2026-07-28 by the eng review:** dedupe moves off the body text
+entirely and onto the Gmail message id, so the index to add is
+`unique (account_id, thread_id, gmail_message_id)` — which also makes
+`add_review`'s check-then-insert race-safe rather than "not airtight". See the
+eng-review task list.
+**Pros:** Removes an N+1 on the loop that now runs continuously.
+**Cons:** None; strictly an optimization of a correct rule.
+**Context:** `outreach-agent/reviews_db.py` `find_review_id`;
+`outreach-agent/watch_replies.py` per-row loop.
+**Effort:** S → S · **Priority:** P2
+**Depends on:** Phase 0 landing first.
+
+### Per-thread last_processed_message_id cursor
+**What:** Store the last message id processed per thread, so a cycle skips
+everything at or before it.
+**Why:** `sheets.get_reply_check_rows` deliberately keeps `Replied` rows in
+scope forever so later messages keep being picked up, which means every cycle
+re-reads every message of every Sent/Replied/Delayed thread. Cost grows with
+thread length × rows × accounts × 288 cycles/day, without bound. Correctness is
+already handled by superseded-marking; this is purely about cost.
+**Pros:** Bounds per-cycle work as conversations get longer.
+**Cons:** More state to keep correct, and a wrong cursor loses replies silently
+rather than duplicating them — the worse failure direction.
+**Context:** `outreach-agent/gmail.py`, `outreach-agent/sheets.py`
+`get_reply_check_rows`.
+**Effort:** M (human) → S (CC + gstack) · **Priority:** P3
+**Depends on:** Phase 0 landing first. Does not bite below ~10 accounts.
+
+### Structured logging beyond the heartbeat row
+**What:** A `worker_events` table capturing account, action, outcome and
+timestamp per cycle, plus a retention policy. Supersedes item (a) of the
+operational hygiene bundle below for the worker specifically.
+**Why:** The heartbeat row answers "is it working right now"; it does not answer
+"why did this break three weeks ago". A headless multi-tenant process whose
+logging strategy is `print()` is not debuggable after the fact.
+**Pros:** Post-hoc reconstruction of any account's detection history.
+**Cons:** A table and a retention policy to own.
+**Context:** `outreach-agent/watch_replies.py`; the hygiene bundle entry above.
+**Effort:** M (human) → S (CC + gstack) · **Priority:** P2 (was P3 as hygiene;
+phase 1 promotes it)
+**Depends on:** Phase 1 landing first.
+
+### Phase 6b: suggested instruction updates from edit diffs
+**What:** After enough captured edit pairs, offer the user a concrete, approved
+change to `custom_instructions` ("you've been cutting the second paragraph and
+shortening the ask — write that way by default?").
+**Why:** Deferred from the daily-use build. The capture half (phase 6a,
+`original_subject` / `original_body` / `original_draft_reply` written at insert)
+ships now because it is the only work in the plan that is lossy to defer —
+`drafts_db.mark_sent` and `reviews_db.mark_sent` currently overwrite the model's
+original in place, so every day without capture destroys corpus permanently. The
+*suggestion* half is deferred because the agreed gate cannot be met yet.
+**Gate agreed in review:** suggest only when the same edit shape appears in a
+clear majority of the last N pairs with N ≥ 30, and show the user the actual
+examples being generalized from, not a bare count. Visible, reversible, never
+silent. Fails safe: no pattern means no suggestion, forever.
+**Pros:** The honest form of lock-in — month three is measurably better than
+week one.
+**Cons:** The only one-way door in the plan. Inferred edits shape
+`custom_instructions`, which shapes output, which shapes the next edits; a wrong
+early generalization entrenches because the user cannot tell "it learned my
+voice" from "it learned its own last mistake". "A consistent pattern across
+pairs" is also a real component hiding behind one sentence.
+**Context:** `outreach-agent/drafts_db.py` `mark_sent`,
+`outreach-agent/reviews_db.py` `mark_sent`, `outreach-agent/agent.py`
+`_custom_instructions_block` (already fences safely).
+**Effort:** L (human) → M (CC + gstack) · **Priority:** P3
+**Depends on:** Phase 6a shipping. **Trigger to revisit:** any account reaching
+30+ captured edit pairs.
+
+## Deferred from the daily-use build ENG review (2026-07-28, `/plan-eng-review`)
+
+### Decide the reply-drafting provider before the VPS deploy
+**What:** On the VPS, reply drafts will go to a free-tier LLM endpoint that may
+train on them, carrying the prospect's own words.
+**Why:** `providers.chain_for(DRAFT_REPLY)` returns paid-only providers when any
+paid provider is configured. The only entry marked paid is `cliproxy`, whose
+`enabled_when` is `CLIPROXY_BASE_URL` — which `config.py` describes as
+"Local-dev-only backend: a CLIProxyAPI instance on this machine... Unset in
+every real deployment." So on the laptop today, reply drafting goes to a paid
+endpoint; on the VPS the paid chain is empty and it falls through to Groq's
+free tier. `providers._warn_free_tier_replies` signals this with a single
+`print()` — on a headless box, once per process. Volume also rises by an order
+of magnitude at the same moment, because drafting stops requiring an open tab.
+**Pros:** Either outcome is defensible; what is not defensible is the change
+happening silently at deploy time.
+**Cons:** A paid endpoint is real recurring cost on a pre-revenue product.
+**Options:** (a) configure a paid endpoint and set
+`REPLY_DRAFTS_REQUIRE_PRIVATE_ENDPOINT=1`, which already exists for exactly
+this and hard-fails rather than falling back; or (b) accept the exposure
+knowingly and update `static/privacy.html` and `static/dpa.html`, which promise
+a complete sub-processor list and are enforced by
+`tests/test_outreach_agent.py:3357`.
+**Context:** `outreach-agent/providers.py` `chain_for`;
+`outreach-agent/config.py` `REPLY_DRAFTS_REQUIRE_PRIVATE_ENDPOINT` (off by
+default, with a comment saying to turn it on "once a paid endpoint is
+configured and a customer DPA depends on it" — the VPS deploy is that moment).
+**Effort:** S → S · **Priority:** P1
+**Depends on:** Nothing. **Blocks:** the VPS deploy.
+
+### Manual "Check now" semantics once the worker exists
+**What:** `POST /api/outreach/replies/check` (`server.py:884`) runs the reply
+detector in a server-process thread. Once a worker polls continuously, two
+processes run the same detector.
+**Why:** The double-insert itself is closed by the unique constraint on
+`(account_id, thread_id, gmail_message_id)` decided in the eng review, so this
+is no longer a correctness bug — it is an unresolved product question. The
+button must survive phase 3, because it is the user's only recourse when the
+worker has stalled. What is undecided is whether it keeps running the detector
+directly (instant feedback, two processes detecting) or becomes a nudge that
+sets `next_due_at = now()` on the account's `scheduled_jobs` row (single
+writer, up to a 15s wait, and a silent no-op if the worker is down — which is
+exactly the situation that made the user press it).
+**Pros:** Deciding it deliberately avoids a button whose behaviour differs
+depending on whether a background process happens to be healthy.
+**Cons:** Neither option is clearly right; it depends on how visible worker
+health ends up being in the UI.
+**Context:** `server.py:884-890`; the `scheduled_jobs` table from the eng
+review; the heartbeat staleness indicator.
+**Effort:** S → S · **Priority:** P3
+**Depends on:** The worker and `scheduled_jobs` landing first.
