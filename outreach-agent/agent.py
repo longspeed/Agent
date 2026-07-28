@@ -326,6 +326,99 @@ _MIN_BODY_CHARS = 120
 _MAX_BODY_CHARS = 1400
 _MAX_SUBJECT_CHARS = 90
 
+# --- Reply validation ------------------------------------------------------
+# Deliberately its own constants. _validate_outreach's cannot be reused here and
+# the reasons are specific, not stylistic:
+#
+#   _BANNED_PHRASES holds "reach out", "reaching out", "reached out" -- correct
+#   for a cold email, wrong for a reply, because REPLY_SYSTEM says to reference
+#   their actual words and a prospect who wrote "thanks for reaching out" should
+#   get a reply that mirrors it. Reusing the list would reject the right answer
+#   and regenerate it into a worse one.
+#
+#   _MIN_BODY_CHARS is 120. The correct reply to "not interested" is about 60
+#   characters and REPLY_SYSTEM explicitly asks for one or two sentences with no
+#   counter-offer. The floor would force a regeneration away from the right
+#   answer.
+#
+#   The calendar link is a hard requirement for outreach and a conditional one
+#   here -- REPLY_SYSTEM says include it "only when they show interest".
+#
+# The rule for what belongs here: enforce what REPLY_SYSTEM actually asks for,
+# plus what cannot be walked back once sent. A validator that checks something
+# the prompt never required puts the regeneration loop in a fight with the
+# prompt, and the loop loses twice and then strands the reply.
+_REPLY_MIN_BODY_CHARS = 20
+_REPLY_MAX_BODY_CHARS = 1200
+
+# Only phrases REPLY_SYSTEM names outright.
+_REPLY_BANNED_PHRASES = (
+    "just following up", "great question", "thanks for your patience",
+    "sorry to bother", "sorry for the interruption",
+)
+
+# Any absolute URL. The reply path takes a stranger's text into the prompt, so a
+# link in the output that is not the sender's own is either invention or an
+# instruction the prospect wrote. Both send the operator's name somewhere they
+# did not choose, and the fast approval queue is tuned for a few seconds a draft
+# -- exactly long enough to miss a plausible-looking link.
+_URL = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
+
+
+def _validate_reply(body, calendar_link=""):
+    """Problems with a drafted reply; empty means it is safe to queue.
+
+    The reply path had no mechanical gate at all before this: outreach got a
+    validator and a two-attempt regeneration loop, while the path carrying a
+    stranger's words straight into the prompt returned the model's first
+    response unchecked. The defences were inverted relative to the trust."""
+    problems = []
+    stripped = body.strip()
+    lowered = stripped.lower()
+
+    if len(stripped) < _REPLY_MIN_BODY_CHARS:
+        problems.append(f"The reply is only {len(stripped)} characters; it reads as truncated.")
+    elif len(stripped) > _REPLY_MAX_BODY_CHARS:
+        problems.append(
+            f"The reply is {len(stripped)} characters. Match their length; when unsure, shorter."
+        )
+
+    # The injection outcome that actually costs something: a link the prospect
+    # planted, approved at a glance and sent under the sender's name.
+    allowed = {calendar_link.strip()} if calendar_link and calendar_link.strip() else set()
+    foreign = [u for u in _URL.findall(stripped) if u.rstrip(".,);") not in allowed]
+    if foreign:
+        problems.append(
+            "Remove these links -- the only URL allowed in a reply is the sender's own "
+            "call-to-action link: " + ", ".join(sorted(set(foreign))[:3]) + "."
+        )
+
+    stray = _NON_LATIN.findall(stripped)
+    if stray:
+        uniq = "".join(dict.fromkeys(stray))
+        problems.append(
+            f"Remove non-English/garbled characters and emoji ({uniq[:15]!r}); "
+            "write the whole reply in plain English."
+        )
+
+    placeholder = _PLACEHOLDER.search(stripped)
+    if placeholder:
+        problems.append(f"Unfilled placeholder in the reply: {placeholder.group(0)!r}.")
+
+    if _MARKDOWN.search(stripped):
+        problems.append("Remove markdown formatting; this is a plain-text reply.")
+
+    # REPLY_SYSTEM: "no subject line". A model that emits one produces a reply
+    # whose first line is furniture.
+    if lowered.startswith("subject:"):
+        problems.append("Remove the subject line; a reply is body only.")
+
+    banned = [p for p in _REPLY_BANNED_PHRASES if p in lowered]
+    if banned:
+        problems.append("Remove these phrases: " + ", ".join(banned) + ".")
+
+    return problems
+
 
 def _validate_outreach(subject, body, calendar_link, unsubscribe_url=""):
     """Returns a list of human-readable problems with a generated email; empty
@@ -533,4 +626,31 @@ def draft_reply(account, name, company, customer_reply, history=()):
         + _custom_instructions_block(ctx["custom_instructions"])
         + "\n\nDraft the sender's reply."
     )
-    return _chat(REPLY_SYSTEM, user_prompt, usage.DRAFT_REPLY)
+
+    # Same two-attempt shape as generate_outreach_email: show the model its own
+    # output and exactly what was wrong with it, which is far more reliable than
+    # re-rolling the same prompt.
+    #
+    # Unlike outreach, this returns the last attempt rather than raising when
+    # both fail. A raised reply-draft used to mean no review row, which meant
+    # the operator was never told a prospect had written back -- the draft is a
+    # convenience, the notification is the product. The caller queues whatever
+    # comes back and the operator edits it; returning a flawed draft they can
+    # see beats a clean exception they cannot.
+    attempts = []
+    for attempt in range(2):
+        prompt = user_prompt
+        if attempts:
+            prompt = retry_prompt(user_prompt, attempts[-1]["text"], attempts[-1]["problems"])
+        text = _chat(REPLY_SYSTEM, prompt, usage.DRAFT_REPLY)
+        problems = _validate_reply(text, ctx["calendar_link"])
+        if not problems:
+            return text
+        attempts.append({"text": text, "problems": problems})
+        print(f"Reply draft attempt {attempt + 1} rejected: {'; '.join(problems)}")
+
+    print(
+        "Reply draft still has problems after 2 attempts; queueing it for the "
+        "operator to fix rather than losing the reply."
+    )
+    return attempts[-1]["text"]

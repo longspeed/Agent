@@ -97,7 +97,22 @@ def check_for_replies(account):
             reply_body = gmail.strip_quoted(reply_text)
 
             company = row[sheets.COL_COMPANY].strip()
-            draft = agent.draft_reply(account, name, company, reply_body, history)
+            # A failed draft must not cost the notification. Every provider
+            # being down, or an exhausted free-tier daily quota, is a bad
+            # afternoon for the drafting feature and nothing at all to do with
+            # whether a prospect wrote back -- but if the exception escapes
+            # here, add_review never runs, no review row exists, and the
+            # operator is never told. The reply is the product; the draft is a
+            # convenience. Queue it empty and let them write their own.
+            try:
+                draft = agent.draft_reply(account, name, company, reply_body, history)
+            except Exception as e:
+                draft = ""
+                row_errors.append(
+                    f"{name or email}: reply detected and queued, but drafting a "
+                    f"response failed ({e}). Write the reply yourself in the app."
+                )
+                print(f"Draft failed for {name or email}, queueing the reply undrafted: {e}")
 
             # Review FIRST, sheet status second. The review is the operator
             # surface and the dedupe key: once it exists, a failing status

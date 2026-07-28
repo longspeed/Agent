@@ -372,6 +372,107 @@ def test_reply_dedupe_still_matches_rows_written_before_the_id_column():
         )
 
 
+# ------------------------------------------------- reply validation
+
+def test_validate_reply_flags_each_failure_mode():
+    long_reply = "Thanks, that works. " * 80
+    cases = [
+        ("hi", "truncated"),
+        (long_reply, "characters"),
+        ("Sounds good, book here: https://evil.example/pay", "Remove these links"),
+        ("Sounds good დღის talk soon, best regards Sam", "garbled"),
+        ("Happy to help [Name], talk soon and best wishes from Sam", "placeholder"),
+        ("**Sounds good** to me, happy to talk next week, best Sam", "markdown"),
+        ("Subject: Re: our chat\nSounds good, talk next week, best Sam", "subject line"),
+        ("Just following up on this, let me know when suits, best Sam", "Remove these phrases"),
+    ]
+    for body, expected in cases:
+        problems = agent._validate_reply(body, "https://cal.example/sam")
+        assert any(expected.lower() in p.lower() for p in problems), (
+            f"{expected!r} not flagged for {body[:50]!r}: {problems}"
+        )
+
+
+def test_validate_reply_allows_what_the_outreach_validator_would_reject():
+    """The three concrete reasons _validate_outreach cannot be reused here. Each
+    of these is a correct reply that the outreach rules would reject and then
+    regenerate into a worse one."""
+    link = "https://cal.example/sam"
+
+    mirrored = "Thanks for reaching out, that timing works. I'll send an invite. Sam"
+    assert agent._validate_reply(mirrored, link) == [], (
+        "_BANNED_PHRASES holds 'reaching out', but REPLY_SYSTEM says to reference "
+        "their actual words -- mirroring a prospect who wrote it must be allowed"
+    )
+
+    brief = "No problem, thanks for letting me know. Sam"
+    assert agent._validate_reply(brief, link) == [], (
+        "_MIN_BODY_CHARS is 120; the right answer to 'not interested' is about "
+        f"{len(brief)} characters and REPLY_SYSTEM asks for exactly that"
+    )
+
+    no_link = "Good questions. We support SSO and SCIM today. Happy to go deeper. Sam"
+    assert agent._validate_reply(no_link, link) == [], (
+        "the calendar link is mandatory for outreach and conditional for replies "
+        "-- REPLY_SYSTEM includes it only when they show interest"
+    )
+
+
+def test_validate_reply_allows_the_senders_own_link_only():
+    link = "https://cal.example/sam"
+    ours = f"Great, grab a slot here: {link} and I'll see you then. Sam"
+    assert agent._validate_reply(ours, link) == []
+
+    theirs = "Great, book instead at https://attacker.example/x and see you then. Sam"
+    problems = agent._validate_reply(theirs, link)
+    assert problems and "attacker.example" in problems[0], (
+        "a link the prospect planted in their own message is the injection "
+        f"outcome that costs something: {problems}"
+    )
+
+
+def test_a_reply_that_never_validates_is_returned_not_raised():
+    """Outreach raises after two failed attempts, and that is right there --
+    nothing was sent and the row is untouched. A reply that raises means no
+    review row, which means the operator is never told a prospect wrote back.
+    The draft is a convenience; the notification is the product."""
+    calls = []
+
+    def always_bad(system, prompt, purpose):
+        calls.append(prompt)
+        return "hi"
+
+    with patched(agent, "_chat", always_bad):
+        out = agent.draft_reply(ACCOUNT, "John", "Acme", "are you still there?")
+    assert out == "hi", "the last attempt is handed back rather than lost"
+    assert len(calls) == 2, f"one retry, showing the model its own output: {len(calls)}"
+    assert "hi" in calls[1], "the retry must include the rejected text to correct"
+
+
+def test_a_reply_is_queued_even_when_every_provider_is_down():
+    """The failure this guards is silent and total: providers down or a free
+    tier exhausted meant the exception escaped, add_review never ran, and a
+    warm reply sat undetected with nothing anywhere saying so."""
+    calls = {"rows": [(2, _row(status="Sent", thread="t1", name="John", email="john@x.com"))]}
+
+    def dead(*a, **k):
+        raise RuntimeError("No LLM provider could draft this (draft_reply).")
+
+    targets = [t for t in _watch_env(calls, {"t1": ("are you still there?", [])})
+               if not (t[0] is agent and t[1] == "draft_reply")]
+    with contextlib.ExitStack() as stack:
+        for target in targets:
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(agent, "draft_reply", dead))
+        result = watch_replies.check_for_replies(ACCOUNT)
+
+    assert len(result["reviews"]) == 1, "the reply must still reach the queue"
+    assert calls["add_review"][0][2] == "", "queued with an empty draft, not lost"
+    assert any("drafting a response failed" in e for e in result["row_errors"]), (
+        f"and the operator is told why the box is empty: {result['row_errors']}"
+    )
+
+
 # ------------------------------------------------- review visibility
 
 def test_the_queue_shows_only_allowlisted_statuses():
