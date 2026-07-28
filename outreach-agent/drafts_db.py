@@ -22,6 +22,39 @@ def _get_client():
     return _client
 
 
+_send_log_verified = False
+
+
+def require_send_log():
+    """Refuses to let a send start if the send log cannot record it.
+
+    mark_sent writes sent_at, and mark_sent is the durable record that stops a
+    sent email being sent again. On a database missing that column the write fails
+    -- after Gmail has already accepted the message -- which is precisely the
+    unbounded re-send loop send_prepared_draft was restructured to prevent. So
+    this is checked BEFORE the irreversible act, in the same spirit as
+    sheets.require_full_header: if we cannot record it, we do not do it.
+
+    Deliberately not a fallback that drops sent_at and carries on. That would
+    trade duplicate sends for an uncounted daily cap, and the cap is the
+    reputation control -- silently swapping one failure for another is how the
+    four bugs in this class got their reach. Cached once the column is confirmed,
+    since it cannot disappear mid-process."""
+    global _send_log_verified
+    if _send_log_verified:
+        return
+    try:
+        _get_client().table(TABLE).select("sent_at").limit(1).execute()
+    except Exception as e:
+        raise RuntimeError(
+            "Sending is blocked: outreach_drafts.sent_at is missing, so a send "
+            "could not be recorded and the same email would go out again on the "
+            "next batch. Run: alter table public.outreach_drafts add column if "
+            f"not exists sent_at timestamptz; ({e})"
+        ) from e
+    _send_log_verified = True
+
+
 def has_pending_for_row(account_id, row_index):
     existing = (
         _get_client().table(TABLE)
@@ -80,10 +113,50 @@ def get_draft(account_id, draft_id):
 
 def mark_sent(account_id, draft_id, sent_subject, sent_body):
     """Records the copy that actually went out (the operator may have edited it
-    in the UI before approving), and moves the row out of the pending set."""
-    _get_client().table(TABLE).update(
-        {"status": "sent", "subject": sent_subject, "body": sent_body}
-    ).eq("account_id", account_id).eq("id", draft_id).execute()
+    in the UI before approving), and moves the row out of the pending set.
+
+    This is the authoritative send log. send_prepared_draft calls it immediately
+    after Gmail accepts the message and before touching the sheet, so one row
+    here means exactly one email left -- which is what makes it safe to count the
+    daily cap from (see count_sent_last_24_hours)."""
+    from datetime import datetime, timezone
+
+    _get_client().table(TABLE).update({
+        "status": "sent",
+        "subject": sent_subject,
+        "body": sent_body,
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("account_id", account_id).eq("id", draft_id).execute()
+
+
+def count_sent_since(account_id, since):
+    """How many emails this account has actually sent since `since` (an aware
+    datetime).
+
+    The authoritative send count, used as the denominator of both
+    reputation-affecting guards: the daily cap and the bounce rate. Every input to
+    those has to come from data the operator cannot edit, and the lead sheet is a
+    spreadsheet they own. Measured against the sheet, both guards moved in both
+    directions -- deleting the Sent rows or reformatting the SentAt column handed
+    back a full day's allowance, and pasting rows that carry a status and a date
+    inflated the bounce denominator until the rate no longer tripped."""
+    result = (
+        _get_client().table(TABLE)
+        .select("id", count="exact")
+        .eq("account_id", account_id)
+        .eq("status", "sent")
+        .gte("sent_at", since.isoformat())
+        .limit(1)
+        .execute()
+    )
+    return result.count or 0
+
+
+def count_sent_last_24_hours(account_id):
+    """The daily send cap's denominator. See count_sent_since."""
+    from datetime import datetime, timedelta, timezone
+
+    return count_sent_since(account_id, datetime.now(timezone.utc) - timedelta(days=1))
 
 
 def discard(account_id, draft_id):

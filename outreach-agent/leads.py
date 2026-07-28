@@ -1,8 +1,10 @@
 import json
 
 from agent import _chat
+import plans
 import search
 import sheets
+import usage
 
 MAX_QUERIES = 3
 MAX_RESULTS_PER_QUERY = 5
@@ -38,7 +40,7 @@ Output ONLY a JSON array, nothing else, in this exact shape:
 
 
 def _expand_queries(target_description):
-    text = _chat(QUERY_SYSTEM, target_description)
+    text = _chat(QUERY_SYSTEM, target_description, usage.SOURCE_LEADS)
     queries = [line.strip("-* \t") for line in text.splitlines() if line.strip()]
     return queries[:MAX_QUERIES]
 
@@ -51,7 +53,7 @@ def _extract_candidates(target_description, results):
         for r in results[:MAX_CANDIDATES_FED_TO_LLM]
     )
     user_prompt = f"Target description: {target_description}\n\nSearch results:\n\n{formatted}"
-    text = _chat(EXTRACT_SYSTEM, user_prompt)
+    text = _chat(EXTRACT_SYSTEM, user_prompt, usage.SOURCE_LEADS)
 
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end == -1:
@@ -63,6 +65,18 @@ def _extract_candidates(target_description, results):
 
 
 def find_leads(account, target_description, limit=10):
+    # Before the search, not after. Everything below this line spends metered
+    # third-party calls -- three LLM query expansions, up to fifteen Tavily
+    # searches, one more LLM extraction -- and an account with no allowance left
+    # must not be able to burn our quota on work it is not entitled to keep.
+    # This is also why the gate is here rather than on the API endpoint: the
+    # lead agent runs from the CLI too, which never touches FastAPI.
+    plans.check(account, usage.UNIT_LEAD_SOURCED)
+    _, allowance, _ = plans.headroom(account, usage.UNIT_LEAD_SOURCED)
+    if allowance is not None:
+        # Take what is left rather than refusing a batch that only partly fits.
+        limit = min(limit, allowance)
+
     queries = _expand_queries(target_description)
 
     all_results = []
@@ -117,6 +131,12 @@ def find_leads(account, target_description, limit=10):
     ]
 
     sheets.append_rows(account, new_rows)
+
+    # Counted after the rows are in the sheet, so a failed append is not charged
+    # against the customer's allowance -- they got nothing, they owe nothing.
+    # One event carrying the whole batch (quantity=N), which is why
+    # usage_quantity_since sums quantity instead of counting rows.
+    usage.record_unit(usage.UNIT_LEAD_SOURCED, len(new_rows), target_description[:120])
 
     return {
         "found": len(candidates),

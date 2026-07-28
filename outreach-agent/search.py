@@ -35,5 +35,5 @@ def tavily_search(query, max_results=5):
         print(f"Tavily search failed for {query!r}: {e}")
         return []
 
-    usage.record("search", 1, query)
+    usage.record_search(query)
     return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")} for r in results]

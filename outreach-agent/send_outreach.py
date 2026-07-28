@@ -19,8 +19,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import accounts_db
 import agent
 import auth
+import bounces
 import drafts_db
 import gmail
+import plans
 import sheets
 import suppressions_db
 import usage
@@ -45,32 +47,41 @@ _SEND_ALL_MIN_GAP = 3
 _SEND_ALL_MAX_GAP = 12
 
 
-def mark_row_sent(account, row_index, email, thread_id, body):
-    """Marks a sheet row "Sent" right after the irreversible Gmail send, with a
-    bounded retry. The ordering (send, THEN mark, immediately) is the crash-
-    safety invariant: a transient Sheets 429/500 on this one write must not
-    convert a successful send into a future duplicate email, and the mark must
-    never be deferred to batch end (learning: batch-end-write-defeats-send-lock).
-    Raises only after exhausting the retries, and says plainly that the email
-    DID go out so the operator fixes the row instead of re-sending."""
-    sent_at = datetime.now(timezone.utc).isoformat()
+def _with_retries(action, describe):
+    """Runs action with a bounded backoff. Returns its result, or raises the last
+    error with `describe` prefixed."""
     last_err = None
     for attempt in range(_MARK_RETRIES):
         try:
-            sheets.update_row(
-                account, row_index, status="Sent", thread_id=thread_id,
-                sent_at=sent_at, email_body=body, expect_email=email,
-            )
-            return sent_at
+            return action()
         except Exception as e:
             last_err = e
             if attempt < _MARK_RETRIES - 1:
                 time.sleep(_MARK_RETRY_DELAY * (attempt + 1))
-    raise RuntimeError(
-        f"Email was sent to {email}, but marking the sheet row failed after "
-        f"{_MARK_RETRIES} attempts ({last_err}). Set that row's Status to "
-        f"'Sent' manually or it will be re-emailed next batch."
-    ) from last_err
+    raise RuntimeError(f"{describe} after {_MARK_RETRIES} attempts ({last_err})") from last_err
+
+
+def mark_row_sent(account, row_index, email, thread_id, body):
+    """Marks a sheet row "Sent" right after the irreversible Gmail send, with a
+    bounded retry. The mark must never be deferred to batch end (learning:
+    batch-end-write-defeats-send-lock).
+
+    This is the LEAST reliable of the two records a send produces, which is why
+    it is written last and why send_prepared_draft treats a failure here as a
+    repair task rather than a failed send. sheets.update_row re-verifies the row
+    by address first, and that check raises permanently -- not transiently --
+    when the operator has deleted or edited the row, so every retry fails
+    identically. Sitting where it used to, ahead of the draft-queue update, that
+    turned an ordinary sheet edit into an unbounded re-send loop."""
+    sent_at = datetime.now(timezone.utc).isoformat()
+    _with_retries(
+        lambda: sheets.update_row(
+            account, row_index, status="Sent", thread_id=thread_id,
+            sent_at=sent_at, email_body=body, expect_email=email,
+        ),
+        f"Email was sent to {email}, but marking the sheet row failed",
+    )
+    return sent_at
 
 
 def _prepare_one(account, row_index, name, email, company, lead_reason):
@@ -85,6 +96,14 @@ def _prepare_one(account, row_index, name, email, company, lead_reason):
     draft_id = drafts_db.add_draft(
         account["id"], row_index, name, email, company, subject, body
     )
+    # Counted here, after the draft exists, because this is the unit the plan
+    # sells -- a draft in the review queue. Not counted on generation: a
+    # generation that failed validation and was retried cost us two LLM calls
+    # (already metered as cost) but produced one draft, and billing the customer
+    # for our own retry is indefensible. add_draft returning None means the row
+    # was already queued, which is not a new unit either.
+    if draft_id is not None:
+        usage.record_unit(usage.UNIT_DRAFT_EMAIL, 1, email)
     return {"row_index": row_index, "email": email, "draft_id": draft_id, "subject": subject}
 
 
@@ -96,8 +115,16 @@ def prepare_drafts(account):
     # calls generating drafts that could never be sent (same consent gate the
     # actual send relies on).
     sheets.require_full_header(account)
+    # Independent of the API's blocker check: this module is also driven from
+    # the CLI, and an account bouncing this hard should not be able to spend
+    # LLM calls drafting mail it must not send.
+    bounces.assert_sendable(account)
     suppressed = suppressions_db.list_suppressed_emails(account["id"])
-    readiness = sheets.campaign_readiness(account, suppressed_emails=suppressed)
+    readiness = sheets.campaign_readiness(
+        account,
+        sent_today=drafts_db.count_sent_last_24_hours(account["id"]),
+        suppressed_emails=suppressed,
+    )
     pending = [
         (row_index,
          row[sheets.COL_NAME].strip(),
@@ -116,6 +143,25 @@ def prepare_drafts(account):
             "daily_limit": readiness["daily_limit"],
             "remaining_today": readiness["remaining_today"],
         }
+
+    # Monthly plan quota, checked after the daily cap and on the same principle:
+    # spend nothing before we know the work is allowed. An account with no
+    # allowance left is refused outright (raises), rather than silently
+    # preparing zero drafts and reporting success -- "prepared 0 of 12" with no
+    # reason is the failure mode that generates a support ticket instead of an
+    # upgrade. An account with *some* allowance takes what is left, so a batch
+    # that straddles the boundary delivers up to the line rather than failing
+    # whole.
+    _, allowance, _ = plans.headroom(account, usage.UNIT_DRAFT_EMAIL)
+    quota_trimmed = 0
+    if allowance is not None and allowance <= 0:
+        # Re-checked rather than raising from here so the refusal message is
+        # built in one place. Costs a second query only on the path that is
+        # about to do no work at all.
+        plans.check(account, usage.UNIT_DRAFT_EMAIL)
+    if allowance is not None and allowance < len(pending):
+        quota_trimmed = len(pending) - allowance
+        pending = pending[:allowance]
 
     prepared = []
     failed = []
@@ -136,6 +182,11 @@ def prepare_drafts(account):
                 print(f"Failed to draft for {email}: {e}")
 
     summary = f"Prepared {len(prepared)} of {len(pending)} outreach drafts. Review and send them on the Outreach page."
+    if quota_trimmed:
+        summary += (
+            f"\n\n{quota_trimmed} more were left undrafted: that is all your plan "
+            "includes this month."
+        )
     if failed:
         summary += "\n\nCouldn't draft:\n" + "\n".join(f"- {email}: {err}" for email, err in failed)
     notify(account, "Outreach drafts ready for review", summary)
@@ -147,15 +198,37 @@ def prepare_drafts(account):
         "failed": [{"email": email, "error": err} for email, err in failed],
         "daily_limit": readiness["daily_limit"],
         "remaining_today": readiness["remaining_today"],
+        "quota_trimmed": quota_trimmed,
     }
 
 
 def send_prepared_draft(account, draft, subject=None, body=None):
-    """Sends one approved draft and marks its sheet row. `subject`/`body`
-    override the stored copy when the operator edited it in the UI. The one-
-    click opt-out link and List-Unsubscribe headers are (re)applied here, so a
-    legally-required unsubscribe is present even if the operator edited it out.
-    Returns (thread_id, sent_body)."""
+    """Sends one approved draft, then records it. `subject`/`body` override the
+    stored copy when the operator edited it in the UI. The one-click opt-out link
+    and List-Unsubscribe headers are (re)applied here, so a legally-required
+    unsubscribe is present even if the operator edited it out.
+
+    Returns {"thread_id", "body", "sheet_error"}, where sheet_error is a message
+    when the email went out but its sheet row could not be updated. That is a
+    repair task, not a failed send, and the distinction is the whole point of the
+    ordering below.
+
+    The write order is load-bearing. The Gmail send is irreversible and has to go
+    first -- nothing else can produce the thread id, and writing "Sent" before
+    sending would mark mail that never left. So the moment it succeeds, the very
+    next thing is the durable record that stops it ever being sent again: the
+    draft-queue update, one row in our own database with no re-verification to
+    fail. The sheet, which is a spreadsheet the operator edits underneath us,
+    comes last and is allowed to fail.
+
+    Getting this backwards is what a deleted sheet row used to cost: the email
+    left, mark_row_sent raised permanently on the missing row, drafts_db.mark_sent
+    never ran, the draft stayed pending, and the next batch sent the same email to
+    the same prospect -- every batch, without limit."""
+    # Before anything irreversible: confirm the send can be recorded at all. An
+    # unrecordable send is a duplicate waiting to happen, so it must not start.
+    drafts_db.require_send_log()
+
     email = draft["email"]
     subject = draft["subject"] if subject is None else subject
     body = draft["body"] if body is None else body
@@ -165,8 +238,27 @@ def send_prepared_draft(account, draft, subject=None, body=None):
         body = f"{body.rstrip()}\n\n{agent._opt_out_line(unsub_url)}"
 
     thread_id = gmail.send_email(account, email, subject, body, unsubscribe_url=unsub_url)
-    mark_row_sent(account, draft["row_index"], email, thread_id, body)
-    return thread_id, body
+
+    # Irreversible act done. Record it before anything else is attempted, and
+    # retry it, because this is now the record that prevents a duplicate.
+    _with_retries(
+        lambda: drafts_db.mark_sent(account["id"], draft["id"], subject, body),
+        f"Email was sent to {email}, but recording it in the draft queue failed",
+    )
+
+    sheet_error = None
+    try:
+        mark_row_sent(account, draft["row_index"], email, thread_id, body)
+    except Exception as e:
+        # The email is out and recorded, so this cannot cause a re-send. It only
+        # means the customer's sheet does not show what happened.
+        sheet_error = (
+            f"{email} was emailed successfully, but its sheet row was not updated "
+            f"({e}). Set that row's Status to 'Sent' so your records match; it will "
+            "not be emailed again either way."
+        )
+        print(sheet_error)
+    return {"thread_id": thread_id, "body": body, "sheet_error": sheet_error}
 
 
 def send_all_prepared(account):
@@ -177,16 +269,25 @@ def send_all_prepared(account):
     for N drafts). Drips with a randomized gap so the batch doesn't leave in
     one burst. Sheet edits/deletions are tolerated per-draft: one bad row must
     not stop the rest."""
+    # Drafts prepared before the rate crossed the line must not go out either --
+    # the check belongs on the send, not just on the drafting.
+    bounces.assert_sendable(account)
     drafts = drafts_db.list_pending_drafts(account["id"])
     sent = []
     skipped = []
     failed = []
+    sheet_warnings = []
 
-    # One sheet read for the whole batch. The lock in the /send-all endpoint
-    # keeps a second batch from running for this account concurrently, so a
-    # locally-tracked counter stays accurate: every send below is exactly one
-    # against the cap, and anything sent before this batch is already reflected.
-    remaining = sheets.campaign_readiness(account)["remaining_today"]
+    # One sheet read for the whole batch, serving both the cap and the
+    # already-emailed guard below. The lock in the /send-all endpoint keeps a
+    # second batch from running for this account concurrently, so a locally
+    # tracked counter stays accurate: every send below is exactly one against the
+    # cap, and anything sent before this batch is already reflected.
+    rows = sheets.get_all_rows(account)
+    remaining = sheets.campaign_readiness(
+        account, sent_today=drafts_db.count_sent_last_24_hours(account["id"]), rows=rows
+    )["remaining_today"]
+    already_emailed = sheets.already_emailed_rows(rows)
 
     for i, draft in enumerate(drafts):
         email = draft["email"]
@@ -197,11 +298,24 @@ def send_all_prepared(account):
             drafts_db.discard(account["id"], draft["id"])
             skipped.append((email, "recipient unsubscribed"))
             continue
+        if draft["row_index"] in already_emailed:
+            # The sheet says this row already went out while the draft queue still
+            # says pending. The only way to reach that is a send whose queue
+            # update failed, so the email is out: retire the draft instead of
+            # sending a second copy. Free -- it reads the sheet fetched above.
+            drafts_db.discard(account["id"], draft["id"])
+            skipped.append((email, "already marked Sent in the sheet"))
+            continue
         try:
-            _, sent_body = send_prepared_draft(account, draft)
-            drafts_db.mark_sent(account["id"], draft["id"], draft["subject"], sent_body)
+            result = send_prepared_draft(account, draft)
+            # Counted against the cap on the strength of the send, not of the
+            # sheet write. The cap is a domain-reputation control, so it has to
+            # count emails that actually left; deferring the decrement to a
+            # successful sheet write let it under-count and over-send.
             sent.append(email)
             remaining -= 1
+            if result["sheet_error"]:
+                sheet_warnings.append(result["sheet_error"])
             print(f"Sent to {email}")
         except Exception as e:
             failed.append((email, str(e)))
@@ -215,12 +329,19 @@ def send_all_prepared(account):
         summary += "\n\nSkipped:\n" + "\n".join(f"- {email}: {why}" for email, why in skipped)
     if failed:
         summary += "\n\nFailed:\n" + "\n".join(f"- {email}: {err}" for email, err in failed)
+    if sheet_warnings:
+        # Kept apart from `failed` on purpose: these were delivered. Filing them
+        # as failures is what invited an operator to send them again.
+        summary += "\n\nSent, but your sheet needs a manual fix:\n" + "\n".join(
+            f"- {w}" for w in sheet_warnings
+        )
     notify(account, "Outreach batch sent", summary)
     print(summary)
     return {
         "sent": len(sent),
         "skipped": [{"email": e, "reason": r} for e, r in skipped],
         "failed": [{"email": e, "error": err} for e, err in failed],
+        "sheet_warnings": sheet_warnings,
     }
 
 

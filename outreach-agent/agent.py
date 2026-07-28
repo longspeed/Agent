@@ -4,18 +4,16 @@ import time
 import requests
 
 import gmail
+import providers
 import usage
-from config import (
-    CLIPROXY_API_KEY,
-    CLIPROXY_BASE_URL,
-    CLIPROXY_MODEL,
-    DEFAULT_MEETING_PURPOSE,
-    OPENROUTER_API_KEY,
-    OPENROUTER_MODEL,
-)
+from config import DEFAULT_MEETING_PURPOSE
 
-API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_RETRIES = 4
+# Ceiling on how long one provider may park a request. Free tiers answer a
+# blown daily quota with Retry-After values in the thousands of seconds; sleeping
+# on that holds a web request open for an hour to no purpose. Past this, the
+# provider counts as unavailable and the next one in the chain gets the call.
+MAX_RETRY_WAIT = 30
 
 OUTREACH_SYSTEM = """You are a senior SDR who writes cold emails that get replied to. You
 write like one person emailing one person -- not like a template with the name swapped in.
@@ -124,58 +122,102 @@ Output only the email body, nothing else.
 """
 
 
-def _chat(system, user_prompt):
-    # CLIPROXY_BASE_URL is local-dev-only (see config.py) -- unset in every
-    # real deployment, so this always falls through to OpenRouter there.
-    using_cliproxy = bool(CLIPROXY_BASE_URL)
-    if using_cliproxy:
-        url = f"{CLIPROXY_BASE_URL.rstrip('/')}/chat/completions"
-        api_key = CLIPROXY_API_KEY
-        model = CLIPROXY_MODEL
-        label = "CLIProxyAPI"
-    else:
-        url = API_URL
-        api_key = OPENROUTER_API_KEY
-        model = OPENROUTER_MODEL
-        label = "OpenRouter"
+class ProviderUnavailable(Exception):
+    """One provider could not produce text. Never fatal on its own -- the caller
+    moves to the next provider in the chain."""
 
+
+def _post(provider, system, user_prompt, purpose, may_wait):
+    """One provider's full attempt budget. Returns the generated text, or raises
+    ProviderUnavailable so the chain can move on.
+
+    may_wait is False while another provider is still untried: waiting out a
+    rate limit is only worth it when there is nothing else to ask."""
     for attempt in range(MAX_RETRIES):
-        response = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-            timeout=60,
-        )
-        if response.status_code == 429 and attempt < MAX_RETRIES - 1:
-            wait = int(response.headers.get("Retry-After", 10))
-            print(f"{label} rate-limited, retrying in {wait}s...")
+        try:
+            response = requests.post(
+                provider.endpoint,
+                headers={
+                    "Authorization": f"Bearer {provider.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": provider.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+                timeout=60,
+            )
+        except requests.RequestException as e:
+            raise ProviderUnavailable(f"request failed: {e}") from e
+
+        if response.status_code == 429:
+            wait = int(response.headers.get("Retry-After", 10) or 10)
+            if not may_wait or wait > MAX_RETRY_WAIT or attempt == MAX_RETRIES - 1:
+                raise ProviderUnavailable(f"rate-limited (Retry-After: {wait}s)")
+            print(f"{provider.display} rate-limited, retrying in {wait}s...")
             time.sleep(wait)
             continue
-        response.raise_for_status()
+        if not response.ok:
+            # A bad key, a retired model id, or a provider outage. All three are
+            # someone else's endpoint being unusable, not a reason to fail the
+            # draft while another provider is configured.
+            raise ProviderUnavailable(f"HTTP {response.status_code}: {response.text[:200]}")
+
         data = response.json()
-        # Meter the pooled key against whichever account is active.
-        tokens = (data.get("usage") or {}).get("total_tokens") or 1
-        usage.record("llm", tokens, model)
-        content = data["choices"][0]["message"]["content"]
+        # Meter the pooled key against whichever account is active. Input and
+        # output tokens are recorded separately because they're priced
+        # differently -- a reply draft carries a whole thread as input, so its
+        # cost profile is nothing like a first-touch email's. Recorded against
+        # the model that actually served the call, so the numbers stay honest
+        # when the chain falls through to a different provider.
+        call_usage = data.get("usage") or {}
+        prompt_tokens = call_usage.get("prompt_tokens")
+        completion_tokens = call_usage.get("completion_tokens")
+        usage.record_llm(
+            purpose,
+            provider.model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens=call_usage.get("total_tokens"),
+        )
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as e:
+            raise ProviderUnavailable(f"unexpected response shape: {e}") from e
         if content is None:
             # Some providers return content=null instead of text on a refusal,
             # moderation block, or transient hiccup -- retry like a 429 rather
             # than crashing with an AttributeError on the caller's .strip().
             finish_reason = data["choices"][0].get("finish_reason")
             if attempt < MAX_RETRIES - 1:
-                print(f"{label} returned empty content (finish_reason={finish_reason!r}), retrying...")
+                print(f"{provider.display} returned empty content (finish_reason={finish_reason!r}), retrying...")
                 continue
-            raise RuntimeError(f"{label} returned empty content after {MAX_RETRIES} attempts (finish_reason={finish_reason!r})")
+            raise ProviderUnavailable(f"empty content after {MAX_RETRIES} attempts (finish_reason={finish_reason!r})")
         return content.strip()
+
+    raise ProviderUnavailable(f"no usable response after {MAX_RETRIES} attempts")
+
+
+def _chat(system, user_prompt, purpose):
+    """Sends one generation to the first provider that can serve it.
+
+    The chain is purpose-dependent: a reply draft carries the prospect's own
+    words and is barred from free-tier endpoints while a paid one exists. See
+    providers.chain_for."""
+    chain = providers.chain_for(purpose)
+    failures = []
+    for i, provider in enumerate(chain):
+        try:
+            return _post(provider, system, user_prompt, purpose, may_wait=i == len(chain) - 1)
+        except ProviderUnavailable as e:
+            failures.append(f"{provider.display}: {e}")
+            print(f"{provider.display} unavailable ({e}); trying the next provider.")
+    raise RuntimeError(
+        f"No LLM provider could draft this ({purpose}). " + " | ".join(failures)
+    )
 
 
 def _sender_context(account):
@@ -382,15 +424,13 @@ def account_send_blockers(account):
     return blockers
 
 
-def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_url=""):
-    ctx = _sender_context(account)
-    # An untouched default goal gives the model no honest way to write "here's
-    # what's in it for you" -- refuse rather than send content-free mail. The
-    # CTA link is optional (see account_send_blockers).
-    blockers = account_send_blockers(account)
-    if blockers:
-        raise RuntimeError(" ".join(blockers))
+def outreach_prompt(account, name, company, lead_reason=""):
+    """The first-attempt user prompt for one first-touch email.
 
+    Split out of generate_outreach_email so eval_models.py can measure the real
+    prompt rather than an approximation of it -- a model comparison run against
+    a paraphrase of production is worth nothing."""
+    ctx = _sender_context(account)
     base_prompt = (
         f"Recipient: {name}"
         + (f" at {company}" if company else "")
@@ -419,21 +459,39 @@ def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_
         )
     base_prompt += _custom_instructions_block(ctx["custom_instructions"])
     base_prompt += "\n\nWrite the email."
+    return base_prompt
+
+
+def retry_prompt(base_prompt, previous_text, problems):
+    """Second pass: show the model its own output and exactly what was wrong with
+    it. Far more reliable than re-rolling the same prompt."""
+    return (
+        base_prompt
+        + "\n\nYour previous attempt was rejected:\n---\n"
+        + previous_text
+        + "\n---\nFix all of these and output the corrected email in the required format:\n"
+        + "\n".join(f"- {p}" for p in problems)
+    )
+
+
+def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_url=""):
+    ctx = _sender_context(account)
+    # An untouched default goal gives the model no honest way to write "here's
+    # what's in it for you" -- refuse rather than send content-free mail. The
+    # CTA link is optional (see account_send_blockers).
+    blockers = account_send_blockers(account)
+    if blockers:
+        raise RuntimeError(" ".join(blockers))
+
+    base_prompt = outreach_prompt(account, name, company, lead_reason)
 
     attempts = []
     for attempt in range(2):
         user_prompt = base_prompt
         if attempts:
-            # Second pass: show the model its own output and exactly what was
-            # wrong with it. Far more reliable than re-rolling the same prompt.
-            user_prompt += (
-                "\n\nYour previous attempt was rejected:\n---\n"
-                + attempts[-1]["text"]
-                + "\n---\nFix all of these and output the corrected email in the required format:\n"
-                + "\n".join(f"- {p}" for p in attempts[-1]["problems"])
-            )
+            user_prompt = retry_prompt(base_prompt, attempts[-1]["text"], attempts[-1]["problems"])
 
-        text = _chat(OUTREACH_SYSTEM, user_prompt)
+        text = _chat(OUTREACH_SYSTEM, user_prompt, usage.DRAFT_EMAIL)
         subject, body = _split_subject(text)
         if unsubscribe_url:
             body = f"{body}\n\n{_opt_out_line(unsubscribe_url)}"
@@ -475,4 +533,4 @@ def draft_reply(account, name, company, customer_reply, history=()):
         + _custom_instructions_block(ctx["custom_instructions"])
         + "\n\nDraft the sender's reply."
     )
-    return _chat(REPLY_SYSTEM, user_prompt)
+    return _chat(REPLY_SYSTEM, user_prompt, usage.DRAFT_REPLY)

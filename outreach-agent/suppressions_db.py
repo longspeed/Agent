@@ -54,6 +54,47 @@ def is_suppressed(account_id, email):
     return bool(result.data)
 
 
+def list_source_timestamps(account_id, source):
+    """When each of this account's suppressions for one reason was added, as
+    aware datetimes, oldest first.
+
+    The authoritative record behind the bounce-rate guard (see bounces.stats).
+    Rows here are append-only and ours; the sheet's "Bounced" rows are a
+    spreadsheet the operator can edit, so any safety threshold measured against
+    those can be cleared by deleting them.
+
+    Returns timestamps rather than a count because stats() needs two numbers from
+    them -- the total, which the acknowledgement watermark is compared against,
+    and how many fall inside the rate window -- and the row count per account is
+    small enough that one fetch beats two counting queries."""
+    result = (
+        _get_client().table(TABLE)
+        .select("created_at")
+        .eq("account_id", account_id)
+        .eq("source", source)
+        .order("created_at")
+        .execute()
+    )
+    stamps = []
+    for row in result.data:
+        parsed = _parse_timestamp(row.get("created_at"))
+        if parsed is not None:
+            stamps.append(parsed)
+    return stamps
+
+
+def _parse_timestamp(value):
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
 def list_suppressed_emails(account_id):
     """The full opt-out set for an account, lower-cased, as a Python set so
     callers can filter a batch in one pass instead of a query per address."""

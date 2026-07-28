@@ -69,6 +69,12 @@ create table public.accounts (
     custom_instructions text not null default '',
     calendar_booking_link text,
     notify_email text,
+    -- How many hard bounces the operator has reviewed and chosen to continue
+    -- past (bounces.acknowledge). Lets a bounce pause be cleared without
+    -- deleting rows from the sheet; new bounces push the count above it and
+    -- pause again. Reads as 0 if absent, so an un-migrated database keeps the
+    -- pre-acknowledgement behaviour instead of erroring.
+    bounce_ack_count integer not null default 0,
     created_at timestamptz not null default now()
 );
 
@@ -144,6 +150,53 @@ alter table public.accounts add column if not exists custom_instructions text no
 -- `enable row level security` lines.
 ```
 
+For the bounce-pause acknowledgement (new as of 2026-07-26). Until this runs,
+everything works as before except the "Acknowledge and keep sending" button,
+which returns a 409 naming this statement:
+
+```sql
+alter table public.accounts add column if not exists bounce_ack_count integer not null default 0;
+```
+
+For the daily-cap send log (also 2026-07-26). The cap used to be counted from the
+sheet's SentAt column, which the operator can edit — deleting the Sent rows,
+clearing that column, or changing its date format all reset the allowance. It is
+now counted from `outreach_drafts`, which needs a send timestamp. **Run this
+before the next batch:** without it every send raises, because `mark_sent` writes
+the column.
+
+```sql
+alter table public.outreach_drafts add column if not exists sent_at timestamptz;
+update public.outreach_drafts set sent_at = created_at where status = 'sent' and sent_at is null;
+create index if not exists outreach_drafts_sent_at_idx
+    on public.outreach_drafts (account_id, status, sent_at);
+```
+
+For plans and billing (new as of 2026-07-26). Until this runs, `check_schema()`
+warns at boot and every account is treated as the free trial: paid customers
+silently get trial quotas, and the Stripe webhook has nowhere to write the plan
+it just collected money for.
+
+The default is `'trial'`, which is deliberate and is the whole decision in this
+migration. `not null default 'trial'` backfills every existing row to the free
+tier, so the day this lands, current accounts drop to trial quotas (100 drafts
+and 50 sourced leads) and are refused past them. That is truthful to billing --
+nobody has paid -- but it is a downgrade for people mid-campaign, so either
+send them to checkout first or backfill the ones you intend to grandfather:
+
+```sql
+alter table public.accounts add column if not exists plan text not null default 'trial';
+
+-- Optional: grandfather specific existing accounts instead of dropping them to
+-- the trial. Run this BEFORE announcing the change, not after the first refusal.
+-- update public.accounts set plan = 'pilot' where email in ('someone@example.com');
+```
+
+`plan` is a plain text column rather than an enum on purpose: adding a tier
+should not require a migration, and `plans.get()` already falls back to the
+trial for any value it does not recognize, so an unknown string fails toward
+the smallest entitlement rather than toward free unlimited service.
+
 If your project predates "Sign in with Google", also bring the accounts table
 in line with the code (harmless if the column already exists):
 
@@ -158,13 +211,35 @@ RLS is enabled with no policies: the publishable/anon key can read nothing,
 and the backend (which uses the secret key and bypasses RLS) scopes every
 query by `account_id`.
 
-## 4. OpenRouter API key
+## 4. Language model API key
 
-Sign up at https://openrouter.ai/ and create an API key
-(https://openrouter.ai/settings/keys). The default model in `.env.example`,
-`openai/gpt-oss-20b:free`, is a free model — no payment needed to get
-started. This key is shared by all accounts; per-account consumption is
-recorded in `usage_events` (see the Usage panel in Settings).
+You need at least one. They are tried in order and the first that answers
+serves the request, so a blown daily quota degrades instead of stopping. All
+three speak the same API shape, so adding one is a key in `.env`.
+
+| Provider | Free allowance | Get a key |
+| --- | --- | --- |
+| **Groq** (recommended primary) | ~14,400 requests/day, 30 RPM. No card. Open-weight models only. | https://console.groq.com/keys |
+| **Google AI Studio** | ~1,500 requests/day, 15 RPM. Gemini 2.5 Flash. | https://aistudio.google.com/apikey |
+| **OpenRouter** | 50 requests/day on an account that has never been funded; 1,000/day once you have ever bought $10 of credit. | https://openrouter.ai/settings/keys |
+
+Read that OpenRouter row before making it your primary: at 25 sends/day plus
+the retry in `agent.py`, one active customer exhausts 50 requests outright.
+
+Keys are shared by all accounts; per-account consumption is recorded in
+`usage_events` (see the Usage panel in Settings), against whichever model
+actually served each call.
+
+**Free tiers and your privacy policy.** A free tier generally allows the
+provider to train on what you send it. First-touch drafting is fine there — the
+prompt holds a name, a company, a public research note and your own pitch. Reply
+drafting is not: its prompt contains the prospect's own words. So replies are
+routed only to a provider you have marked as paid (`GROQ_TIER=paid`,
+`GEMINI_TIER=paid`, or a non-`:free` OpenRouter model) and are never failed over
+to a free one. With no paid provider configured, replies do run on a free tier
+and `providers.py` warns at startup; `/privacy` and `/dpa` disclose it, and
+`REPLY_DRAFTS_REQUIRE_PRIVATE_ENDPOINT=1` refuses instead. `GET
+/api/llm-providers` reports what is live.
 
 ## 5. Configure environment
 
@@ -173,8 +248,13 @@ cp .env.example .env
 ```
 
 Fill in:
-- `OPENROUTER_API_KEY` — from step 4
-- `OPENROUTER_MODEL` — leave as the default free model, or swap for another
+- At least one of `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` — step 4
+- Optionally `GROQ_MODEL` / `GEMINI_MODEL` / `OPENROUTER_MODEL` to override the
+  default model, and `{NAME}_TIER=free|paid` to declare the data terms your key
+  is on. Check the default model ids against the provider's current list —
+  models get retired.
+- `LLM_PROVIDER_ORDER` — optional; reorders the chain and doubles as an
+  allowlist, so `LLM_PROVIDER_ORDER=groq` pins everything to Groq
 - `APP_SECRET_KEY` — random key used to sign login sessions and encrypt
   stored Google tokens, e.g.
   `python -c "import secrets; print(secrets.token_hex(32))"`. Changing it

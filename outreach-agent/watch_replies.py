@@ -13,6 +13,7 @@ import schedule
 
 import accounts_db
 import agent
+import bounces
 import gmail
 import reviews_db
 import sheets
@@ -29,13 +30,14 @@ def check_for_replies(account):
     sent_rows = sheets.get_reply_check_rows(account)
     if not sent_rows:
         print("No sent rows awaiting replies.")
-        return {"reviews": [], "row_errors": []}
+        return {"reviews": [], "row_errors": [], "bounces": []}
     # This run writes "Replied" statuses -- same full-header consent gate as
     # the send path (see sheets.require_full_header).
     sheets.require_full_header(account)
 
     new_reviews = []
     row_errors = []
+    new_bounces = []
     for row_index, row in sent_rows:
         thread_id = row[sheets.COL_THREAD_ID].strip()
         if not thread_id:
@@ -45,8 +47,28 @@ def check_for_replies(account):
         email = row[sheets.COL_EMAIL].strip()
 
         try:
-            reply_text, history = gmail.get_latest_reply_with_history(account, thread_id, email)
+            # One read for both checks below. They ask different questions of the
+            # same messages, and Gmail charges per fetch.
+            thread = gmail.get_thread(account, thread_id)
+            reply_text, history = gmail.get_latest_reply_with_history(
+                account, thread_id, email, thread=thread
+            )
             if not reply_text:
+                # No new message from them -- but the thread may be carrying a
+                # bounce, which get_latest_reply_with_history() filters out
+                # (it only surfaces messages sent by the contact themselves).
+                bounce = gmail.find_bounce(account, thread_id, email, thread=thread)
+                if bounce:
+                    bounces.record(account, row_index, email, bounce)
+                    new_bounces.append({
+                        "row": row_index, "email": email,
+                        "code": bounce["code"], "permanent": bounce["permanent"],
+                    })
+                    outcome = (
+                        "suppressed" if bounce["permanent"]
+                        else "marked Delayed; still sendable and still watched for a reply"
+                    )
+                    print(f"Bounce for {email} ({bounce['code']}) -- {outcome}.")
                 continue
 
             # A reply that already has a review -- pending, sent, or dismissed --
@@ -81,7 +103,7 @@ def check_for_replies(account):
             row_errors.append(f"{label}: {e}")
             print(f"Reply check failed for {label} (row {row_index}): {e}")
 
-    return {"reviews": new_reviews, "row_errors": row_errors}
+    return {"reviews": new_reviews, "row_errors": row_errors, "bounces": new_bounces}
 
 
 def main():

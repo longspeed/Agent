@@ -35,6 +35,37 @@ EDITABLE_SETTINGS = (
     "google_sheet_id",
 )
 
+# Columns the code needs that a project created before them will not have, as
+# (column, what breaks without it, the statement that adds it). Checked at boot
+# rather than on first use -- see check_schema for why that distinction matters
+# for this particular column.
+_MIGRATED_COLUMNS = (
+    (
+        ACCOUNTS_TABLE,
+        "bounce_ack_count",
+        "a paused account cannot clear its own bounce pause, leaving deleting "
+        "sheet rows as the only way out",
+        "alter table public.accounts add column if not exists "
+        "bounce_ack_count integer not null default 0;",
+    ),
+    (
+        "outreach_drafts",
+        "sent_at",
+        "sending is blocked outright (drafts_db.require_send_log), because a send "
+        "that cannot be recorded would be re-sent on the next batch",
+        "alter table public.outreach_drafts add column if not exists sent_at timestamptz;",
+    ),
+    (
+        ACCOUNTS_TABLE,
+        "plan",
+        "every account is treated as the free trial, so paid customers silently "
+        "get trial quotas and a Stripe webhook has nowhere to write the plan it "
+        "just collected money for",
+        "alter table public.accounts add column if not exists plan text not null "
+        "default 'trial';",
+    ),
+)
+
 _client = None
 
 
@@ -155,6 +186,58 @@ def set_google_token(account_id: str, token_json: str | None):
     _get_client().table(ACCOUNTS_TABLE).update({"google_token": value}).eq("id", account_id).execute()
 
 
+def check_schema() -> list[str]:
+    """Warnings about this database versus what the code expects. Empty is good.
+
+    Run at startup, not lazily, because of when the gap would otherwise surface.
+    bounce_ack_count is only ever needed by an account that is *already* paused
+    for a bad bounce rate -- so the customers who hit a missing column are the
+    ones already having a bad day, and the only exit left to them is deleting
+    sheet rows, which is precisely the remediation bounces.pause_reason exists to
+    avoid recommending. A warning at boot costs one query and turns that into
+    something the operator fixes before anyone is stuck behind it."""
+    try:
+        _get_client().table(ACCOUNTS_TABLE).select("id").limit(1).execute()
+    except Exception as e:
+        # Unreachable database is a different problem with its own symptoms.
+        # Reported as unverified rather than as a missing column, so this never
+        # sends someone off to run a migration they may not need.
+        return [f"Could not verify the accounts table schema: {e}"]
+
+    warnings = []
+    for table, column, consequence, statement in _MIGRATED_COLUMNS:
+        try:
+            _get_client().table(table).select(column).limit(1).execute()
+        except Exception:
+            warnings.append(
+                f"{table}.{column} is missing, so {consequence}. Run: {statement}"
+            )
+    return warnings
+
+
+def set_bounce_ack(account_id: str, bounced_count: int):
+    """Watermark for bounces.acknowledge(): how many hard bounces this operator
+    has already reviewed and chosen to continue past.
+
+    Not routed through update_settings because it is not a customer-editable
+    setting -- it is a safety-guard acknowledgement, and the only writer is
+    bounces.acknowledge()."""
+    try:
+        (
+            _get_client().table(ACCOUNTS_TABLE)
+            .update({"bounce_ack_count": int(bounced_count)})
+            .eq("id", account_id).execute()
+        )
+    except Exception as e:
+        # The column is a documented migration (see README). Say so, rather than
+        # surfacing a raw PostgREST error to someone clicking a button.
+        raise RuntimeError(
+            "Could not save the bounce acknowledgement. If this database has not "
+            "been migrated yet, run: alter table public.accounts add column "
+            f"bounce_ack_count integer not null default 0; ({e})"
+        ) from e
+
+
 def get_google_token(account: dict) -> str | None:
     """Returns the decrypted token JSON for an account row, or None."""
     if not account.get("google_token"):
@@ -171,6 +254,52 @@ def record_usage(account_id: str, kind: str, quantity: int = 1, detail: str = ""
         "quantity": quantity,
         "detail": detail[:200],
     }).execute()
+
+
+def usage_quantity_since(account_id: str, kind: str, since_iso: str | None = None) -> int:
+    """Total quantity of one usage kind for one account, optionally only since a
+    timestamp. This is what plans.py counts a quota against.
+
+    Sums `quantity` rather than counting rows because a unit event may carry
+    more than one unit -- one lead search returns a batch of leads and records
+    them as a single row with quantity=N, and counting rows there would let a
+    trial account source unlimited leads in one call.
+
+    A failure here is deliberately allowed to propagate. Everywhere else in this
+    module a metering error is swallowed so it cannot break the work, but this
+    number is the *input to a refusal*: if the query fails and we return 0, the
+    caller concludes the account has used nothing and lets the work through.
+    That turns a transient database blip into free unlimited service, so the
+    quota check fails closed by raising instead."""
+    query = (
+        _get_client().table(USAGE_TABLE)
+        .select("quantity")
+        .eq("account_id", account_id)
+        .eq("kind", kind)
+    )
+    if since_iso:
+        query = query.gte("created_at", since_iso)
+    return sum(row["quantity"] for row in query.execute().data)
+
+
+def set_plan(account_id: str, plan_name: str) -> None:
+    """Records which plan an account is on. The only writers are the Stripe
+    webhook (on checkout completion and on subscription cancellation) and the
+    CLI, so this is not routed through update_settings -- a customer must never
+    be able to PATCH themselves onto a plan they have not paid for, and
+    update_settings is reachable from the settings endpoint."""
+    try:
+        (
+            _get_client().table(ACCOUNTS_TABLE)
+            .update({"plan": plan_name})
+            .eq("id", account_id).execute()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            "Could not save the plan. If this database has not been migrated "
+            "yet, run: alter table public.accounts add column if not exists "
+            f"plan text not null default 'trial'; ({e})"
+        ) from e
 
 
 def usage_summary(account_id: str) -> dict:

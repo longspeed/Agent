@@ -1,3 +1,4 @@
+import contextlib
 import html
 import os
 import posixpath
@@ -19,11 +20,16 @@ from pydantic import BaseModel
 import accounts_db
 import agent
 import auth
+import billing
+import bounces
+import dns_check
 import drafts_db
 import drive
 import gmail
 import google_auth
 import leads
+import plans
+import providers
 import ratelimit
 import reviews_db
 import send_outreach
@@ -42,7 +48,37 @@ import watch_replies
 # Set ENABLE_API_DOCS=1 locally when you want them.
 _API_DOCS = os.environ.get("ENABLE_API_DOCS", "").strip().lower() in ("1", "true", "yes")
 
+def report_degraded_controls():
+    """Print anything that is not enforcing what the code around it assumes.
+
+    All of these share a failure mode: they are invisible in normal operation. A
+    missing column only surfaces when an account is already paused; an
+    under-enforcing rate limiter is indistinguishable from a working one until
+    someone is actually attacking a login. Announcing them at boot is the only
+    point where nobody is depending on them yet.
+
+    Deliberately warnings and not a refusal to start: each degrades to something
+    that still runs, so taking the whole service down over one would be the
+    larger outage."""
+    for label, probe in (("SCHEMA", accounts_db.check_schema),
+                         ("RATELIMIT", ratelimit.enforcement_warnings)):
+        try:
+            for warning in probe():
+                print(f"{label}: {warning}")
+        except Exception as e:  # noqa: BLE001 - a diagnostic must never block boot
+            print(f"{label}: check skipped ({e})")
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Lifespan rather than @app.on_event: on_event is deprecated as of the
+    # FastAPI version pinned here and warns on import.
+    report_degraded_controls()
+    yield
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     docs_url="/docs" if _API_DOCS else None,
     redoc_url="/redoc" if _API_DOCS else None,
     openapi_url="/openapi.json" if _API_DOCS else None,
@@ -76,6 +112,13 @@ PUBLIC_PATHS.add("/getting-started")
 # person clicking it is an email recipient, never a logged-in user of this app.
 # Authenticity comes from the signed token in the URL, not from a cookie.
 PUBLIC_PATHS.add("/unsubscribe")
+
+# The Stripe webhook. Unauthenticated by necessity -- the caller is Stripe, which
+# has no session and never will. Authenticity comes from the HMAC signature on
+# the request body, verified in billing.verify_webhook, which refuses outright
+# when no signing secret is configured rather than falling back to trusting the
+# caller. Nothing else about this endpoint may rely on the session.
+PUBLIC_PATHS.add("/api/billing/webhook")
 
 # Prefixes served without auth. /static/landing/ is the marketing bundle;
 # /static/app/assets/ holds the compiled React chunks the guide needs (it shares
@@ -381,17 +424,138 @@ def get_usage(request: Request):
     return accounts_db.usage_summary(request.state.account_id)
 
 
+@app.get("/api/deliverability")
+def deliverability(request: Request):
+    """Read-only SPF/DKIM/DMARC report for the domain this account sends from.
+    Advisory only -- it never blocks sending, because a customer may have good
+    reasons for a setup we can't see, and a false positive that stops their
+    campaign is worse than a warning they choose to ignore."""
+    account = _account(request)
+    if not account.get("google_token"):
+        return {
+            "address": "", "domain": "", "managed": False, "findings": [],
+            "summary": "Connect Gmail first — there's no sending domain to check yet.",
+        }
+    address = gmail.get_sending_address(account)
+    _, _, domain = address.partition("@")
+    return {"address": address, **dns_check.check_domain(domain)}
+
+
+@app.get("/api/llm-providers")
+def llm_providers(request: Request):
+    """Which language model endpoints this deployment is actually using, and
+    which of them are allowed to draft replies.
+
+    The DPA claims its sub-processor list is "derived from the code, not from
+    memory", and the privacy policy tells customers to ask which endpoint their
+    account is on before trusting reply drafting with a prospect's words. This is
+    the answer to both, read live off the routing policy instead of a doc someone
+    has to remember to update. No key material, only names and tiers."""
+    _account(request)
+    return {"providers": providers.describe()}
+
+
+@app.exception_handler(plans.QuotaExceeded)
+async def quota_exceeded_handler(request: Request, exc: plans.QuotaExceeded):
+    """402 Payment Required, which is what this literally is.
+
+    Registered app-wide rather than caught per-endpoint because the gate lives
+    on the operation (send_outreach, leads), not on the routes -- so any
+    endpoint that reaches one of those inherits the right status without having
+    to remember to. The plan and bucket travel with it so the UI can offer the
+    upgrade instead of just reporting a failure."""
+    return JSONResponse(
+        {
+            "detail": str(exc),
+            "plan": exc.plan_name,
+            "bucket": exc.bucket,
+            "used": exc.used,
+            "limit": exc.limit,
+        },
+        status_code=402,
+    )
+
+
 @app.get("/api/plan")
 def get_plan(request: Request):
-    """Validation-plan pricing and hard product limits."""
-    _account(request)
+    """This account's plan, its limits, and how much of them is left.
+
+    Read from the account row rather than hardcoded, which is what it used to
+    be: one dict naming a tier every account was assumed to be on, next to a
+    daily limit that was the same global constant for everybody."""
+    account = _account(request)
+    summary = plans.describe(account)
+    _, drafts_left, drafts_used = plans.headroom(account, usage.UNIT_DRAFT_EMAIL)
+    _, leads_left, leads_used = plans.headroom(account, usage.UNIT_LEAD_SOURCED)
     return {
-        "name": "Pilot",
-        "price_monthly_usd": 49,
-        "daily_send_limit": sheets.DAILY_SEND_LIMIT,
-        "lead_searches_per_hour": 10,
-        "note": "Human-approved leads, human-reviewed emails and replies, one-click opt-out, daily send cap. Checkout is coming next.",
+        **summary,
+        "usage": {
+            "drafts_used": drafts_used,
+            "drafts_remaining": drafts_left,
+            "leads_used": leads_used,
+            "leads_remaining": leads_left,
+        },
+        "checkout_available": billing.configured(),
     }
+
+
+class CheckoutRequest(BaseModel):
+    plan: str
+    yearly: bool = False
+
+
+@app.post("/api/billing/checkout")
+def start_checkout(request: Request, payload: CheckoutRequest):
+    """Returns a Stripe Checkout URL for the requested tier.
+
+    The account is taken from the session, never from the request body -- it is
+    what billing.create_checkout_session stamps onto the session as
+    client_reference_id, and it is the only thing the webhook will trust when
+    deciding whose plan to change."""
+    account = _account(request)
+    if payload.plan not in plans.PAID_PLANS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{payload.plan!r} is not a paid plan. Choose one of: {', '.join(plans.PAID_PLANS)}.",
+        )
+    try:
+        return {"url": billing.create_checkout_session(account, payload.plan, payload.yearly)}
+    except billing.BillingNotConfigured as e:
+        # 503, not 500: the deployment has not been given Stripe keys. Nothing
+        # is broken and nothing the customer did caused it.
+        raise HTTPException(status_code=503, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/billing/webhook")
+async def stripe_webhook(request: Request):
+    """Stripe tells us a payment settled or a subscription ended.
+
+    This is the ONLY place a plan is granted. It is public (Stripe has no
+    session), so the signature check is the whole of its security -- see
+    billing.verify_webhook. The raw body is passed through unparsed because the
+    signature covers exact bytes; re-serializing a parsed dict would reorder
+    keys and fail verification on genuine events.
+
+    A rejected signature answers 400 and changes nothing. An event we do not
+    handle answers 200, so Stripe stops retrying something we are deliberately
+    ignoring rather than queueing it for days."""
+    payload = await request.body()
+    try:
+        event = billing.verify_webhook(payload, request.headers.get("stripe-signature"))
+    except billing.WebhookRejected as e:
+        print(f"Rejected Stripe webhook: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    change = billing.plan_change_from_event(event)
+    if not change:
+        return {"handled": False}
+
+    account_id, plan_name = change
+    accounts_db.set_plan(account_id, plan_name)
+    print(f"Stripe {event.get('type')}: account {account_id} is now on {plan_name}")
+    return {"handled": True, "plan": plan_name}
 
 
 def _google_error_reason(exc: HttpError) -> str:
@@ -534,8 +698,18 @@ def list_campaigns(request: Request):
 
 def _campaign_preview(account: dict) -> dict:
     suppressed = suppressions_db.list_suppressed_emails(account["id"])
-    readiness = sheets.campaign_readiness(account, suppressed_emails=suppressed)
+    readiness = sheets.campaign_readiness(
+        account,
+        sent_today=drafts_db.count_sent_last_24_hours(account["id"]),
+        suppressed_emails=suppressed,
+    )
+    # One read, shared by both bounce calls (pause_reason re-derives the stats
+    # in memory rather than hitting the sheet again).
+    rows = sheets.get_all_rows(account)
+    bounce_stats = bounces.stats(account, rows)
+    bounce_pause = bounces.pause_reason(account, rows, current=bounce_stats)
     return {
+        "bounces": bounce_stats,
         "eligible": len(readiness["eligible"]),
         "eligible_total": readiness["eligible_total"],
         "sent_today": readiness["sent_today"],
@@ -544,14 +718,30 @@ def _campaign_preview(account: dict) -> dict:
         "capped": readiness["capped"],
         # Settings that must be filled before anything can be drafted. When
         # non-empty the UI disables the prepare button and shows why, rather
-        # than letting a batch fail every row at generation time.
-        "blockers": agent.account_send_blockers(account),
+        # than letting a batch fail every row at generation time. An unsafe
+        # bounce rate rides the same channel: it is exactly a reason the user
+        # must not send right now, and the prepare endpoint already turns a
+        # non-empty blockers list into a 409.
+        "blockers": agent.account_send_blockers(account) + ([bounce_pause] if bounce_pause else []),
     }
 
 
 @app.get("/api/outreach/campaigns/preview")
 def campaign_preview(request: Request):
     return _campaign_preview(_account(request))
+
+
+@app.post("/api/outreach/bounces/acknowledge")
+def acknowledge_bounces(request: Request):
+    """Lifts a bounce pause without deleting anything.
+
+    The alternative remediation -- "remove the bad addresses from your sheet" --
+    is the only other way to bring the rate down, and asking a customer to edit
+    the record is a strange thing for a product that sells an audit trail to do.
+    Every hard bounce counted here is already suppressed, so continuing cannot
+    re-send to any of them. The watermark means new bounces pause again."""
+    account = _account(request)
+    return bounces.acknowledge(account)
 
 
 class PrepareCampaignBody(BaseModel):
@@ -572,6 +762,12 @@ def prepare_campaigns(request: Request, payload: PrepareCampaignBody):
         raise HTTPException(status_code=409, detail=" ".join(preview["blockers"]))
     if not preview["eligible"]:
         raise HTTPException(status_code=409, detail="No approved contacts are available to draft today. Approve leads on the Lead Agent page or wait for the daily limit to reset.")
+    # Checked here as well as inside prepare_drafts. The gate that actually
+    # protects the quota is the one on the operation (it covers the CLI too);
+    # this one exists so an exhausted account gets an immediate 402 with an
+    # upgrade path, instead of a 202 and a job that fails a few seconds later
+    # somewhere they have to go looking for it.
+    plans.check(account, usage.UNIT_DRAFT_EMAIL)
 
     # The lock still serializes one prepare batch per account -- generating 25
     # drafts twice concurrently would waste LLM calls and race the dedupe.
@@ -617,7 +813,11 @@ def _guard_draft_send(account: dict, draft: dict):
     if suppressions_db.is_suppressed(account["id"], draft["email"]):
         drafts_db.discard(account["id"], draft["id"])
         raise HTTPException(status_code=409, detail=f"{draft['email']} unsubscribed after this draft was prepared; it won't be sent.")
-    readiness = sheets.campaign_readiness(account, suppressed_emails=suppressions_db.list_suppressed_emails(account["id"]))
+    readiness = sheets.campaign_readiness(
+        account,
+        sent_today=drafts_db.count_sent_last_24_hours(account["id"]),
+        suppressed_emails=suppressions_db.list_suppressed_emails(account["id"]),
+    )
     if readiness["remaining_today"] <= 0:
         raise HTTPException(status_code=409, detail="Daily send limit reached. Try again after it resets.")
 
@@ -630,11 +830,15 @@ def send_draft(request: Request, draft_id: int, payload: SendDraftBody):
         raise HTTPException(status_code=404, detail="Draft not found or already handled")
     _guard_draft_send(account, draft)
 
-    _, sent_body = send_outreach.send_prepared_draft(
+    # send_prepared_draft records the send in the draft queue itself, immediately
+    # after Gmail accepts it -- doing it out here meant a failed sheet write threw
+    # past this line and left the draft pending, i.e. queued to send again.
+    result = send_outreach.send_prepared_draft(
         account, draft, subject=payload.subject, body=payload.body
     )
-    drafts_db.mark_sent(account["id"], draft_id, payload.subject, sent_body)
-    return {"ok": True}
+    # 200, not an error: the email was delivered. Only the sheet needs a fix, and
+    # returning this as a failure is what prompted an operator to click Send twice.
+    return {"ok": True, "sheet_warning": result["sheet_error"]}
 
 
 @app.post("/api/outreach/drafts/{draft_id}/discard")
@@ -842,8 +1046,15 @@ class LeadSearchBody(BaseModel):
 @app.post("/api/leads/search", status_code=202)
 def search_leads(request: Request, payload: LeadSearchBody):
     account = _account(request)
-    if not ratelimit.check(f"leads-search:{account['id']}", limit=10, window_seconds=3600):
+    # Per-plan now, not a hardcoded 10 -- the pricing page sells the hourly
+    # search rate as a plan feature, so it has to come from the plan.
+    searches_per_hour = plans.for_account(account).lead_searches_per_hour
+    if not ratelimit.check(f"leads-search:{account['id']}", limit=searches_per_hour, window_seconds=3600):
         raise HTTPException(status_code=429, detail="Too many lead searches this hour. Try again later.")
+    # Same reasoning as the prepare endpoint: find_leads enforces this itself
+    # (the CLI needs it to), but checking here turns a job that dies on arrival
+    # into an immediate 402 that says what to do about it.
+    plans.check(account, usage.UNIT_LEAD_SOURCED)
     limit = max(1, min(payload.limit, 25))
     return {"job_id": start_job(account["id"], lambda: leads.find_leads(account, payload.query, limit))}
 
