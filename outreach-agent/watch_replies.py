@@ -50,7 +50,7 @@ def check_for_replies(account):
             # One read for both checks below. They ask different questions of the
             # same messages, and Gmail charges per fetch.
             thread = gmail.get_thread(account, thread_id)
-            reply_text, history = gmail.get_latest_reply_with_history(
+            reply_text, history, message_id = gmail.get_latest_reply_with_history(
                 account, thread_id, email, thread=thread
             )
             if not reply_text:
@@ -75,7 +75,9 @@ def check_for_replies(account):
             # was handled in an earlier check. Skip before drafting: the auto-poll
             # runs every 100s, and drafting first would burn an LLM call per poll
             # per unanswered reply (and resurface dismissed reviews as "new").
-            if reviews_db.find_review_id(account["id"], thread_id, reply_text) is not None:
+            if reviews_db.find_review_id(
+                account["id"], thread_id, message_id, reply_text
+            ) is not None:
                 continue
 
             company = row[sheets.COL_COMPANY].strip()
@@ -87,7 +89,8 @@ def check_for_replies(account):
             # (Reversed, a persistently failing write would re-burn an LLM
             # call every 100s because add_review never runs.)
             review_id = reviews_db.add_review(
-                account["id"], row_index, name, email, thread_id, reply_text, draft
+                account["id"], row_index, name, email, thread_id, reply_text, draft,
+                gmail_message_id=message_id,
             )
             new_reviews.append(reviews_db.get_review(account["id"], review_id))
             print(f"Reply detected from {name}, queued for review in the app.")

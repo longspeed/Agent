@@ -137,7 +137,7 @@ def strip_quoted(text):
 
 
 def get_latest_reply(account, thread_id, contact_email):
-    reply, _ = get_latest_reply_with_history(account, thread_id, contact_email)
+    reply, _, _ = get_latest_reply_with_history(account, thread_id, contact_email)
     return reply
 
 
@@ -149,13 +149,17 @@ def get_thread(account, thread_id):
 
 
 def get_latest_reply_with_history(account, thread_id, contact_email, thread=None):
-    """Returns (reply_text, history) where reply_text is the body of the
-    newest message in the thread when it was sent by the contact we emailed --
-    whether that's their first reply to our outreach or a follow-up later in
-    an ongoing thread -- otherwise (None, []). history covers every earlier
+    """Returns (reply_text, history, message_id) where reply_text is the body of
+    the newest message in the thread when it was sent by the contact we emailed
+    -- whether that's their first reply to our outreach or a follow-up later in
+    an ongoing thread -- otherwise (None, [], None). history covers every earlier
     message on the thread, oldest first, as (from_contact, body) pairs, so a
     reply can be drafted against the whole conversation rather than just the
     original outreach.
+
+    message_id is Gmail's own id for the message reply_text came from. It is
+    the dedupe key the review queue is built on -- see reviews_db.find_review_id
+    for why the body text cannot be.
 
     A "Replied" row stays in the reply-check scope so later messages on the
     same thread keep getting picked up. To tell a genuine reply apart from our
@@ -172,7 +176,7 @@ def get_latest_reply_with_history(account, thread_id, contact_email, thread=None
     thread = thread if thread is not None else get_thread(account, thread_id)
     messages = thread.get("messages", [])
     if len(messages) < 2:
-        return None, []
+        return None, [], None
 
     def _from_addr(msg):
         return parseaddr(_header(msg["payload"]["headers"], "From"))[1].strip().lower()
@@ -182,13 +186,13 @@ def get_latest_reply_with_history(account, thread_id, contact_email, thread=None
     if contact_email and contact_addr != contact_email.strip().lower():
         # The newest message is our own reply (or someone other than the
         # contact) -- nothing new from them to review until they write back.
-        return None, []
+        return None, [], None
 
     history = [
         (_from_addr(m) == contact_addr, _extract_body(m["payload"]).strip())
         for m in messages[:-1]
     ]
-    return _extract_body(latest["payload"]).strip(), history
+    return _extract_body(latest["payload"]).strip(), history, latest.get("id")
 
 
 _BOUNCE_SENDER_HINTS = ("mailer-daemon", "postmaster")

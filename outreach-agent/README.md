@@ -88,9 +88,18 @@ create table public.reviews (
     customer_reply text not null default '',
     draft_reply text not null default '',
     status text not null default 'pending',
+    gmail_message_id text,
     created_at timestamptz not null default now()
 );
 create index reviews_account_status_idx on public.reviews (account_id, status);
+-- Dedupe guard. Keyed on Gmail's own message id, never the reply body: two
+-- identical short replies collide, a long quoted chain 414s as a PostgREST GET
+-- parameter, and btree caps index entries near 2704 bytes so a body column
+-- could not carry this index at all. Nullable because rows written before the
+-- column existed have no id -- Postgres treats NULLs as distinct in a unique
+-- index, so legacy rows neither collide with each other nor block new inserts.
+create unique index if not exists reviews_thread_message_idx
+    on public.reviews (account_id, thread_id, gmail_message_id);
 
 create table public.usage_events (
     id bigint generated always as identity primary key,

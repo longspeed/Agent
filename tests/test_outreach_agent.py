@@ -5,6 +5,7 @@ Run:  python tests/test_outreach_agent.py
 """
 import base64
 import contextlib
+import hashlib
 import io
 import os
 import sys
@@ -71,8 +72,16 @@ def _enc(text):
     return base64.urlsafe_b64encode(text.encode()).decode()
 
 
-def msg(from_addr, text):
+def msg(from_addr, text, msg_id=None):
+    """A thread message. Every real Gmail message carries an id and the reply
+    dedupe key is built on it, so the default derives one deterministically from
+    the content rather than leaving it absent -- a fixture without an id would
+    silently exercise the legacy body-matching fallback instead of the real
+    path. Pass msg_id explicitly to model two distinct messages with identical
+    text, which is exactly the collision the body key could not survive."""
+    digest = hashlib.md5(f"{from_addr}|{text}".encode()).hexdigest()[:12]
     return {
+        "id": msg_id or f"m-{digest}",
         "payload": {
             "headers": [{"name": "From", "value": f"Someone <{from_addr}>"}],
             "body": {"data": _enc(text)},
@@ -236,27 +245,33 @@ def test_extract_body_html_only_returns_html():
 def test_history_happy_path():
     messages = [msg("me@me.com", "our outreach"), msg("john@x.com", "their reply")]
     with patched(gmail, "_get_service", lambda account: fake_gmail_service(messages)):
-        reply, history = gmail.get_latest_reply_with_history(ACCOUNT, "t1", "john@x.com")
+        reply, history, message_id = gmail.get_latest_reply_with_history(
+            ACCOUNT, "t1", "john@x.com")
     assert reply == "their reply"
     assert history == [(False, "our outreach")]
+    assert message_id == messages[-1]["id"], (
+        "the reply's own Gmail message id is the dedupe key -- returning None "
+        "here silently drops the review queue back to matching on body text"
+    )
 
 
 def test_history_latest_is_ours_returns_none():
     messages = [msg("me@me.com", "outreach"), msg("john@x.com", "reply"), msg("me@me.com", "our answer")]
     with patched(gmail, "_get_service", lambda account: fake_gmail_service(messages)):
-        reply, history = gmail.get_latest_reply_with_history(ACCOUNT, "t1", "john@x.com")
-    assert reply is None and history == []
+        reply, history, message_id = gmail.get_latest_reply_with_history(
+            ACCOUNT, "t1", "john@x.com")
+    assert reply is None and history == [] and message_id is None
 
 
 def test_history_single_message_returns_none():
     with patched(gmail, "_get_service", lambda account: fake_gmail_service([msg("me@me.com", "outreach")])):
-        assert gmail.get_latest_reply_with_history(ACCOUNT, "t1", "j@x.com") == (None, [])
+        assert gmail.get_latest_reply_with_history(ACCOUNT, "t1", "j@x.com") == (None, [], None)
 
 
 def test_history_contact_match_case_insensitive():
     messages = [msg("me@me.com", "outreach"), msg("John@X.com", "yes!")]
     with patched(gmail, "_get_service", lambda account: fake_gmail_service(messages)):
-        reply, _ = gmail.get_latest_reply_with_history(ACCOUNT, "t1", " john@x.com ")
+        reply, _, _ = gmail.get_latest_reply_with_history(ACCOUNT, "t1", " john@x.com ")
     assert reply == "yes!"
 
 
@@ -268,7 +283,7 @@ def test_history_multi_turn_labels():
         msg("john@x.com", "follow-up"),
     ]
     with patched(gmail, "_get_service", lambda account: fake_gmail_service(messages)):
-        reply, history = gmail.get_latest_reply_with_history(ACCOUNT, "t1", "john@x.com")
+        reply, history, _ = gmail.get_latest_reply_with_history(ACCOUNT, "t1", "john@x.com")
     assert reply == "follow-up"
     assert [h[0] for h in history] == [False, True, False]
     assert [h[1] for h in history] == ["outreach", "question?", "answer"]
@@ -278,6 +293,76 @@ def test_get_latest_reply_delegates():
     messages = [msg("me@me.com", "outreach"), msg("john@x.com", "their reply")]
     with patched(gmail, "_get_service", lambda account: fake_gmail_service(messages)):
         assert gmail.get_latest_reply(ACCOUNT, "t1", "john@x.com") == "their reply"
+
+
+# ------------------------------------------------- reply dedupe key
+
+class _ReviewRows:
+    """PostgREST-shaped fake: records the .eq()/.is_() filters applied and
+    returns the rows satisfying all of them. Filters reset per execute() because
+    find_review_id issues two queries -- the id lookup, then the legacy body
+    fallback -- against the same client."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self._eq = []
+        self._null = []
+
+    def table(self, name): return self
+    def select(self, cols): return self
+    def limit(self, n): return self
+
+    def eq(self, col, val):
+        self._eq.append((col, val))
+        return self
+
+    def is_(self, col, val):
+        self._null.append(col)
+        return self
+
+    def execute(self):
+        matched = [
+            r for r in self.rows
+            if all(r.get(c) == v for c, v in self._eq)
+            and all(r.get(c) is None for c in self._null)
+        ]
+        self._eq, self._null = [], []
+        return type("R", (), {"data": matched})()
+
+
+def test_reply_dedupe_keys_on_the_message_id_not_the_body():
+    """Two identical short replies on one thread are two different Gmail
+    messages and both must surface. Under the old body key the second collided
+    with the first and was silently classified as already-reviewed -- a warm
+    reply the operator never saw. Walking every message on a thread instead of
+    only the newest turns that collision from theoretical into routine."""
+    fake = _ReviewRows([
+        {"id": 7, "account_id": "a1", "thread_id": "t1",
+         "gmail_message_id": "m-first", "customer_reply": "ok"},
+    ])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        assert reviews_db.find_review_id("a1", "t1", "m-first", "ok") == 7
+        assert reviews_db.find_review_id("a1", "t1", "m-second", "ok") is None, (
+            "same body, different message -- must not be swallowed as a duplicate"
+        )
+
+
+def test_reply_dedupe_still_matches_rows_written_before_the_id_column():
+    """Rows created before gmail_message_id existed hold NULL there and can
+    never match an id lookup, so without the body fallback every thread already
+    carrying a review would emit one duplicate on the first cycle after the
+    migration. The fallback is scoped to NULL-id rows only, so it cannot
+    resurrect the collision the id key was introduced to fix."""
+    fake = _ReviewRows([
+        {"id": 3, "account_id": "a1", "thread_id": "t1",
+         "gmail_message_id": None, "customer_reply": "sounds good"},
+    ])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        assert reviews_db.find_review_id("a1", "t1", "m-new", "sounds good") == 3
+        assert reviews_db.find_review_id("a1", "t1", "m-new") is None, (
+            "with no body supplied there is nothing to fall back to -- the "
+            "legacy query must not run and match on account+thread alone"
+        )
 
 
 # ---------------------------------------------------------------- draft_reply
@@ -738,18 +823,27 @@ def _watch_env(calls, reply_map, existing_reviews=None, bounce_map=None):
     existing = existing_reviews if existing_reviews is not None else {}
     bounces_by_thread = bounce_map or {}
 
-    def fake_add_review(account_id, row_index, name, email, thread_id, customer_reply, draft_reply):
+    def fake_add_review(account_id, row_index, name, email, thread_id, customer_reply,
+                        draft_reply, gmail_message_id=None):
         calls.setdefault("add_review", []).append((thread_id, customer_reply, draft_reply))
-        key = (thread_id, customer_reply)
+        key = (thread_id, gmail_message_id)
         if key in existing:
             return existing[key]
         existing[key] = len(existing) + 1
         return existing[key]
 
     def fake_get_reply(account, t, e, thread=None):
-        result = reply_map.get(t, (None, []))
+        result = reply_map.get(t, (None, [], None))
         if isinstance(result, Exception):
             raise result
+        # reply_map entries are written as (reply, history) at the call sites --
+        # synthesize the message id here so adding the dedupe key did not force
+        # an edit to all seven tests that share this fixture. One stable id per
+        # thread is the right model: the same reply re-read on a later poll is
+        # the same Gmail message.
+        if len(result) == 2:
+            reply, history = result
+            return reply, history, (f"msg-{t}" if reply else None)
         return result
 
     def fake_get_thread(account, t):
@@ -758,7 +852,8 @@ def _watch_env(calls, reply_map, existing_reviews=None, bounce_map=None):
         return {"messages": [], "id": t}
 
     return [
-        (reviews_db, "find_review_id", lambda account_id, t, r: existing.get((t, r))),
+        (reviews_db, "find_review_id",
+            lambda account_id, t, mid, reply=None: existing.get((t, mid))),
         (sheets, "require_full_header", lambda account: calls.setdefault("header_gate", []).append(True)),
         (sheets, "get_reply_check_rows", lambda account: calls["rows"]),
         (sheets, "update_row", lambda account, idx, **kw: calls.setdefault("update_row", []).append((idx, kw))),
@@ -2313,7 +2408,7 @@ def test_find_bounce_accepts_a_prefetched_thread_without_calling_gmail():
     thread = {"messages": [msg("me@me.com", "outreach"), bounce_msg("5.1.1")]}
     with patched(gmail, "_get_service", explode):
         found = gmail.find_bounce(ACCOUNT, "t1", "john@x.com", thread=thread)
-        reply, _ = gmail.get_latest_reply_with_history(
+        reply, _, _ = gmail.get_latest_reply_with_history(
             ACCOUNT, "t1", "john@x.com", thread=thread
         )
     assert found["code"] == "5.1.1"

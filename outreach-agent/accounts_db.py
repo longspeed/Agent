@@ -64,6 +64,17 @@ _MIGRATED_COLUMNS = (
         "alter table public.accounts add column if not exists plan text not null "
         "default 'trial';",
     ),
+    (
+        "reviews",
+        "gmail_message_id",
+        "reply dedupe falls back to matching the reply BODY, which collides on "
+        "two identical short replies, 414s on a long quoted chain, and cannot "
+        "carry a unique index -- so two processes detecting the same reply both "
+        "queue it and the prospect can be answered twice",
+        "alter table public.reviews add column if not exists gmail_message_id text; "
+        "create unique index if not exists reviews_thread_message_idx on "
+        "public.reviews (account_id, thread_id, gmail_message_id);",
+    ),
 )
 
 _client = None
