@@ -603,16 +603,20 @@ def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_
     )
 
 
-def draft_reply(account, name, company, customer_reply, history=()):
-    """history: (from_contact, body) pairs for every earlier message on the
-    thread, oldest first (see gmail.get_latest_reply_with_history)."""
+def reply_prompt(account, name, company, customer_reply, history=()):
+    """The user prompt for one reply draft. Split out of draft_reply for the
+    same reason outreach_prompt is separate: eval_models scores production's
+    exact prompt rather than an approximation that drifts away from it.
+
+    history: (from_contact, body) pairs for every earlier message on the thread,
+    oldest first (see gmail.get_latest_reply_with_history)."""
     ctx = _sender_context(account)
     conversation = "\n\n".join(
         f"{'They wrote' if from_contact else 'We wrote'}:\n{gmail.strip_quoted(body)}"
         for from_contact, body in history
         if body.strip()
     )
-    user_prompt = (
+    return (
         f"Sender's first name (sign with this): {ctx['sender_name']}\n"
         # Unlike outreach, a reply is never blocked on this being filled in:
         # the prospect already engaged, and leaving them hanging because a
@@ -626,6 +630,13 @@ def draft_reply(account, name, company, customer_reply, history=()):
         + _custom_instructions_block(ctx["custom_instructions"])
         + "\n\nDraft the sender's reply."
     )
+
+
+def draft_reply(account, name, company, customer_reply, history=()):
+    """history: (from_contact, body) pairs for every earlier message on the
+    thread, oldest first (see gmail.get_latest_reply_with_history)."""
+    ctx = _sender_context(account)
+    user_prompt = reply_prompt(account, name, company, customer_reply, history)
 
     # Same two-attempt shape as generate_outreach_email: show the model its own
     # output and exactly what was wrong with it, which is far more reliable than
