@@ -947,6 +947,42 @@ def test_check_for_replies_happy_path():
     assert calls["add_review"][0][0] == "t1"
 
 
+def test_the_quoted_chain_is_trimmed_before_storage_but_not_before_dedupe():
+    """Two things at once, because they pull in opposite directions.
+
+    Stored: trimmed. A reply on a long thread quotes the whole conversation
+    back, and an operator scanning a queue at a few seconds per item cannot find
+    the two new sentences inside 20KB of '>' lines.
+
+    Dedupe: raw. The body is only consulted as a legacy fallback for rows
+    written before gmail_message_id existed, and those rows hold the untrimmed
+    text. Passing the trimmed version would miss them and queue a duplicate
+    review for a reply already handled -- which on a fast queue is a duplicate
+    reply to a prospect."""
+    raw = "Yes, let's talk.\n\nOn Mon, Jan 1, John wrote:\n> our original outreach\n> more quoted text"
+    calls = {"rows": [(2, _row(status="Sent", thread="t1", name="John", email="john@x.com"))]}
+    seen = []
+
+    targets = _watch_env(calls, {"t1": (raw, [])})
+    targets = [
+        (reviews_db, "find_review_id",
+            lambda account_id, t, mid, reply=None: seen.append(reply) or None)
+        if tgt[0] is reviews_db and tgt[1] == "find_review_id" else tgt
+        for tgt in targets
+    ]
+    with contextlib.ExitStack() as stack:
+        for target in targets:
+            stack.enter_context(patched(*target))
+        watch_replies.check_for_replies(ACCOUNT)
+
+    stored = calls["add_review"][0][1]
+    assert stored == "Yes, let's talk.", f"quoted tail must not reach the queue: {stored!r}"
+    assert seen == [raw], (
+        "the legacy dedupe fallback must see the untrimmed body, or rows stored "
+        "before the message-id column can never be matched again"
+    )
+
+
 def test_check_for_replies_does_not_redraft_known_reply():
     """The auto-poll runs every 100s. Once a reply has a review (pending OR
     dismissed), polling again must not burn another LLM call on it."""

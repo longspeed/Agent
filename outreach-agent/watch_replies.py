@@ -75,13 +75,29 @@ def check_for_replies(account):
             # was handled in an earlier check. Skip before drafting: the auto-poll
             # runs every 100s, and drafting first would burn an LLM call per poll
             # per unanswered reply (and resurface dismissed reviews as "new").
+            #
+            # Deliberately handed the RAW body, not the trimmed one below. The
+            # message id is the real key; the body is only consulted as a legacy
+            # fallback for rows written before that column existed, and those
+            # rows stored the untrimmed text. Passing the trimmed version would
+            # fail to match them and queue one duplicate review per already-
+            # reviewed thread -- which on a fast queue is one duplicate reply to
+            # a prospect.
             if reviews_db.find_review_id(
                 account["id"], thread_id, message_id, reply_text
             ) is not None:
                 continue
 
+            # Trim the quoted history off before this is stored or shown. A
+            # reply on a long thread carries the entire conversation back at us,
+            # and an operator scanning a queue at a few seconds per item cannot
+            # find the two new sentences inside 20KB of '>' lines. strip_quoted
+            # keeps inline replies whole -- it trims the tail, never cuts at the
+            # first marker -- so an answer woven between quoted lines survives.
+            reply_body = gmail.strip_quoted(reply_text)
+
             company = row[sheets.COL_COMPANY].strip()
-            draft = agent.draft_reply(account, name, company, reply_text, history)
+            draft = agent.draft_reply(account, name, company, reply_body, history)
 
             # Review FIRST, sheet status second. The review is the operator
             # surface and the dedupe key: once it exists, a failing status
@@ -89,7 +105,7 @@ def check_for_replies(account):
             # (Reversed, a persistently failing write would re-burn an LLM
             # call every 100s because add_review never runs.)
             review_id = reviews_db.add_review(
-                account["id"], row_index, name, email, thread_id, reply_text, draft,
+                account["id"], row_index, name, email, thread_id, reply_body, draft,
                 gmail_message_id=message_id,
             )
             new_reviews.append(reviews_db.get_review(account["id"], review_id))
