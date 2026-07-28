@@ -413,9 +413,9 @@ export function GettingStartedPage() {
                   person fits
                 </li>
                 <li>
-                  <strong className="text-cream">EmailConfidence</strong> marked{' '}
-                  <Code>verified</Code> or <Code>unverified</Code>, telling you whether it found the
-                  address stated outright or had to guess the pattern
+                  <strong className="text-cream">EmailConfidence</strong> always set to{' '}
+                  <Code>unverified</Code> on new rows — Agent Hub does not check addresses for you.
+                  Mark a row <Code>verified</Code> yourself once you've confirmed it
                 </li>
               </ul>
               <p>Searches are limited to {searchCap}.</p>
@@ -441,8 +441,9 @@ export function GettingStartedPage() {
                 </li>
               </ul>
               <Callout tone="warn">
-                Pay attention to <Code>unverified</Code> confidence. That means the address is a
-                pattern guess, and sending to it risks a bounce.
+                Every sourced address arrives <Code>unverified</Code> — it is the lead agent's best
+                guess at the company's email pattern, not a checked address. Confirm the ones that
+                matter before you approve them; sending to a bad guess risks a bounce.
               </Callout>
             </Section>
 

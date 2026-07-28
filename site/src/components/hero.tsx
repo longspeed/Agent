@@ -134,7 +134,7 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
           className="mt-8 text-sand max-w-lg text-base leading-[1.6]"
         >
-          Agent Hub finds your leads, verifies their emails, and writes every message — then waits
+          Agent Hub finds your leads, writes every message, and drafts every reply — then waits
           for your yes. Nothing sends without you.
         </motion.p>
         <motion.div
@@ -162,8 +162,8 @@ const STEPS = [
   },
   {
     icon: ShieldCheck,
-    title: 'Verify emails',
-    body: "Every address is confidence-scored before it's eligible to send. Unverified leads never go out.",
+    title: 'Screen the list',
+    body: 'Duplicates are dropped and anyone who has opted out is blocked from sending. You see every address before it goes.',
   },
   {
     icon: PenLine,

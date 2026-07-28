@@ -478,7 +478,7 @@ export function SettingsPage() {
               Pilot plan
             </h2>
             <p className="text-sm text-sand">
-              ${plan.price_monthly_usd}/month · up to {plan.daily_send_limit} verified emails per inbox every 24 hours · {plan.lead_searches_per_hour}{' '}
+              ${plan.price_monthly_usd}/month · up to {plan.daily_send_limit} approved emails per inbox every 24 hours · {plan.lead_searches_per_hour}{' '}
               lead searches per hour.
             </p>
             <p className="text-xs mt-3 text-mute">This is a pricing placeholder while checkout is being validated with early customers.</p>

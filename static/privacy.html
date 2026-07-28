@@ -79,7 +79,7 @@
     <tbody>
       <tr><td>Google</td><td>Your OAuth token, the contents of your lead sheet, and the mail you send and receive through Agent Hub</td><td>It is your Gmail and your Sheet</td></tr>
       <tr><td>Supabase</td><td>Everything in the table above</td><td>Database hosting</td></tr>
-      <tr><td>OpenRouter</td><td>Lead name and company, your meeting purpose, and <strong>the text of replies your prospects send you</strong></td><td>Writing the outreach email and drafting replies</td></tr>
+      <tr><td>A language model provider — Groq, Google AI Studio, or OpenRouter, depending on which is configured and reachable</td><td>Lead name and company, your meeting purpose, and <strong>the text of replies your prospects send you</strong></td><td>Writing the outreach email and drafting replies</td></tr>
       <tr><td>Tavily</td><td>The search description you type on the Leads page</td><td>Web search, only when you use the lead sourcing agent</td></tr>
     </tbody>
   </table>
@@ -92,8 +92,35 @@
     do not use reply drafting. The outreach and lead sheet features work without it.</p>
   </div>
 
+  <h2>Free model tiers and training</h2>
+
+  <p>We use the free tiers of the providers above. This is the part people
+  usually are not told, so here it is plainly: <strong>a free tier generally
+  allows the provider to use what it is sent to improve their models.</strong>
+  OpenRouter says prompts and completions on its free endpoints may be used for
+  model improvement by the upstream provider, and Google says free-tier AI Studio
+  data may be used to improve its products.</p>
+
+  <p>So we split what goes where:</p>
+
+  <ul>
+    <li><strong>Writing a first outreach email</strong> may use a free tier. What
+    that request contains is the lead's name, sometimes their company, one note
+    sourced from public web search, and your own description of what you are
+    offering. Nothing your prospect wrote, and nothing they told you privately.</li>
+    <li><strong>Drafting a reply</strong> contains the prospect's own words, so it
+    is routed to a paid endpoint whenever one is configured, and it is not
+    silently failed over to a free one if that endpoint is down. Where no paid
+    endpoint is configured, reply drafting runs on a free tier and the training
+    exposure above applies to your prospect's message. If that matters to you,
+    ask us which endpoint your account is on before you use reply drafting — and
+    if the answer is not one you can accept, do not use it.</li>
+  </ul>
+
   <p>We do not sell data, and we do not share it with advertisers or data
-  brokers.</p>
+  brokers. That is a statement about what <em>we</em> do; it is not a promise
+  about a free-tier provider's training rights, which is why the paragraphs above
+  exist.</p>
 
   <h2>Your prospects' data</h2>
 

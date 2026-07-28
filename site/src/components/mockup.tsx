@@ -26,7 +26,7 @@ const PENDING = [
     unread: true,
   },
   { name: 'Ethan R.', meta: 'longspeed2828@…', snippet: '"Ok, sounds good."', time: '1h' },
-  { name: 'M. Reyes', meta: 'verified ✓', snippet: '"What\'s pricing look like?"', time: '3h' },
+  { name: 'M. Reyes', meta: 'm.reyes@northwind.co', snippet: '"What\'s pricing look like?"', time: '3h' },
 ]
 
 const railItem = (active?: boolean) =>
@@ -109,7 +109,7 @@ export function ProductMockup() {
               <span className="text-[13px] font-semibold">Nam Long</span>
               <span className="text-[11px] text-mute">Replied · 2m ago</span>
               <span className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full bg-grass/15 text-grass text-[11px]">
-                <CheckCircle2 size={11} aria-hidden="true" /> Verified
+                <CheckCircle2 size={11} aria-hidden="true" /> Draft ready
               </span>
             </div>
 

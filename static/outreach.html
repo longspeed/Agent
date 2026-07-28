@@ -17,6 +17,9 @@
     --gold:#D8A93B; --gold-dim:rgba(216,169,59,0.14);
     --green:#4C9A6A; --green-dim:rgba(76,154,106,0.14);
     --steel:#4C86A8; --steel-dim:rgba(76,134,168,0.14);
+    /* Failure state, pulled from the accent hue so it reads as a problem
+       without leaving the warm palette. */
+    --rust:#C4503C; --rust-dim:rgba(196,80,60,0.14);
   }
   html{background:var(--bg);}
   body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);}
@@ -186,7 +189,7 @@
           <span class="step-num mt-0.5"></span>
           <div>
             <div class="text-sm font-medium mb-0.5">Picks who is eligible</div>
-            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">Only rows that have an email address and a blank Status, and that nobody has unsubscribed. Anything already marked Sent, Replied, Unsubscribed or Needs verification is left alone.</p>
+            <p class="text-xs leading-relaxed" style="color:var(--text-secondary);">Only rows that have an email address and a blank Status, and that nobody has unsubscribed. Anything already marked Sent, Replied, Bounced, Unsubscribed or Needs verification is left alone.</p>
           </div>
         </li>
         <li class="flex gap-3">
@@ -359,6 +362,9 @@
     Pending: { bg: 'var(--gold-dim)', fg: 'var(--gold)' },
     Sent: { bg: 'var(--steel-dim)', fg: 'var(--steel)' },
     Replied: { bg: 'var(--green-dim)', fg: 'var(--green)' },
+    // Without this a bounce falls through to the Pending style and reads as
+    // "nothing wrong here", which is the opposite of what happened.
+    Bounced: { bg: 'var(--rust-dim)', fg: 'var(--rust)' },
   };
 
   function badge(status) {
@@ -409,7 +415,31 @@
       if (blockers.length) {
         setPrepareEnabled(false);
         el.style.color = 'var(--gold)';
-        el.innerHTML = `${esc(blockers.join(' '))} <a href="/settings" style="color:var(--accent);">Go to Settings</a>`;
+        // A bounce pause is the one blocker the operator can clear from here:
+        // acknowledging keeps every row intact (the alternative, deleting the
+        // bounced rows, is the only other way to lower the rate). Everything
+        // else is a Settings field, so that link stays the default.
+        const paused = campaignPreview.bounces && campaignPreview.bounces.paused;
+        const action = paused
+          ? `<button type="button" id="ack-bounces" class="btn-ghost rounded-lg px-3 py-1.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">Acknowledge and keep sending</button>`
+          : `<a href="/settings" style="color:var(--accent);">Go to Settings</a>`;
+        el.innerHTML = `${esc(blockers.join(' '))} ${action}`;
+        const ackBtn = paused ? document.getElementById('ack-bounces') : null;
+        if (ackBtn) {
+          ackBtn.addEventListener('click', async () => {
+            ackBtn.disabled = true;
+            ackBtn.textContent = 'Acknowledging…';
+            try {
+              const ack = await fetch('/api/outreach/bounces/acknowledge', { method: 'POST' });
+              if (!ack.ok) throw new Error((await ack.json()).detail || 'Could not acknowledge');
+              await loadCampaignSafety();
+            } catch (err) {
+              ackBtn.disabled = false;
+              ackBtn.textContent = 'Acknowledge and keep sending';
+              el.append(` ${String(err.message || err)}`);
+            }
+          });
+        }
         return;
       }
       setPrepareEnabled(true);

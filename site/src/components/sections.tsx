@@ -14,7 +14,7 @@ import { SectionEyebrow, PrimaryButton, GhostButton } from './primitives'
 
 const CHIPS = [
   'Approve every send',
-  'Verified emails only',
+  'Opt-outs enforced',
   'Daily send caps',
   'Full audit trail',
   'Revoke access anytime',
@@ -24,7 +24,7 @@ const APPROVAL_LOG = [
   { label: 'Approved', count: 12, color: 'text-grass' },
   { label: 'Edited', count: 4, color: 'text-steel' },
   { label: 'Dismissed', count: 2, color: 'text-sand' },
-  { label: 'Blocked as unverified', count: 3, color: 'text-gold' },
+  { label: 'Blocked as unsubscribed', count: 3, color: 'text-gold' },
 ]
 
 export function Trust() {
@@ -40,7 +40,7 @@ export function Trust() {
           </h2>
           <p className="mt-6 text-sand text-base leading-[1.6] max-w-md">
             Every email and every reply passes through your review queue. Agent Hub never sends on
-            its own, never invents a contact, and never touches an address it couldn't verify.
+            its own, never invents a contact, and never emails anyone who has opted out.
           </p>
           <div className="mt-8 flex flex-wrap gap-2">
             {CHIPS.map((chip) => (
@@ -173,7 +173,7 @@ export function Security() {
 const FAQ_ITEMS = [
   {
     q: 'Will this get my domain blacklisted?',
-    a: 'Agent Hub is built to prevent exactly that. Sends go out from your own Gmail at human volumes, capped per inbox per day, and only to addresses that passed email verification. No spray-and-pray: you approve every message before it leaves.',
+    a: 'Agent Hub is built to prevent exactly that. Sends go out from your own Gmail at human volumes, capped per inbox per day, and only to addresses you approved yourself. Opt-outs are permanently suppressed. No spray-and-pray: you approve every message before it leaves.',
   },
   {
     q: 'Does it send anything without me?',

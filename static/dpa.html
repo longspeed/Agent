@@ -81,7 +81,7 @@
         <td>Account records, settings, usage events, reply review queue</td>
       </tr>
       <tr>
-        <td>OpenRouter</td>
+        <td>Groq, Google AI Studio, OpenRouter — an ordered fallback chain; which one serves a given request depends on what is configured and reachable</td>
         <td>Language model inference for writing outreach and drafting replies</td>
         <td>Lead name and company, your meeting purpose, and the text of replies your prospects send</td>
       </tr>
@@ -100,6 +100,32 @@
     unacceptable for your data, do not use reply drafting. Outreach sending and
     the lead sheet work without it.</p>
   </div>
+
+  <h2>Model tiers and training rights</h2>
+
+  <p>Your reviewer will want this in writing, so it is here rather than in a
+  footnote. The language model providers above are used on their free tiers, and a
+  free tier generally reserves the right to use prompts and completions for model
+  training. That is a term of the upstream provider's service, not something we
+  can waive on their behalf.</p>
+
+  <p>What we can do is control what reaches such an endpoint, and we do:</p>
+
+  <ul>
+    <li>First-touch outreach generation may run on a free tier. Its request
+    carries the lead's name, sometimes a company, one note obtained from public
+    web search, and the controller's own description of their offering. It
+    contains no content authored by the data subject.</li>
+    <li>Reply drafting carries content authored by the data subject. It is routed
+    only to endpoints that are not on a free tier whenever one is configured, and
+    it is not failed over to a free-tier endpoint if those are unavailable — the
+    draft fails instead.</li>
+    <li>Where no non-free endpoint is configured for a deployment, reply drafting
+    will use a free tier and the training exposure applies. A controller who needs
+    this excluded should ask for confirmation of the configured endpoints before
+    relying on reply drafting; the setting that refuses free-tier reply drafting
+    outright is <code>REPLY_DRAFTS_REQUIRE_PRIVATE_ENDPOINT</code>.</li>
+  </ul>
 
   <h2>Security measures</h2>
   <p>Summarised on the <a href="/security">security page</a>: encrypted Google

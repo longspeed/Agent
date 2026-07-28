@@ -19,7 +19,7 @@ const PLANS: Plan[] = [
     yearly: 'Free',
     blurb: 'Connect Gmail and run one campaign end to end.',
     features: [
-      '50 verified leads',
+      '50 sourced leads',
       '25 approved sends per day',
       'Reply drafting on 1 inbox',
       'Google Sheets sync',
@@ -32,7 +32,7 @@ const PLANS: Plan[] = [
     yearly: '$490/yr',
     blurb: 'For founders running outreach themselves.',
     features: [
-      '500 verified leads/mo',
+      '500 sourced leads/mo',
       'Daily send limit protection',
       '10 lead searches per hour',
       'Unlimited reply drafts',
