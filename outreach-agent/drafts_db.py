@@ -83,6 +83,14 @@ def add_draft(account_id, row_index, name, email, company, subject, body):
         "company": company,
         "subject": subject,
         "body": body,
+        # What the model wrote, frozen. subject/body are mutable -- mark_sent
+        # replaces them with whatever the operator actually approved -- so
+        # without these two columns the pair (what we generated, what a human
+        # sent) is destroyed at send time rather than merely uncollected, and
+        # it cannot be reconstructed afterwards. Written once here, never
+        # updated anywhere.
+        "original_subject": subject,
+        "original_body": body,
         "status": "pending",
     }).execute()
     return result.data[0]["id"]
@@ -118,7 +126,13 @@ def mark_sent(account_id, draft_id, sent_subject, sent_body):
     This is the authoritative send log. send_prepared_draft calls it immediately
     after Gmail accepts the message and before touching the sheet, so one row
     here means exactly one email left -- which is what makes it safe to count the
-    daily cap from (see count_sent_last_24_hours)."""
+    daily cap from (see count_sent_last_24_hours).
+
+    Deliberately does NOT touch original_subject/original_body. Overwriting
+    subject/body here is correct -- they are the record of what was sent -- but
+    it used to be the ONLY record, which silently destroyed every labelled pair
+    of (what the model wrote, what this person actually says). The diff between
+    the two columns is the whole training signal, and it cannot be backfilled."""
     from datetime import datetime, timezone
 
     _get_client().table(TABLE).update({

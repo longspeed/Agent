@@ -87,6 +87,11 @@ create table public.reviews (
     thread_id text not null default '',
     customer_reply text not null default '',
     draft_reply text not null default '',
+    -- Frozen copy of what the model proposed. draft_reply above is mutable:
+    -- mark_sent replaces it with what the operator actually sent. The diff
+    -- between the two is the only record of how this sender's voice differs
+    -- from the model's, and it cannot be reconstructed after the fact.
+    original_draft_reply text,
     status text not null default 'pending',
     gmail_message_id text,
     created_at timestamptz not null default now()
@@ -122,6 +127,11 @@ create table public.outreach_drafts (
     company text not null default '',
     subject text not null default '',
     body text not null default '',
+    -- Frozen copies of what the model wrote. subject/body above are mutable:
+    -- mark_sent replaces them with the copy the operator approved. Keeping both
+    -- is what makes an edit a labelled example rather than a deletion.
+    original_subject text,
+    original_body text,
     status text not null default 'pending',  -- pending | sent | discarded
     created_at timestamptz not null default now()
 );

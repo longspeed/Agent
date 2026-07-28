@@ -365,6 +365,66 @@ def test_reply_dedupe_still_matches_rows_written_before_the_id_column():
         )
 
 
+# ------------------------------------------------- edit-pair capture
+
+class _Capture:
+    """Captures the row handed to .insert()/.update() so a test can assert on
+    what was actually written, not merely that a write happened."""
+
+    def __init__(self):
+        self.inserted = None
+        self.updated = None
+
+    def table(self, name): return self
+    def eq(self, col, val): return self
+    def insert(self, row): self.inserted = row; return self
+    def update(self, row): self.updated = row; return self
+    def execute(self): return type("R", (), {"data": [{"id": 1}]})()
+
+
+def test_the_model_draft_survives_the_operator_edit():
+    """mark_sent overwriting subject/body is correct -- they are the record of
+    what was actually sent. The bug was that they were the ONLY record, so every
+    edit destroyed the pair (what the model wrote, what this person actually
+    says) instead of capturing it. That pair is the entire training signal and
+    it cannot be backfilled, which is why capture ships before anything that
+    reads it."""
+    cap = _Capture()
+    with patched(drafts_db, "_get_client", lambda: cap), \
+         patched(drafts_db, "has_pending_for_row", lambda a, r: False):
+        drafts_db.add_draft("a1", 2, "John", "j@x.com", "Acme",
+                            "Model subject", "Model body")
+    assert cap.inserted["original_subject"] == "Model subject"
+    assert cap.inserted["original_body"] == "Model body"
+
+    with patched(drafts_db, "_get_client", lambda: cap):
+        drafts_db.mark_sent("a1", 1, "Operator subject", "Operator body")
+    assert cap.updated["subject"] == "Operator subject", "the sent copy is recorded"
+    assert "original_subject" not in cap.updated, (
+        "mark_sent must never touch the frozen original -- overwriting both "
+        "columns is exactly the data loss this capture exists to stop"
+    )
+    assert "original_body" not in cap.updated
+
+
+def test_the_model_reply_survives_the_operator_edit():
+    """Same loss on the reply path. reviews.mark_sent overwrites draft_reply
+    with whatever the operator sent, so without original_draft_reply the model's
+    proposal is gone the moment a reply goes out."""
+    cap = _Capture()
+    with patched(reviews_db, "find_review_id", lambda *a, **k: None), \
+         patched(reviews_db, "_get_client", lambda: cap):
+        reviews_db.add_review("a1", 2, "John", "j@x.com", "t1",
+                              "their reply", "Model draft",
+                              gmail_message_id="m1")
+    assert cap.inserted["original_draft_reply"] == "Model draft"
+
+    with patched(reviews_db, "_get_client", lambda: cap):
+        reviews_db.mark_sent("a1", 1, "What the operator actually sent")
+    assert cap.updated["draft_reply"] == "What the operator actually sent"
+    assert "original_draft_reply" not in cap.updated
+
+
 # ---------------------------------------------------------------- draft_reply
 
 def test_draft_reply_prompt_contents():

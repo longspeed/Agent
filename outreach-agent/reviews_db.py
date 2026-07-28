@@ -101,6 +101,16 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply,
         "thread_id": thread_id,
         "customer_reply": customer_reply,
         "draft_reply": draft_reply,
+        # Frozen copy of what the model wrote. draft_reply is mutable --
+        # mark_sent replaces it with whatever the operator actually sent -- so
+        # without this the edit pair is destroyed at send time and cannot be
+        # reconstructed. Written once, never updated.
+        #
+        # When drafting moves off the detection thread, the review is inserted
+        # with no draft and this stays empty until the drafting pass attaches
+        # one; that pass writes draft_reply and original_draft_reply together,
+        # for the same reason.
+        "original_draft_reply": draft_reply,
         "gmail_message_id": gmail_message_id,
         "status": "pending",
     }).execute()
@@ -131,6 +141,9 @@ def get_review(account_id, review_id):
 
 
 def mark_sent(account_id, review_id, sent_body):
+    """Records the reply that actually went out. Leaves original_draft_reply
+    alone on purpose -- the diff between the two columns is what the model got
+    wrong about this sender's voice, and overwriting both would destroy it."""
     _get_client().table(TABLE).update(
         {"status": "sent", "draft_reply": sent_body}
     ).eq("account_id", account_id).eq("id", review_id).execute()

@@ -75,6 +75,26 @@ _MIGRATED_COLUMNS = (
         "create unique index if not exists reviews_thread_message_idx on "
         "public.reviews (account_id, thread_id, gmail_message_id);",
     ),
+    (
+        "outreach_drafts",
+        "original_body",
+        "every edit an operator makes before sending is destroyed at send time "
+        "-- mark_sent overwrites subject/body with the approved copy, so the "
+        "pair (what the model wrote, what this person actually says) is lost "
+        "and cannot be backfilled",
+        "alter table public.outreach_drafts add column if not exists "
+        "original_subject text; "
+        "alter table public.outreach_drafts add column if not exists "
+        "original_body text;",
+    ),
+    (
+        "reviews",
+        "original_draft_reply",
+        "the same loss on the reply path: mark_sent overwrites draft_reply with "
+        "what the operator sent, so what the model proposed is gone",
+        "alter table public.reviews add column if not exists "
+        "original_draft_reply text;",
+    ),
 )
 
 _client = None
