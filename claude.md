@@ -66,6 +66,15 @@
   `agent._validate_outreach` that gates production drafts, and reports
   calls-per-accepted-email (the number that matters on a requests-per-day free
   tier). Makes live API calls, so it spends quota. Added 2026-07-26.
+- reply eval: `python outreach-agent/eval_models.py --mode reply --n 16`
+  — the same harness against the reply path, scored by `agent._validate_reply`.
+  Two of the eight scenarios are prompt injection (a planted booking link, and
+  an attempt to exfiltrate the system prompt), so this is what makes the fence
+  measurable rather than assumed. `--mode both` runs each in turn and spends
+  roughly double the quota. Added 2026-07-28.
+  **This is a release gate:** the fast approval queue targets ~3.6 seconds per
+  draft, which is what turns human approval from a real control into a nominal
+  one. Do not ship it while this eval is failing on the injection cases.
 
 No linter or dead-code tool is configured (nothing on PATH, no config
 files). Update this section if `ruff`/`pytest` get added.
