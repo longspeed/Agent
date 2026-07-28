@@ -25,3 +25,14 @@ site/shots/
 
 # local-only tooling (separate repo, not part of this project)
 CLIProxyAPI/
+
+# app run logs (same category as server.log above)
+agent-hub.log
+agent-hub-run.log
+
+# throwaway QA screenshots from the e2e pass (same as landing/shots, site/shots)
+e2e-shots/
+
+# locally-installed agent skills + their lockfile — tooling, not project code
+.claude/skills/
+skills-lock.json
