@@ -921,7 +921,13 @@ class SendReplyBody(BaseModel):
 def send_reply(request: Request, review_id: int, payload: SendReplyBody):
     account = _account(request)
     review = reviews_db.get_review(account["id"], review_id)
-    if not review or review["status"] != "pending":
+    # Allowlist, not `!= "pending"`. Statuses are being added and they do not
+    # all behave the same: a flagged off-sheet review becomes sendable once the
+    # user confirms the sender, while answered_elsewhere never is -- there is
+    # nothing to send, the operator already replied from Gmail. Getting this
+    # wrong sends a second reply to a prospect, which is the failure the whole
+    # detector rework exists to prevent.
+    if not review or review["status"] not in reviews_db.SENDABLE_STATUSES:
         raise HTTPException(status_code=404, detail="Review not found or already handled")
 
     gmail.send_reply(account, review["thread_id"], review["email"], payload.body)
@@ -933,7 +939,10 @@ def send_reply(request: Request, review_id: int, payload: SendReplyBody):
 def dismiss_reply(request: Request, review_id: int):
     account = _account(request)
     review = reviews_db.get_review(account["id"], review_id)
-    if not review or review["status"] != "pending":
+    # Anything the operator can see, they can clear -- including the statuses
+    # that are not sendable. An answered_elsewhere card with no way to dismiss
+    # it is a queue item that never goes away.
+    if not review or review["status"] not in reviews_db.VISIBLE_STATUSES:
         raise HTTPException(status_code=404, detail="Review not found or already handled")
 
     reviews_db.dismiss(account["id"], review_id)

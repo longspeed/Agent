@@ -117,12 +117,44 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply,
     return result.data[0]["id"]
 
 
+# Which statuses the operator is meant to SEE, and which they may ACT on.
+# Deliberately two explicit allowlists rather than one rule like "anything not
+# sent or dismissed", because visibility does not follow from workflow order and
+# the two sets genuinely differ:
+#
+#   pending             visible, actionable   -- a draft waiting for approval
+#   drafting            HIDDEN                -- detected, no draft attached yet.
+#                                                Showing it is an empty card;
+#                                                hiding it must not mean the
+#                                                user is never told a reply
+#                                                arrived, so the notification
+#                                                fires on detection, not here.
+#   flagged             visible, actionable   -- replied from an address not on
+#                                                the sheet. Must be visible or
+#                                                the confirm-sender question has
+#                                                nowhere to be asked.
+#   answered_elsewhere  visible, NOT sendable -- the operator already answered
+#                                                from Gmail. Worth knowing,
+#                                                nothing to send. Dismissible.
+#   superseded          HIDDEN                -- a newer message on the thread
+#                                                replaced it.
+#   sent / dismissed    HIDDEN                -- handled.
+#
+# Only "pending" exists today. The rest arrive with sender classification; they
+# are listed here now so that lands as a data change rather than a redesign of
+# every query and endpoint that touches a review.
+VISIBLE_STATUSES = ("pending",)
+SENDABLE_STATUSES = ("pending",)
+
+
 def list_pending_reviews(account_id):
+    """Reviews the operator should see, oldest first. Named for its caller's
+    intent rather than the status literal -- see VISIBLE_STATUSES."""
     result = (
         _get_client().table(TABLE)
         .select("*")
         .eq("account_id", account_id)
-        .eq("status", "pending")
+        .in_("status", list(VISIBLE_STATUSES))
         .order("created_at")
         .execute()
     )

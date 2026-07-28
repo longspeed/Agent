@@ -307,10 +307,12 @@ class _ReviewRows:
         self.rows = rows
         self._eq = []
         self._null = []
+        self._in = []
 
     def table(self, name): return self
     def select(self, cols): return self
     def limit(self, n): return self
+    def order(self, col): return self
 
     def eq(self, col, val):
         self._eq.append((col, val))
@@ -320,13 +322,18 @@ class _ReviewRows:
         self._null.append(col)
         return self
 
+    def in_(self, col, values):
+        self._in.append((col, list(values)))
+        return self
+
     def execute(self):
         matched = [
             r for r in self.rows
             if all(r.get(c) == v for c, v in self._eq)
             and all(r.get(c) is None for c in self._null)
+            and all(r.get(c) in vs for c, vs in self._in)
         ]
-        self._eq, self._null = [], []
+        self._eq, self._null, self._in = [], [], []
         return type("R", (), {"data": matched})()
 
 
@@ -363,6 +370,37 @@ def test_reply_dedupe_still_matches_rows_written_before_the_id_column():
             "with no body supplied there is nothing to fall back to -- the "
             "legacy query must not run and match on account+thread alone"
         )
+
+
+# ------------------------------------------------- review visibility
+
+def test_the_queue_shows_only_allowlisted_statuses():
+    """Visibility is an explicit allowlist, not "anything not sent". Statuses
+    are being added and they do not all behave alike: a review with no draft
+    attached yet must be hidden, a flagged off-sheet sender must be visible or
+    the confirm-sender question has nowhere to be asked. A rule like "not sent
+    and not dismissed" would show the empty ones."""
+    fake = _ReviewRows([
+        {"id": 1, "account_id": "a1", "status": "pending"},
+        {"id": 2, "account_id": "a1", "status": "sent"},
+        {"id": 3, "account_id": "a1", "status": "dismissed"},
+        {"id": 4, "account_id": "a1", "status": "drafting"},
+        {"id": 5, "account_id": "a1", "status": "superseded"},
+    ])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        visible = [r["id"] for r in reviews_db.list_pending_reviews("a1")]
+    assert visible == [1], f"only allowlisted statuses reach the queue, got {visible}"
+
+
+def test_nothing_is_sendable_that_is_not_also_visible():
+    """The invariant that keeps the two allowlists honest. A status the operator
+    can send but cannot see is an email leaving on a review nobody looked at --
+    which is the one thing this product promises cannot happen."""
+    assert set(reviews_db.SENDABLE_STATUSES) <= set(reviews_db.VISIBLE_STATUSES), (
+        "SENDABLE_STATUSES must be a subset of VISIBLE_STATUSES: "
+        f"{set(reviews_db.SENDABLE_STATUSES) - set(reviews_db.VISIBLE_STATUSES)} "
+        "is sendable but hidden"
+    )
 
 
 # ------------------------------------------------- edit-pair capture
