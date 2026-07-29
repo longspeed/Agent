@@ -34,6 +34,7 @@ import config
 import dns_check
 import drafts_db
 import gmail
+import google_auth
 import providers
 import ratelimit
 import reviews_db
@@ -1980,6 +1981,53 @@ def test_oauth_state_roundtrip():
     assert auth.verify_oauth_state(state)
     assert not auth.verify_oauth_state("123.deadbeef")
     assert not auth.verify_oauth_state(auth.create_session_token("x"))  # two dots
+
+
+def test_session_signing_key_split_preserves_unsubscribe_but_not_sessions():
+    """SESSION_SIGNING_KEY defaults to APP_SECRET_KEY, so every token signed
+    today is effectively signed under APP_SECRET_KEY. Once an operator later
+    sets SESSION_SIGNING_KEY to something distinct, unsubscribe links --
+    already sent, no expiry, must work forever -- have to keep verifying.
+    Sessions and OAuth state are short-lived and deliberately do not: a
+    rotation logging everyone out is correct, not a defect."""
+    unsub = auth.create_unsubscribe_token("acct-9", "p@x.com")
+    session = auth.create_session_token("acct-9", ttl_seconds=60)
+    state = auth.create_oauth_state()
+    with patched(auth, "SESSION_SIGNING_KEY", "a-new-distinct-signing-key"):
+        assert auth.verify_unsubscribe_token(unsub) == ("acct-9", "p@x.com")
+        assert auth.verify_session_token(session) is None
+        assert not auth.verify_oauth_state(state)
+
+
+# -------------------------------------------------------------- google_auth
+
+def test_get_credentials_clears_token_on_fernet_key_rotation():
+    """If the Fernet key derived from APP_SECRET_KEY is ever rotated, every
+    previously stored Google token becomes permanently undecryptable --
+    accounts_db.decrypt_secret raises InvalidToken, not RefreshError.
+    get_credentials must treat that the same way as an unrefreshable token:
+    clear it and tell the user to reconnect, not crash with a raw
+    InvalidToken (which callers only know to catch as RuntimeError)."""
+    from cryptography.fernet import InvalidToken
+
+    account = {"id": "acct-7", "google_token": "irrelevant-ciphertext"}
+    cleared = []
+
+    def fake_get_google_token(acct):
+        raise InvalidToken()
+
+    def fake_set_google_token(account_id, token_json):
+        cleared.append((account_id, token_json))
+
+    with patched(accounts_db, "get_google_token", fake_get_google_token), \
+         patched(accounts_db, "set_google_token", fake_set_google_token):
+        try:
+            google_auth.get_credentials(account)
+        except RuntimeError as e:
+            assert "reconnect Google" in str(e)
+        else:
+            raise AssertionError("InvalidToken must surface as RuntimeError")
+    assert cleared == [("acct-7", None)]
 
 
 # ------------------------------------------------------------------- ratelimit

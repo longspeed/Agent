@@ -8,7 +8,7 @@ import time
 
 from urllib.parse import quote
 
-from config import APP_SECRET_KEY, PUBLIC_BASE_URL
+from config import APP_SECRET_KEY, SESSION_SIGNING_KEY, PUBLIC_BASE_URL
 
 COOKIE_NAME = "session"
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 14  # 14 days
@@ -44,8 +44,8 @@ def verify_password(password: str, stored: str | None) -> bool:
 # Format: "<account_id>.<expires_at>.<hmac>". The same signed format doubles
 # as the short-lived OAuth `state` parameter (see server.py).
 
-def _sign(payload: str) -> str:
-    return hmac.new(APP_SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+def _sign(payload: str, key: str | None = None) -> str:
+    return hmac.new((key or SESSION_SIGNING_KEY).encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
 def create_session_token(account_id: str, ttl_seconds: int = SESSION_TTL_SECONDS) -> str:
@@ -110,7 +110,16 @@ def verify_unsubscribe_token(token: str | None) -> tuple[str, str] | None:
         payload = base64.urlsafe_b64decode(padded).decode()
     except (ValueError, UnicodeDecodeError):
         return None
-    if not hmac.compare_digest(signature, _sign(payload)):
+    # No expiry, must keep working forever -- so a link signed under
+    # APP_SECRET_KEY (SESSION_SIGNING_KEY's default before an operator ever
+    # rotates it) still has to verify after that rotation happens. Session
+    # and OAuth-state tokens don't get this: they're short-lived, and a
+    # rotation logging everyone out is correct, not a defect.
+    valid = any(
+        hmac.compare_digest(signature, _sign(payload, key))
+        for key in {SESSION_SIGNING_KEY, APP_SECRET_KEY}
+    )
+    if not valid:
         return None
     parts = payload.split(":", 2)
     if len(parts) != 3 or parts[0] != "unsub":

@@ -278,6 +278,13 @@ Fill in:
   stored Google tokens, e.g.
   `python -c "import secrets; print(secrets.token_hex(32))"`. Changing it
   logs everyone out and invalidates stored Google tokens.
+- `SESSION_SIGNING_KEY` — optional. Signs sessions/OAuth-state/unsubscribe
+  tokens separately from `APP_SECRET_KEY`, so a leak of one secret doesn't
+  also hand over Google-token decryption (or vice versa). Defaults to
+  `APP_SECRET_KEY` when unset. To actually split them, set it to a
+  different random value: this logs everyone out (sessions are short-lived)
+  but does **not** break unsubscribe links already sent — those verify
+  against the previous value too, forever.
 - `TAVILY_API_KEY` — only needed for the lead sourcing agent
 - `SUPABASE_URL` / `SUPABASE_SECRET_KEY` — from your Supabase project's
   Settings > API Keys page (the **secret** key, not the publishable one)

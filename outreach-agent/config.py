@@ -46,6 +46,13 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 APP_SECRET_KEY = os.environ["APP_SECRET_KEY"]
 
+# Signs session/OAuth-state/unsubscribe tokens (auth.py). Kept separate from
+# APP_SECRET_KEY -- which derives the Fernet key encrypting stored Google
+# tokens in accounts_db.py -- so that one secret leaking doesn't also hand
+# over the other. Defaults to APP_SECRET_KEY when unset, so no deployment
+# needs to change anything until it deliberately sets a distinct value.
+SESSION_SIGNING_KEY = os.environ.get("SESSION_SIGNING_KEY") or APP_SECRET_KEY
+
 
 # --- LLM providers -----------------------------------------------------------
 # An ordered fallback chain rather than one endpoint, for two reasons.

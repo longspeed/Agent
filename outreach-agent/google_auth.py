@@ -3,6 +3,7 @@ shared; each account completes its own in-browser consent flow and its token
 is stored encrypted on its `accounts` row — there is no token.json on disk."""
 import json
 
+from cryptography.fernet import InvalidToken
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -57,7 +58,16 @@ def get_credentials(account: dict) -> Credentials:
     """Builds Credentials for one account from its stored token, refreshing
     (and persisting the refresh) if expired. Raises RuntimeError if the
     account hasn't connected Google yet."""
-    token_json = accounts_db.get_google_token(account)
+    try:
+        token_json = accounts_db.get_google_token(account)
+    except InvalidToken:
+        # The Fernet key derived from APP_SECRET_KEY no longer matches the one
+        # this token was encrypted under (the secret was rotated). The token
+        # is permanently undecryptable, not just temporarily invalid -- clear
+        # it the same way an unrefreshable token is cleared below, so the
+        # account isn't stuck showing "connected" while dead.
+        accounts_db.set_google_token(account["id"], None)
+        raise RuntimeError("Google connection expired — reconnect Google in Settings")
     if not token_json:
         raise RuntimeError("This account hasn't connected its Google account yet")
 

@@ -96,7 +96,7 @@ for a 1-3 user validation week.
 **Priority:** P2
 **Depends on:** Nothing blocking.
 
-### Split session-signing and token-encryption keys
+### Split session-signing and token-encryption keys — done 2026-07-29
 **What:** `APP_SECRET_KEY` currently signs session/OAuth-state tokens (HMAC)
 *and* derives the Fernet key encrypting every stored Google token. Split into
 two secrets.
@@ -125,6 +125,20 @@ split moves in front of the deploy rather than after it)
 > `InvalidToken` loop with `consecutive_failures` climbing and no remedy.
 > Add the `InvalidToken` catch alongside `RefreshError` regardless, so a
 > future rotation degrades to "reconnect Google" instead of a 500.
+
+**Resolution:** Implemented exactly as decided above.
+`config.SESSION_SIGNING_KEY` defaults to `APP_SECRET_KEY` when unset, so no
+deployment needs to act until it deliberately sets a distinct value.
+`auth._sign` now signs with `SESSION_SIGNING_KEY`;
+`auth.verify_unsubscribe_token` accepts a signature made under either
+`SESSION_SIGNING_KEY` or `APP_SECRET_KEY` so links already sent survive a
+future rotation, while sessions and OAuth state (both short-lived) do not
+carry that backward-compatibility on purpose. `google_auth.get_credentials`
+now catches `cryptography.fernet.InvalidToken` around the token decrypt,
+clears the dead token, and raises the same "reconnect Google" `RuntimeError`
+the `RefreshError` path already used. Two new tests
+(`test_session_signing_key_split_preserves_unsubscribe_but_not_sessions`,
+`test_get_credentials_clears_token_on_fernet_key_rotation`) — 242/242 passing.
 
 ### Reply-detection correctness: scan since last outgoing, not newest-only
 **What:** `gmail.get_latest_reply_with_history` only inspects `messages[-1]`.
@@ -651,6 +665,21 @@ default, with a comment saying to turn it on "once a paid endpoint is
 configured and a customer DPA depends on it" — the VPS deploy is that moment).
 **Effort:** S → S · **Priority:** P1
 **Depends on:** Nothing. **Blocks:** the VPS deploy.
+
+**Status update 2026-07-29 (P1 execution pass):** option (b) is already done
+— `static/privacy.html:111-117` names the split plainly ("Drafting a reply...
+is routed to a paid endpoint whenever one is configured... Where no paid
+endpoint is configured, reply drafting runs on a free tier and the training
+exposure above applies") and the sub-processor and free-tier-training tests
+(`test_legal_pages_name_every_llm_provider_that_can_receive_lead_data`,
+`test_legal_pages_disclose_free_tier_training_exposure`) already pass. No
+code or docs gap remains. What is still open is purely a deploy-time choice
+with no code attached to it: when the VPS is actually provisioned, either
+configure a paid endpoint there (option a — e.g. `GEMINI_API_KEY` with
+`GEMINI_TIER=paid`, plus `REPLY_DRAFTS_REQUIRE_PRIVATE_ENDPOINT=1`) or accept
+the already-disclosed free-tier fallback as-is. Staying P1 because it still
+blocks the VPS deploy; re-open this specifically at provisioning time rather
+than treating it as build work now.
 
 ### Manual "Check now" semantics once the worker exists
 **What:** `POST /api/outreach/replies/check` (`server.py:884`) runs the reply
