@@ -95,6 +95,26 @@ _MIGRATED_COLUMNS = (
         "alter table public.reviews add column if not exists "
         "original_draft_reply text;",
     ),
+    (
+        "reviews",
+        "degraded_classification",
+        "add_review's insert fails outright rather than degrading, so reply "
+        "detection stops entirely -- not just the degraded-lookup marker this "
+        "column exists to carry",
+        "alter table public.reviews add column if not exists "
+        "degraded_classification boolean not null default false;",
+    ),
+    (
+        ACCOUNTS_TABLE,
+        "worker_heartbeat_at",
+        "set_worker_heartbeat fails silently (it is best-effort by design), so "
+        "the background reply-watcher has no way to prove it is actually "
+        "running for this account -- a stale heartbeat and a missing column "
+        "look identical from here",
+        "alter table public.accounts add column if not exists "
+        "worker_heartbeat_at timestamptz; "
+        "alter table public.accounts add column if not exists last_error text;",
+    ),
 )
 
 _client = None
@@ -215,6 +235,46 @@ def set_google_token(account_id: str, token_json: str | None):
     """Stores the account's Google OAuth token (encrypted), or clears it."""
     value = encrypt_secret(token_json) if token_json else None
     _get_client().table(ACCOUNTS_TABLE).update({"google_token": value}).eq("id", account_id).execute()
+
+
+def list_accounts_with_a_sheet() -> list[dict]:
+    """Every account that has configured a lead sheet -- the background
+    reply-watcher's candidate list.
+
+    Deliberately NOT also filtered on google_token being set. A Google token
+    is cleared (set to None) the moment it stops refreshing -- see
+    google_auth.get_credentials -- and Testing-mode tokens die on their own
+    after 7 days regardless, which is the normal lifecycle of every account
+    today, not an edge case. Filtering on the token too would remove an
+    account from this list the moment its token dies, which freezes
+    worker_heartbeat_at at exactly the moment something needs attention --
+    indistinguishable from the worker itself being down. The caller checks
+    google_token per account instead, and records why via
+    set_worker_heartbeat rather than dropping the account from rotation."""
+    result = _get_client().table(ACCOUNTS_TABLE).select("*").execute()
+    return [a for a in result.data if (a.get("google_sheet_id") or "").strip()]
+
+
+def set_worker_heartbeat(account_id: str, error: str | None = None):
+    """Records that the background reply-watcher looked at this account just
+    now, and what (if anything) went wrong. The only way to tell "the worker
+    is alive for this account" from "the worker is down" without reading
+    process logs.
+
+    Best-effort, matching usage.record's convention ("metering must never
+    break the action being metered") -- this is most often called right after
+    something has already gone wrong for this account, and a second failure
+    here recording that must not replace the real error or stop the loop
+    from moving on to the next account."""
+    from datetime import datetime, timezone
+
+    try:
+        _get_client().table(ACCOUNTS_TABLE).update({
+            "worker_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            "last_error": (error or "")[:500] or None,
+        }).eq("id", account_id).execute()
+    except Exception as e:
+        print(f"Could not record worker heartbeat for account {account_id}: {e}")
 
 
 def check_schema() -> list[str]:

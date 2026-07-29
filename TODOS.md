@@ -67,7 +67,7 @@ mitigation: warn candidates, reconnect is one click (see VALIDATION-WEEK.md).
 **Priority:** P2
 **Depends on:** Comes before Billing (P3) can ship.
 
-### Background reply watcher
+### Background reply watcher — code done 2026-07-29, still blocked on the host
 **What:** Server-side scheduler for reply checking, so detection doesn't
 depend on someone having /outreach open in a browser tab.
 **Why:** The homepage says the agent "watches your inbox" — today that's only
@@ -81,6 +81,44 @@ auto-poll; `outreach-agent/watch_replies.py` `main()` already loops with
 **Effort:** M (human) → S (CC + gstack)
 **Priority:** P2
 **Depends on:** A real deployment (see Job persistence).
+
+**Resolution:** `watch_replies.main()`/`run_all_accounts()` now walks every
+account with a configured sheet in one process, sequentially ("stagger
+accounts, don't fan out"), attributing usage per account via `usage.run_as`
+and isolating one account's failure from the rest the same way
+`check_for_replies` already isolates per row. `accounts_db.
+list_accounts_with_a_sheet` deliberately filters on `google_sheet_id` alone,
+not `google_token` — a dead token (which `google_auth.get_credentials`
+already clears on `RefreshError`, and which happens to every account on a
+7-day cycle until OAuth verification ships) would otherwise remove the
+account from rotation entirely, freezing its `worker_heartbeat_at` at the
+moment it broke and making "the worker is down" indistinguishable from
+"this account needs a reconnect." A missing token is now a skip-with-reason
+(`last_error = "Google disconnected — reconnect in Settings"`, heartbeat
+still refreshed) instead of a silent exclusion — which also happens to be
+the exact data a future reconnect-nudge notification needs.
+Bundled in, since TODOS explicitly tied both to this landing: (d) below
+(`sheets._verify_row_index`'s full-sheet re-read → a single-cell fast path),
+and `accounts.worker_heartbeat_at`/`last_error` for observability without
+reading process logs. A systemd unit template ships at
+`outreach-agent/deploy/agent-hub-worker.service`. Cycle duration is measured
+and a WARNING is logged if a cycle exceeds `CHECK_INTERVAL_MINUTES` — the
+signal that the sequential single-process model itself needs to change
+(sharding or real concurrency), not that the inter-account delay needs
+shortening. Two heartbeat-integrity fixes made during review, not part of
+the original ask: `set_worker_heartbeat` is best-effort (matches
+`usage.record`'s own "metering must never break the action being metered"
+convention — this write fires most often on the failure path, where
+something's already gone wrong, and a second failure recording that must
+not crash the loop); and `main()`'s single-account debug mode
+(`python watch_replies.py you@company.com`) passes `write_heartbeat=False`
+so a one-off manual run against one account can't overwrite
+`worker_heartbeat_at` and forge the "the continuous worker is alive" signal
+the column exists to give honestly. 15 new tests, 283/283 passing.
+**Still blocks on the host**: this is one process meant to run continuously;
+it still needs an always-on box to actually run on 24/7 (the dev laptop +
+tunnel today). The code and the systemd unit are ready for that
+conversation, not blocked on it.
 
 ### Job persistence
 **What:** Persist background jobs (send batch, reply-check, lead search)
@@ -140,7 +178,7 @@ the `RefreshError` path already used. Two new tests
 (`test_session_signing_key_split_preserves_unsubscribe_but_not_sessions`,
 `test_get_credentials_clears_token_on_fernet_key_rotation`) — 242/242 passing.
 
-### Reply-detection correctness: scan since last outgoing, not newest-only
+### Reply-detection correctness: scan since last outgoing, not newest-only — done 2026-07-29
 **What:** `gmail.get_latest_reply_with_history` only inspects `messages[-1]`.
 Replace with "scan all messages after our last outgoing message" (or a
 per-thread `historyId` cursor), and decide a policy for replies arriving
@@ -181,12 +219,74 @@ app only).
 > visible, no draft, no notification — or the fix trades a missed reply for
 > double-replying a prospect.
 
+**Resolution:** Implemented as decided above. `gmail._classify_message`
+(shared by `get_latest_reply_with_history` and the new `get_history_before`,
+so both agree on "from the contact" by construction) classifies each message
+`ours > daemon > auto_responder > on_sheet/off_sheet` in that precedence,
+using the full set from the new `gmail.get_own_addresses` (primary address
+plus every verified Send-As alias — not just one address, or the operator's
+own alias replies would read as an unconfirmed stranger). An off-sheet reply
+is queued `status="flagged"`, drafted only after the operator confirms the
+sender via the new `POST /api/outreach/replies/{id}/confirm-sender`
+(deferred rather than drafted at detection: an unconfirmed sender is the
+least-trusted input this system sees, and drafting it first would run
+untrusted input through the LLM before any check, backwards from how every
+other path here treats trust). `answered_elsewhere` is queued visible with
+no draft. Two gaps found and closed while implementing, not part of the
+original decision: `send_reply` never checked `suppressions_db` at all
+(an unsubscribed contact could still receive a reply — now a 409, same as
+the outreach-send path); `original_draft_reply` was written as `""` instead
+of `NULL` on any drafting failure, which Phase 6's edit-diff learning would
+have read as "replace the model's output wholesale" rather than "the model
+wrote nothing." A `degraded_classification` column (boot-checked via
+`accounts_db._MIGRATED_COLUMNS`, not a manual migration — `add_review` is
+the insert path for every review, so a missing column here stops reply
+detection entirely, not just one button) marks any review created while the
+Send-As lookup itself failed and fell back to just the primary address. 29
+new tests, including one that runs the real classifier through
+`check_for_replies` rather than the usual full mock, specifically to catch a
+`kind` string drifting between the two — 271/271 passing.
+
+**Two loose ends closed during review, recorded here since the review that
+found them predates this file's last edit:**
+- `get_history_before`'s target email was unstated and the first
+  consistency test used the same email for both functions, which couldn't
+  have caught the two disagreeing. Fixed: both
+  `get_latest_reply_with_history` and `get_history_before` now label
+  history against the candidate's own observed From address (not
+  `contact_email`), sharing that judgment rather than each re-deriving it.
+  Regression test uses a genuinely divergent (off-sheet) target, not the
+  on-sheet case where the two happen to be the same string.
+- `get_latest_reply` (backing `check_single_reply`) calls
+  `get_own_addresses` fresh every call rather than caching it the way
+  `check_for_replies` fetches it once per cycle. Decided, not fixed: that
+  endpoint is a one-shot per-row action, never a loop, so the extra Gmail
+  call doesn't compound. Documented in a comment on `get_latest_reply`
+  naming the condition under which this would need to change (a future
+  caller that iterates rows through it).
+
+**Follow-up, not done here:** `plans.check(account, usage.UNIT_DRAFT_REPLY)`
+is now called before every reply draft (previously called nowhere), but
+`plans.py`'s `monthly_replies` is `None` for every plan tier, so the gate is
+structurally wired and currently a no-op. This was an accepted gap when only
+a contact you had actually emailed could trigger a reply draft; after this
+change, anyone who gets a message into a thread you own can, once an
+operator confirms the sender. Deciding real `monthly_replies` numbers per
+tier is a pricing decision, same class as the rest of `plans.py` — not made
+here.
+**Effort:** XS · **Priority:** P2
+**Depends on:** Nothing blocking.
+
 ### Operational hygiene bundle
 **What:** (a) structured logging — timestamp + account id + action + outcome
 on send/reply paths instead of bare `print()`; (b) `JOBS` dict cleanup (drop
 entries after N hours); (c) HTML-only replies reach the LLM/review UI as raw
-markup — strip tags in `gmail._extract_body`'s fallback; (d) narrow
-`sheets._verify_row_index` to an email-column-only range read — today every
+markup — strip tags in `gmail._extract_body`'s fallback; ~~(d) narrow
+`sheets._verify_row_index` to an email-column-only range read~~ — **done
+2026-07-29** as part of the background watcher, see that entry above: a
+fast path reads just the one email cell first and only falls back to
+`get_all_rows` (the whole sheet) if that cell doesn't confirm the row is
+still where it was — today every
 guarded write re-reads the whole sheet (~2 Sheets calls per send; fine at
 25-row scale, brushes read quota at 500-row sheets with concurrent polling).
 **Why:** None bites at current scale; all four bite with the second tenant.
@@ -200,9 +300,9 @@ every cycle. (a) is superseded for the worker specifically by the
 **Context:** `server.py`, `outreach-agent/watch_replies.py`, `gmail.py`,
 `outreach-agent/sheets.py`.
 **Effort:** M (human) → S (CC + gstack)
-**Priority:** P3 overall; **(d) is P2**
-**Depends on:** Nothing; natural trigger is "before the second real tenant."
-(d) is now triggered by the background watcher instead.
+**Priority:** P3 overall for (a)-(c); (d) done, see above.
+**Depends on:** Nothing; natural trigger for (a)-(c) is "before the second
+real tenant."
 
 ### Sheet read pagination + table virtualization
 **What:** Paginate Sheets reads and virtualize the campaigns/leads table
@@ -506,7 +606,7 @@ Filed while planning the reply-detection / background-watcher / notification
 work. Mode was HOLD SCOPE over all seven phases; these are the items explicitly
 kept out of that scope, plus two existing entries this plan promotes.
 
-### Land the current branch before phase 0
+### Land the current branch before phase 0 — merged 2026-07-29, review still owed
 **What:** `feat/outreach-drafting-optout` carries +8,860/-448 across 55 files,
 unmerged and never shipped, and all seven phases of the daily-use build land on
 top of it.
@@ -520,6 +620,16 @@ worker deploy a change to a known-good base.
 plan sequences this.
 **Effort:** S (human) → S (CC + gstack) · **Priority:** P1
 **Depends on:** Nothing. Blocks phase 0.
+
+**Resolution:** `main` was fast-forwarded to the branch tip and pushed. **The
+review this entry was named for did not happen first** — landing was chosen
+over reviewing, at the time, for speed. `d755f22` alone (+4,280 lines, "the
+billing, plans, bounce and metering work") is still sitting on `main` today
+having never been through `/review` or equivalent. This is not resolved by
+the merge; it's a live, disclosed risk. `/review` on that diff (or a
+targeted audit of `billing.py`/`plans.py`/`bounces.py`) is still the
+highest-value thing to do before trusting `main` as a base for anything
+further.
 
 ### Migration tooling
 **What:** No migration tool exists. `outreach-agent/README.md` documents
@@ -576,7 +686,10 @@ eng-review task list.
 **Context:** `outreach-agent/reviews_db.py` `find_review_id`;
 `outreach-agent/watch_replies.py` per-row loop.
 **Effort:** S → S · **Priority:** P2
-**Depends on:** Phase 0 landing first.
+**Depends on:** Phase 0 landing first — done. **Deliberately still not done
+2026-07-29:** the background watcher (this dependency) landed and explicitly
+left this out of scope — TODOS' own "does not bite below ~10 accounts" and
+the account count today being nowhere near that. Revisit when it is.
 
 ### Per-thread last_processed_message_id cursor
 **What:** Store the last message id processed per thread, so a cycle skips
@@ -606,7 +719,11 @@ logging strategy is `print()` is not debuggable after the fact.
 **Context:** `outreach-agent/watch_replies.py`; the hygiene bundle entry above.
 **Effort:** M (human) → S (CC + gstack) · **Priority:** P2 (was P3 as hygiene;
 phase 1 promotes it)
-**Depends on:** Phase 1 landing first.
+**Depends on:** Phase 1 landing first — **done 2026-07-29.** Phase 1 shipped
+a lighter version of this specifically (`accounts.worker_heartbeat_at` /
+`last_error`, one row per account, overwritten each cycle) — it answers "is
+it working right now," which this entry's own "why" explicitly says is not
+the same question as "why did this break three weeks ago." Still open.
 
 ### Phase 6b: suggested instruction updates from edit diffs
 **What:** After enough captured edit pairs, offer the user a concrete, approved

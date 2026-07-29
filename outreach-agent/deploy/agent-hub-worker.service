@@ -1,0 +1,39 @@
+# Systemd unit for the background reply-watcher (watch_replies.py).
+#
+# This is a template, not a ready-to-run file: it does nothing until a real
+# host exists to install it on. Fill in the placeholders below, then:
+#
+#   sudo cp agent-hub-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agent-hub-worker
+#   sudo systemctl status agent-hub-worker
+#   journalctl -u agent-hub-worker -f          # live logs
+#
+# Deliberately independent of the web server's unit (if any): this process
+# can restart, crash, or be redeployed without taking uvicorn down, and
+# vice versa. Restart=always plus RestartSec gives it its own recovery from
+# a crash without needing the whole host to reboot.
+
+[Unit]
+Description=Agent Hub background reply watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# CHANGE ME: the non-root user this should run as, and the checkout path.
+User=CHANGE_ME
+WorkingDirectory=/CHANGE_ME/outreach-agent
+# Loads the same .env the web server uses (SUPABASE_URL, APP_SECRET_KEY,
+# LLM provider keys, etc.) -- watch_replies.py needs the same config
+# server.py does, since it calls the same modules (accounts_db, gmail,
+# agent, plans).
+EnvironmentFile=/CHANGE_ME/outreach-agent/.env
+ExecStart=/usr/bin/python3 watch_replies.py
+Restart=always
+RestartSec=15
+# Continuous mode (no --once) is the point: this unit IS the "run forever,
+# every 5 minutes" loop. Don't add --once here.
+
+[Install]
+WantedBy=multi-user.target

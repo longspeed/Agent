@@ -1,10 +1,12 @@
-"""Polls Gmail for replies to previously-sent outreach emails for one account.
-When a reply is found, drafts a response with the LLM and queues it in the
-app's review list -- this script never sends the reply itself, and never
-emails the account owner about it (the /outreach page is the review surface).
+"""Polls Gmail for replies to previously-sent outreach emails, across every
+connected account in one process. When a reply is found, drafts a response
+with the LLM and queues it in the app's review list -- this script never
+sends the reply itself, and never emails the account owner about it (the
+/outreach page is the review surface).
 
-Run once to check immediately:      python watch_replies.py <account-email> --once
-Run continuously (checks every 5 min): python watch_replies.py <account-email>
+Run once to check every account immediately:  python watch_replies.py --once
+Run continuously (every 5 min, all accounts): python watch_replies.py
+Debug one account only, no heartbeat written: python watch_replies.py <account-email> [--once]
 """
 import sys
 import time
@@ -15,11 +17,19 @@ import accounts_db
 import agent
 import bounces
 import gmail
+import plans
 import reviews_db
 import sheets
 import usage
 
 CHECK_INTERVAL_MINUTES = 5
+
+# Gap between accounts within one cycle. "Stagger accounts, don't fan out":
+# Gmail's per-account quota doesn't need concurrency, and a burst of
+# simultaneous getProfile/sendAs.list/thread-read calls across every account
+# is exactly the failure mode a delay this small avoids. Costs nothing
+# against the 5-minute interval at today's account count.
+INTER_ACCOUNT_DELAY_SECONDS = 2
 
 
 def check_for_replies(account):
@@ -34,6 +44,12 @@ def check_for_replies(account):
     # This run writes "Replied" statuses -- same full-header consent gate as
     # the send path (see sheets.require_full_header).
     sheets.require_full_header(account)
+
+    # Once per account per cycle, not per row -- it's a Gmail profile call
+    # (plus a Send-As listing call) reused by every row below. See
+    # gmail.get_own_addresses for what `degraded` means and why it has to
+    # travel onto every review created while it's true.
+    own_addresses, degraded = gmail.get_own_addresses(account)
 
     new_reviews = []
     row_errors = []
@@ -50,10 +66,10 @@ def check_for_replies(account):
             # One read for both checks below. They ask different questions of the
             # same messages, and Gmail charges per fetch.
             thread = gmail.get_thread(account, thread_id)
-            reply_text, history, message_id = gmail.get_latest_reply_with_history(
-                account, thread_id, email, thread=thread
+            candidate = gmail.get_latest_reply_with_history(
+                account, thread_id, email, own_addresses, thread=thread
             )
-            if not reply_text:
+            if candidate is None:
                 # No new message from them -- but the thread may be carrying a
                 # bounce, which get_latest_reply_with_history() filters out
                 # (it only surfaces messages sent by the contact themselves).
@@ -84,7 +100,7 @@ def check_for_replies(account):
             # reviewed thread -- which on a fast queue is one duplicate reply to
             # a prospect.
             if reviews_db.find_review_id(
-                account["id"], thread_id, message_id, reply_text
+                account["id"], thread_id, candidate["message_id"], candidate["text"]
             ) is not None:
                 continue
 
@@ -94,18 +110,74 @@ def check_for_replies(account):
             # find the two new sentences inside 20KB of '>' lines. strip_quoted
             # keeps inline replies whole -- it trims the tail, never cuts at the
             # first marker -- so an answer woven between quoted lines survives.
-            reply_body = gmail.strip_quoted(reply_text)
+            reply_body = gmail.strip_quoted(candidate["text"])
+
+            if candidate["answered_elsewhere"]:
+                # The operator already replied from Gmail directly, before
+                # this poll ran -- nothing to draft or send. Queued for
+                # visibility only: worth knowing, not worth notifying on (no
+                # notification path exists yet regardless -- that's Phase 2).
+                review_id = reviews_db.add_review(
+                    account["id"], row_index, name, email, thread_id, reply_body, "",
+                    gmail_message_id=candidate["message_id"], status="answered_elsewhere",
+                    degraded_classification=degraded,
+                )
+                new_reviews.append(reviews_db.get_review(account["id"], review_id))
+                print(f"{name or email} already answered elsewhere; queued for visibility only.")
+                try:
+                    sheets.update_row(account, row_index, status="Replied", expect_email=email)
+                except Exception as e:
+                    row_errors.append(
+                        f"{name or email}: already-answered reply noted, but marking "
+                        f"the sheet 'Replied' failed: {e}"
+                    )
+                continue
+
+            if candidate["kind"] == "off_sheet":
+                # Not drafted here. This is the least-trusted input the system
+                # sees -- nobody vetted this address the way a sheet contact
+                # was vetted -- so it waits for a human to confirm the sender
+                # before an LLM ever sees it (drafting happens in the
+                # confirm-sender endpoint, server.py). email is the *observed*
+                # sender, not the sheet's contact address, since that's who a
+                # reply actually has to reach.
+                review_id = reviews_db.add_review(
+                    account["id"], row_index, name, candidate["from_addr"], thread_id,
+                    reply_body, "", gmail_message_id=candidate["message_id"],
+                    status="flagged", degraded_classification=degraded,
+                )
+                new_reviews.append(reviews_db.get_review(account["id"], review_id))
+                print(f"Off-sheet reply from {candidate['from_addr']} on {name or email}'s "
+                      "thread, flagged for sender confirmation.")
+                try:
+                    sheets.update_row(account, row_index, status="Replied", expect_email=email)
+                except Exception as e:
+                    row_errors.append(
+                        f"{name or email}: off-sheet reply flagged for review, but "
+                        f"marking the sheet 'Replied' failed: {e}"
+                    )
+                continue
 
             company = row[sheets.COL_COMPANY].strip()
             # A failed draft must not cost the notification. Every provider
-            # being down, or an exhausted free-tier daily quota, is a bad
-            # afternoon for the drafting feature and nothing at all to do with
-            # whether a prospect wrote back -- but if the exception escapes
-            # here, add_review never runs, no review row exists, and the
-            # operator is never told. The reply is the product; the draft is a
+            # being down, an exhausted free-tier daily quota, or this
+            # account's own reply-draft plan quota, is a bad afternoon for the
+            # drafting feature and nothing at all to do with whether a
+            # prospect wrote back -- but if the exception escapes here,
+            # add_review never runs, no review row exists, and the operator is
+            # never told. The reply is the product; the draft is a
             # convenience. Queue it empty and let them write their own.
             try:
-                draft = agent.draft_reply(account, name, company, reply_body, history)
+                plans.check(account, usage.UNIT_DRAFT_REPLY)
+                draft = agent.draft_reply(account, name, company, reply_body, candidate["history"])
+            except plans.QuotaExceeded as e:
+                # Its own branch, not the generic one below: str(e) is the
+                # rich, plan-specific upgrade-path message ("a quota refusal
+                # is a sales moment" -- plans.py), and folding it into the
+                # generic "drafting a response failed" wrapper would bury it.
+                draft = ""
+                row_errors.append(f"{name or email}: {e}")
+                print(f"Reply-draft quota hit for {name or email}, queueing the reply undrafted: {e}")
             except Exception as e:
                 draft = ""
                 row_errors.append(
@@ -121,7 +193,7 @@ def check_for_replies(account):
             # call every 100s because add_review never runs.)
             review_id = reviews_db.add_review(
                 account["id"], row_index, name, email, thread_id, reply_body, draft,
-                gmail_message_id=message_id,
+                gmail_message_id=candidate["message_id"], degraded_classification=degraded,
             )
             new_reviews.append(reviews_db.get_review(account["id"], review_id))
             print(f"Reply detected from {name}, queued for review in the app.")
@@ -140,22 +212,118 @@ def check_for_replies(account):
     return {"reviews": new_reviews, "row_errors": row_errors, "bounces": new_bounces}
 
 
+def run_all_accounts(accounts=None, write_heartbeat=True):
+    """Walks every eligible account once, sequentially -- never concurrently.
+    A ThreadPoolExecutor across accounts (the pattern send_outreach.py uses
+    for outreach sends) would be exactly the fan-out this is meant to avoid.
+
+    accounts defaults to every account with a configured sheet
+    (accounts_db.list_accounts_with_a_sheet -- deliberately not also
+    filtered on google_token; see that function's docstring for why a
+    token-based exclusion would freeze the very observability this loop is
+    supposed to provide). Pass an explicit list to restrict a run to
+    specific accounts, as main()'s single-account debug mode does.
+
+    write_heartbeat is False for that debug mode: a one-off manual run
+    against one account must not overwrite worker_heartbeat_at and forge
+    the "the continuous worker is alive for this account" signal.
+
+    Returns a summary dict; also prints one line per account plus a
+    cycle-level summary, so a glance at the log answers "did the last cycle
+    run" without correlating per-account lines by hand."""
+    started = time.monotonic()
+    if accounts is None:
+        try:
+            accounts = accounts_db.list_accounts_with_a_sheet()
+        except Exception as e:
+            print(f"Could not list accounts for this reply-watch cycle: {e}")
+            return {"checked": 0, "skipped_no_token": 0, "failed": 0, "elapsed": 0.0}
+
+    checked = skipped_no_token = failed = 0
+    for i, account in enumerate(accounts):
+        account_id = account["id"]
+        label = account.get("email") or account_id
+
+        if not account.get("google_token"):
+            # Skip the Gmail work, not the account: an account stays in
+            # rotation with a fresh heartbeat and a specific, actionable
+            # last_error, rather than silently dropping out of the list the
+            # moment its token dies (Testing-mode tokens do, on their own,
+            # every 7 days -- the normal lifecycle of every account today).
+            skipped_no_token += 1
+            if write_heartbeat:
+                accounts_db.set_worker_heartbeat(
+                    account_id, error="Google disconnected — reconnect in Settings"
+                )
+            print(f"{label}: no Google connection, skipped this cycle.")
+        else:
+            try:
+                result = usage.run_as(account_id, check_for_replies, account)
+                checked += 1
+                if write_heartbeat:
+                    accounts_db.set_worker_heartbeat(account_id, error=None)
+                print(
+                    f"{label}: {len(result['reviews'])} review(s), "
+                    f"{len(result['row_errors'])} row error(s), "
+                    f"{len(result['bounces'])} bounce(s)."
+                )
+            except Exception as e:
+                # One account's failure must not stop the loop -- the whole
+                # point of this phase. check_for_replies already isolates
+                # per row; this is the same discipline one level up, for
+                # whatever can still fail before or around that loop
+                # (a revoked token discovered mid-cycle, a deleted sheet).
+                failed += 1
+                if write_heartbeat:
+                    accounts_db.set_worker_heartbeat(account_id, error=str(e))
+                print(f"{label}: reply check failed for the whole account: {e}")
+
+        if i < len(accounts) - 1:
+            time.sleep(INTER_ACCOUNT_DELAY_SECONDS)
+
+    elapsed = time.monotonic() - started
+    print(
+        f"Cycle done: {checked} checked, {skipped_no_token} skipped (no Google "
+        f"connection), {failed} failed, {elapsed:.1f}s elapsed."
+    )
+    if elapsed > CHECK_INTERVAL_MINUTES * 60:
+        # schedule doesn't overlap runs, it just starts the next one late --
+        # without this warning, detection latency quietly grows with the
+        # only symptom being "replies take longer to show up," discovered by
+        # a customer instead of a log line. And the fix at that point is not
+        # a shorter INTER_ACCOUNT_DELAY_SECONDS: if a cycle is already this
+        # slow anywhere near today's account count, the sequential
+        # single-process model itself is wrong for that count, and the real
+        # fix is sharding accounts across more than one worker or
+        # reintroducing concurrency with real per-account rate limiting.
+        print(
+            f"WARNING: this cycle took {elapsed:.1f}s, longer than the "
+            f"{CHECK_INTERVAL_MINUTES}-minute interval between cycles."
+        )
+    return {"checked": checked, "skipped_no_token": skipped_no_token, "failed": failed, "elapsed": elapsed}
+
+
 def main():
     args = [a for a in sys.argv[1:] if a != "--once"]
-    if not args:
-        sys.exit("Usage: python watch_replies.py <account-email> [--once]")
-    account = accounts_db.get_account_by_email(args[0])
-    if not account:
-        sys.exit(f"No account found for {args[0]}")
-    usage.set_account(account["id"])
+    once = "--once" in sys.argv
 
-    if "--once" in sys.argv:
-        check_for_replies(account)
+    if args:
+        account = accounts_db.get_account_by_email(args[0])
+        if not account:
+            sys.exit(f"No account found for {args[0]}")
+        run = lambda: run_all_accounts(accounts=[account], write_heartbeat=False)
+        label = f"{args[0]} only (debug mode -- no heartbeat written)"
+    else:
+        run = run_all_accounts
+        label = "every connected account"
+
+    if once:
+        run()
         return
 
-    schedule.every(CHECK_INTERVAL_MINUTES).minutes.do(check_for_replies, account)
-    print(f"Watching for replies every {CHECK_INTERVAL_MINUTES} minutes. Ctrl+C to stop.")
-    check_for_replies(account)
+    schedule.every(CHECK_INTERVAL_MINUTES).minutes.do(run)
+    print(f"Watching {label} every {CHECK_INTERVAL_MINUTES} minutes. Ctrl+C to stop.")
+    run()
     while True:
         schedule.run_pending()
         time.sleep(1)

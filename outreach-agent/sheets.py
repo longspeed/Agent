@@ -245,18 +245,36 @@ def require_full_header(account):
         )
 
 
+_EMAIL_COL_LETTER = chr(ord("A") + COL_EMAIL)
+
+
 def _verify_row_index(account, row_index, expect_email):
     """Guards status writes against stale row indexes. Row numbers are
     captured when the sheet is read; if the owner sorts or inserts rows
     before the write lands, the index now points at a different contact and
-    the write would corrupt their row. Re-reads the sheet: if the expected
-    email still lives at row_index, use it; if it moved, follow it; if it's
-    gone, fail loudly rather than write into the wrong row."""
+    the write would corrupt their row. If the expected email still lives at
+    row_index, use it; if it moved, follow it; if it's gone, fail loudly
+    rather than write into the wrong row.
+
+    Fast path first: read just the one email cell at row_index. In the
+    overwhelmingly common case -- nothing moved -- that's one cell instead of
+    the whole sheet (get_all_rows, range A:I), which matters once this runs
+    continuously for every account rather than occasionally for one. Only
+    falls through to the full scan when the fast path doesn't confirm the
+    row is still there, and that fallback is byte-for-byte the same
+    follow-or-fail logic as before."""
     wanted = expect_email.strip().lower()
+
+    result = (
+        _get_service(account).spreadsheets().values()
+        .get(spreadsheetId=_sheet_id(account), range=f"{_EMAIL_COL_LETTER}{row_index}")
+        .execute()
+    )
+    values = result.get("values", [])
+    if values and values[0] and values[0][0].strip().lower() == wanted:
+        return row_index
+
     rows = get_all_rows(account)
-    for idx, row in rows:
-        if idx == row_index and row[COL_EMAIL].strip().lower() == wanted:
-            return row_index
     for idx, row in rows:
         if row[COL_EMAIL].strip().lower() == wanted:
             return idx

@@ -137,8 +137,18 @@ def strip_quoted(text):
 
 
 def get_latest_reply(account, thread_id, contact_email):
-    reply, _, _ = get_latest_reply_with_history(account, thread_id, contact_email)
-    return reply
+    """Only caller: server.py's check_single_reply, a per-row, on-demand
+    "has this replied yet" check triggered by a single user action -- never
+    a loop over a campaign's rows. get_own_addresses costs one or two extra
+    Gmail API calls (profile, Send-As list) on every call here; deliberately
+    not cached, since this is a one-shot interactive action, not the
+    per-account, per-cycle polling loop in watch_replies.py where that cost
+    would actually add up. If a caller ever iterates rows through this
+    function instead, the same own_addresses lookup should move out to be
+    fetched once, the way check_for_replies already does it."""
+    own_addresses, _ = get_own_addresses(account)
+    result = get_latest_reply_with_history(account, thread_id, contact_email, own_addresses)
+    return result["text"] if result else None
 
 
 def get_thread(account, thread_id):
@@ -148,51 +158,186 @@ def get_thread(account, thread_id):
     return service.users().threads().get(userId="me", id=thread_id, format="full").execute()
 
 
-def get_latest_reply_with_history(account, thread_id, contact_email, thread=None):
-    """Returns (reply_text, history, message_id) where reply_text is the body of
-    the newest message in the thread when it was sent by the contact we emailed
-    -- whether that's their first reply to our outreach or a follow-up later in
-    an ongoing thread -- otherwise (None, [], None). history covers every earlier
-    message on the thread, oldest first, as (from_contact, body) pairs, so a
-    reply can be drafted against the whole conversation rather than just the
-    original outreach.
+_warned_degraded_own_addresses = False
 
-    message_id is Gmail's own id for the message reply_text came from. It is
-    the dedupe key the review queue is built on -- see reviews_db.find_review_id
-    for why the body text cannot be.
 
-    A "Replied" row stays in the reply-check scope so later messages on the
-    same thread keep getting picked up. To tell a genuine reply apart from our
-    own answer, we match the newest message's From address against the
-    contact's known email rather than relying on Gmail's SENT label: when the
-    replies are produced from the same mailbox that runs outreach (e.g. a
-    Send-As alias, common while testing), a real inbound reply still carries
-    the SENT label, so keying on SENT silently drops it. The sender address is
-    unambiguous -- our replies come from the connected account, theirs come
-    from the address we reached out to.
+def get_own_addresses(account):
+    """Returns (addresses, degraded) -- every address this account may
+    legitimately send from: the primary Gmail address plus every verified
+    Send-As alias. Needed to tell "our own message" apart from "off-sheet
+    stranger" when scanning a whole thread instead of just its newest message.
+
+    Not just the primary address: replies sent via a Send-As alias are common
+    while testing (see get_latest_reply_with_history), and matching against a
+    single address would flag the operator's own alias replies as an
+    unconfirmed stranger, asking them to confirm whether their own email is
+    really them.
+
+    degraded is True when the Send-As listing call failed and this fell back
+    to just the primary address -- callers must not treat that silently the
+    same as a healthy lookup, since it under-recognizes "ours" and can
+    reintroduce the exact alias-misclassification this function exists to
+    prevent."""
+    global _warned_degraded_own_addresses
+    service = _get_service(account)
+    profile = service.users().getProfile(userId="me").execute()
+    primary = (profile.get("emailAddress") or "").strip().lower()
+    addresses = {primary} if primary else set()
+    try:
+        send_as = service.users().settings().sendAs().list(userId="me").execute()
+    except Exception as e:
+        if not _warned_degraded_own_addresses:
+            _warned_degraded_own_addresses = True
+            print(
+                f"WARNING: could not list Send-As aliases ({e}); reply detection "
+                "will treat any alias other than the primary address as a "
+                "stranger until this succeeds again."
+            )
+        return addresses, True
+    for entry in send_as.get("sendAs", []):
+        email = (entry.get("sendAsEmail") or "").strip().lower()
+        if email and entry.get("verificationStatus", "accepted") == "accepted":
+            addresses.add(email)
+    return addresses, False
+
+
+_BOUNCE_CONTENT_TYPE_HINT = "report-type=delivery-status"
+
+
+def _classify_message(headers, own_addresses, target_email):
+    """(kind) for one message, in precedence order: "ours" (From is one of
+    our own addresses), "daemon" (bounce/delivery-status sender), "auto_responder"
+    (RFC 3834 Auto-Submitted), "match" (From is target_email), or "other".
+
+    Shared by get_latest_reply_with_history and get_history_before so both
+    agree on what counts as "from the contact" by construction rather than by
+    each re-deriving a similar-looking rule -- an auto-responder whose From
+    equals target_email is exactly the case two independently-written
+    versions of this check could silently disagree on."""
+    from_addr = parseaddr(_header(headers, "From"))[1].strip().lower()
+    if own_addresses and from_addr in own_addresses:
+        return "ours"
+    content_type = _header(headers, "Content-Type").lower().replace(" ", "")
+    if _BOUNCE_CONTENT_TYPE_HINT in content_type or any(
+        hint in from_addr for hint in _BOUNCE_SENDER_HINTS
+    ):
+        return "daemon"
+    auto_submitted = _header(headers, "Auto-Submitted").strip().lower()
+    if auto_submitted and auto_submitted != "no":
+        return "auto_responder"
+    if target_email and from_addr == target_email.strip().lower():
+        return "match"
+    return "other"
+
+
+def get_latest_reply_with_history(account, thread_id, contact_email, own_addresses, thread=None):
+    """Returns None, or a dict describing the newest message on this thread
+    that might be new information from the contact:
+
+        {"text", "history", "message_id", "kind", "answered_elsewhere", "from_addr"}
+
+    kind is "on_sheet" (From matches contact_email) or "off_sheet" (anyone
+    else -- an assistant, an alias, a stranger). text is the message body.
+    history covers every earlier message, oldest first, as (from_contact,
+    body) pairs -- from_contact is only True for "on_sheet" messages, so an
+    off-sheet stranger is never silently relabeled as "the contact" in what
+    the LLM sees. message_id is Gmail's own id for the message text came
+    from -- the dedupe key the review queue is built on (see
+    reviews_db.find_review_id). from_addr is the observed sender's address.
+
+    answered_elsewhere is True when a message from one of our own addresses
+    (own_addresses, see get_own_addresses) postdates the candidate -- the
+    operator already replied from Gmail directly before this poll ran, so the
+    contact's message is surfaced for visibility rather than drafted again.
+
+    Messages are classified in precedence order (see _classify_message):
+    our own messages and bounce/delivery-status daemons are never candidates
+    (a daemon message must stay invisible here or find_bounce, gated on "no
+    reply found", never runs and bounce suppression dies silently); RFC 3834
+    auto-responders are skipped entirely -- no review, no draft, no
+    sheet-status change. The newest remaining message (scanning newest to
+    oldest) is the candidate; "ours" messages are skipped over rather than
+    treated as a stop condition, since a genuine reply can sit behind a later
+    message we sent.
 
     thread accepts an already-fetched thread (see get_thread) so the caller can
     share one read with find_bounce."""
     thread = thread if thread is not None else get_thread(account, thread_id)
     messages = thread.get("messages", [])
     if len(messages) < 2:
-        return None, [], None
+        return None
 
-    def _from_addr(msg):
-        return parseaddr(_header(msg["payload"]["headers"], "From"))[1].strip().lower()
-
-    latest = messages[-1]
-    contact_addr = _from_addr(latest)
-    if contact_email and contact_addr != contact_email.strip().lower():
-        # The newest message is our own reply (or someone other than the
-        # contact) -- nothing new from them to review until they write back.
-        return None, [], None
-
-    history = [
-        (_from_addr(m) == contact_addr, _extract_body(m["payload"]).strip())
-        for m in messages[:-1]
+    kinds = [
+        _classify_message(m["payload"]["headers"], own_addresses, contact_email)
+        for m in messages
     ]
-    return _extract_body(latest["payload"]).strip(), history, latest.get("id")
+
+    candidate_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if kinds[i] in ("match", "other"):
+            candidate_idx = i
+            break
+    if candidate_idx is None:
+        return None
+
+    answered_elsewhere = any(k == "ours" for k in kinds[candidate_idx + 1:])
+    candidate = messages[candidate_idx]
+    from_addr = parseaddr(_header(candidate["payload"]["headers"], "From"))[1].strip().lower()
+    # Labelled against the CANDIDATE's own address, not contact_email: for an
+    # on_sheet candidate these are the same thing, but for an off_sheet one
+    # they are not, and get_history_before -- called later at confirm time
+    # with review["email"] (the observed sender) as its target -- has to
+    # agree with what was built here. Labelling against contact_email instead
+    # would mark an off-sheet sender's own earlier messages on the thread as
+    # "not from them," which is wrong on its own terms and would silently
+    # diverge from the history get_history_before rebuilds after confirmation.
+    history = [
+        (
+            parseaddr(_header(messages[i]["payload"]["headers"], "From"))[1].strip().lower() == from_addr,
+            _extract_body(messages[i]["payload"]).strip(),
+        )
+        for i in range(candidate_idx)
+    ]
+    return {
+        "text": _extract_body(candidate["payload"]).strip(),
+        "history": history,
+        "message_id": candidate.get("id"),
+        "kind": "on_sheet" if kinds[candidate_idx] == "match" else "off_sheet",
+        "answered_elsewhere": answered_elsewhere,
+        "from_addr": from_addr,
+    }
+
+
+def get_history_before(account, thread_id, message_id, contact_email, own_addresses, thread=None):
+    """(from_contact, body) pairs for every message strictly before message_id
+    on the thread, oldest first -- the same shape get_latest_reply_with_history
+    builds inline, but rebuildable on its own for a message that was queued as
+    a review without its history ever being stored (an off-sheet "flagged"
+    review defers drafting to confirm time, see watch_replies.py).
+
+    contact_email must be the OBSERVED sender of the message at message_id --
+    the review row's `email` column, which for a flagged review is the
+    off-sheet address, not the sheet's original contact -- because
+    get_latest_reply_with_history now labels its own inline history against
+    that candidate's own From address, not the sheet's contact_email. Passing
+    the sheet's contact_email here for a flagged review would silently
+    rebuild a different history than the one detection would have built:
+    an off-sheet sender's own earlier messages would be mislabelled as "not
+    from them."
+
+    Uses the same _classify_message as get_latest_reply_with_history, with
+    that target, so "from_contact" means exactly the same thing in both
+    places -- computing it independently here would risk the two disagreeing
+    on an edge case like an auto-responder whose From equals the target."""
+    thread = thread if thread is not None else get_thread(account, thread_id)
+    messages = thread.get("messages", [])
+    history = []
+    for m in messages:
+        if m.get("id") == message_id:
+            break
+        kind = _classify_message(m["payload"]["headers"], own_addresses, contact_email)
+        history.append((kind == "match", _extract_body(m["payload"]).strip()))
+    return history
 
 
 _BOUNCE_SENDER_HINTS = ("mailer-daemon", "postmaster")

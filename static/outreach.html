@@ -601,6 +601,15 @@
     }
   });
 
+  function reviewNote(text, color) {
+    const note = document.createElement('div');
+    note.className = 'text-xs rounded-lg px-3 py-2 mb-3';
+    note.style.background = 'var(--bg-floating)';
+    note.style.color = color || 'var(--text-muted)';
+    note.textContent = text;
+    return note;
+  }
+
   function renderReview(r) {
     const tpl = document.getElementById('review-card-template').content.cloneNode(true);
     const card = tpl.querySelector('.review-card');
@@ -610,32 +619,86 @@
     tpl.querySelector('.rc-customer-reply').textContent = r.customer_reply || '';
     tpl.querySelector('.rc-draft').value = r.draft_reply || '';
 
+    const badgeEl = tpl.querySelector('.badge');
     const sendBtn = tpl.querySelector('.rc-send');
     const dismissBtn = tpl.querySelector('.rc-dismiss');
     const statusEl = tpl.querySelector('.rc-status');
-    sendBtn.addEventListener('click', async () => {
-      sendBtn.disabled = true;
-      dismissBtn.disabled = true;
-      sendBtn.textContent = 'Sending…';
-      try {
-        const res = await fetch(`/api/outreach/replies/${r.id}/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: card.querySelector('.rc-draft').value }),
-        });
-        if (!res.ok) throw new Error('Failed');
-        statusEl.textContent = 'Sent ✓';
-        card.style.opacity = '0.5';
-        sendBtn.textContent = 'Sent';
-        setTimeout(() => { card.remove(); updateReviewCount(); }, 900);
-      } catch (e) {
-        sendBtn.disabled = false;
-        dismissBtn.disabled = false;
-        sendBtn.textContent = 'Send reply';
-        statusEl.style.color = 'var(--accent)';
-        statusEl.textContent = 'Failed to send — try again';
-      }
-    });
+    const draftWrapper = tpl.querySelector('.rc-draft').closest('.mb-4');
+    const replyWrapper = tpl.querySelector('.rc-customer-reply').closest('.mb-4');
+
+    if (r.status === 'flagged') {
+      badgeEl.textContent = 'Confirm sender';
+      badgeEl.style.background = 'var(--gold-dim)';
+      badgeEl.style.color = 'var(--gold)';
+      draftWrapper.style.display = 'none';
+      replyWrapper.parentNode.insertBefore(
+        reviewNote(`This reply came from ${r.email}, a different address than your sheet contact.`, 'var(--gold)'),
+        replyWrapper
+      );
+      sendBtn.textContent = "Confirm it's them";
+      sendBtn.addEventListener('click', async () => {
+        sendBtn.disabled = true;
+        dismissBtn.disabled = true;
+        sendBtn.textContent = 'Confirming…';
+        try {
+          const { job_id } = await fetch(`/api/outreach/replies/${r.id}/confirm-sender`, { method: 'POST' }).then(res => res.json());
+          const job = await pollJob(job_id);
+          if (job.status === 'error') throw new Error(job.error);
+          if (job.result && job.result.warning) {
+            statusEl.style.color = 'var(--accent)';
+            statusEl.textContent = job.result.warning;
+          }
+          await loadReviews();
+        } catch (e) {
+          sendBtn.disabled = false;
+          dismissBtn.disabled = false;
+          sendBtn.textContent = "Confirm it's them";
+          statusEl.style.color = 'var(--accent)';
+          statusEl.textContent = e.message || 'Failed to confirm — try again';
+        }
+      });
+    } else if (r.status === 'answered_elsewhere') {
+      badgeEl.textContent = 'Already answered';
+      badgeEl.style.background = 'var(--steel-dim)';
+      badgeEl.style.color = 'var(--steel)';
+      draftWrapper.style.display = 'none';
+      sendBtn.style.display = 'none';
+      replyWrapper.parentNode.insertBefore(
+        reviewNote('You already replied to this from Gmail — nothing to send.'),
+        replyWrapper
+      );
+    } else {
+      sendBtn.addEventListener('click', async () => {
+        sendBtn.disabled = true;
+        dismissBtn.disabled = true;
+        sendBtn.textContent = 'Sending…';
+        try {
+          const res = await fetch(`/api/outreach/replies/${r.id}/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: card.querySelector('.rc-draft').value }),
+          });
+          if (!res.ok) throw new Error('Failed');
+          statusEl.textContent = 'Sent ✓';
+          card.style.opacity = '0.5';
+          sendBtn.textContent = 'Sent';
+          setTimeout(() => { card.remove(); updateReviewCount(); }, 900);
+        } catch (e) {
+          sendBtn.disabled = false;
+          dismissBtn.disabled = false;
+          sendBtn.textContent = 'Send reply';
+          statusEl.style.color = 'var(--accent)';
+          statusEl.textContent = 'Failed to send — try again';
+        }
+      });
+    }
+
+    if (r.degraded_classification) {
+      replyWrapper.parentNode.insertBefore(
+        reviewNote('Sender verification was incomplete when this was detected — double-check before sending.', 'var(--accent)'),
+        replyWrapper
+      );
+    }
 
     dismissBtn.addEventListener('click', async () => {
       if (!confirm('Dismiss this review without sending a reply? Use this to clear a duplicate or a reply you\'ve already handled elsewhere.')) return;

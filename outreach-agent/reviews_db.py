@@ -76,7 +76,8 @@ def find_review_id(account_id, thread_id, gmail_message_id, customer_reply=None)
 
 
 def add_review(account_id, row_index, name, email, thread_id, customer_reply,
-               draft_reply, gmail_message_id=None):
+               draft_reply, gmail_message_id=None, status="pending",
+               degraded_classification=False):
     # Two layers, deliberately. This check-then-insert closes the realistic
     # overlapping-job case (the auto-poll firing while a previous check is still
     # in flight, both reads catching the same message before either write lands)
@@ -106,15 +107,44 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply,
         # without this the edit pair is destroyed at send time and cannot be
         # reconstructed. Written once, never updated.
         #
-        # When drafting moves off the detection thread, the review is inserted
-        # with no draft and this stays empty until the drafting pass attaches
-        # one; that pass writes draft_reply and original_draft_reply together,
-        # for the same reason.
-        "original_draft_reply": draft_reply,
+        # None, not "", when there is no draft (drafting failed, or -- for a
+        # flagged review -- was never attempted): Phase 6's edit-diff learning
+        # reads this column against what the operator actually sent, and ("",
+        # "the operator's entire hand-written reply") reads as "the model's
+        # output should be replaced wholesale" rather than "the model wrote
+        # nothing, this pair teaches nothing."
+        "original_draft_reply": draft_reply or None,
         "gmail_message_id": gmail_message_id,
-        "status": "pending",
+        "status": status,
+        "degraded_classification": degraded_classification,
     }).execute()
     return result.data[0]["id"]
+
+
+def confirm_sender(account_id, review_id, draft_reply=""):
+    """Promotes a flagged (off-sheet sender) review to pending once the
+    operator has confirmed the observed sender really is (or represents) the
+    contact -- drafting is deferred to this point (see watch_replies.py), so
+    this is also where the draft the operator will see gets attached.
+
+    Scoped to `status = flagged` so this can never resurrect a review that
+    has since been sent or dismissed. Returns whether a row actually matched
+    -- callers must check this, since a review dismissed while a draft was
+    being generated is a real, not-corrupting outcome: nothing to attach the
+    draft to."""
+    result = (
+        _get_client().table(TABLE)
+        .update({
+            "status": "pending",
+            "draft_reply": draft_reply,
+            "original_draft_reply": draft_reply or None,
+        })
+        .eq("account_id", account_id)
+        .eq("id", review_id)
+        .eq("status", "flagged")
+        .execute()
+    )
+    return bool(result.data)
 
 
 # Which statuses the operator is meant to SEE, and which they may ACT on.
@@ -140,10 +170,14 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply,
 #                                                replaced it.
 #   sent / dismissed    HIDDEN                -- handled.
 #
-# Only "pending" exists today. The rest arrive with sender classification; they
-# are listed here now so that lands as a data change rather than a redesign of
-# every query and endpoint that touches a review.
-VISIBLE_STATUSES = ("pending",)
+# "drafting" and "superseded" are not produced yet (drafting: everything
+# still drafts synchronously at detection time except the flagged case below,
+# which skips straight to a review with no draft rather than a distinct
+# hidden state; superseded: no code path marks an older review superseded by
+# a newer one on the same thread today). Listed above so their eventual
+# arrival is a data change, not a redesign of every query and endpoint that
+# touches a review.
+VISIBLE_STATUSES = ("pending", "flagged", "answered_elsewhere")
 SENDABLE_STATUSES = ("pending",)
 
 

@@ -929,6 +929,13 @@ def send_reply(request: Request, review_id: int, payload: SendReplyBody):
     # detector rework exists to prevent.
     if not review or review["status"] not in reviews_db.SENDABLE_STATUSES:
         raise HTTPException(status_code=404, detail="Review not found or already handled")
+    # review["email"] is the sheet contact's address for a normal reply, or
+    # the observed off-sheet sender's for a confirmed flagged one -- either
+    # way, the address a reply is actually about to reach. Unlike
+    # _guard_draft_send's outreach-send check, nothing gated this path before
+    # today; an unsubscribed contact could still receive a reply.
+    if suppressions_db.is_suppressed(account["id"], review["email"]):
+        raise HTTPException(status_code=409, detail=f"{review['email']} has opted out; this reply won't be sent.")
 
     gmail.send_reply(account, review["thread_id"], review["email"], payload.body)
     reviews_db.mark_sent(account["id"], review_id, payload.body)
@@ -947,6 +954,65 @@ def dismiss_reply(request: Request, review_id: int):
 
     reviews_db.dismiss(account["id"], review_id)
     return {"ok": True}
+
+
+def _confirm_sender_job(account, review):
+    """Drafts a reply for a flagged (off-sheet sender) review and confirms it,
+    once the operator has looked at it and decided the sender is worth
+    replying to. Runs as a background job (see start_job below) because
+    agent.draft_reply carries the same retry loop and per-attempt timeout as
+    every other drafting call in this codebase -- worst case spans minutes,
+    and every other long-running agent action in this file already runs off
+    the request thread.
+
+    Re-checks the review's status first: a double-click, or the operator
+    dismissing the review while an earlier click's job is still running,
+    must not spend a quota check and an LLM call on a write that
+    confirm_sender's `status = flagged` scoping was always going to refuse."""
+    review = reviews_db.get_review(account["id"], review["id"])
+    if not review or review["status"] != "flagged":
+        return {"warning": "This review was handled elsewhere while confirming."}
+
+    rows = sheets.get_all_rows(account)
+    row = next((r for i, r in rows if i == review["row_index"]), None)
+    company = row[sheets.COL_COMPANY].strip() if row else ""
+    own_addresses, _ = gmail.get_own_addresses(account)
+    history = gmail.get_history_before(
+        account, review["thread_id"], review["gmail_message_id"], review["email"], own_addresses,
+    )
+
+    # Drafting failures are deliberately never fatal here: confirming the
+    # sender is a real, independent action the operator already took, and an
+    # LLM problem must not undo it. Same split as the on-sheet path in
+    # watch_replies.py -- QuotaExceeded gets its own branch so its rich,
+    # plan-specific message survives instead of being buried in a generic one.
+    warning = None
+    try:
+        plans.check(account, usage.UNIT_DRAFT_REPLY)
+        draft = agent.draft_reply(account, review["name"], company, review["customer_reply"], history)
+    except plans.QuotaExceeded as e:
+        draft = ""
+        warning = str(e)
+    except Exception as e:
+        draft = ""
+        warning = f"Confirmed, but drafting failed ({e}). Write the reply yourself."
+
+    confirmed = reviews_db.confirm_sender(account["id"], review["id"], draft_reply=draft)
+    if not confirmed:
+        # Dismissed (or otherwise moved off "flagged") between the re-check
+        # above and this write -- the draft just generated has nowhere to go.
+        return {"warning": "This review was handled elsewhere while confirming."}
+    return {"warning": warning}
+
+
+@app.post("/api/outreach/replies/{review_id}/confirm-sender", status_code=202)
+def confirm_reply_sender(request: Request, review_id: int):
+    account = _account(request)
+    review = reviews_db.get_review(account["id"], review_id)
+    if not review or review["status"] != "flagged":
+        raise HTTPException(status_code=404, detail="Review not found or already handled")
+
+    return {"job_id": start_job(account["id"], lambda: _confirm_sender_job(account, review))}
 
 
 # --- One-click opt-out (public, no session) -----------------------------------

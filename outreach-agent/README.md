@@ -75,6 +75,14 @@ create table public.accounts (
     -- pause again. Reads as 0 if absent, so an un-migrated database keeps the
     -- pre-acknowledgement behaviour instead of erroring.
     bounce_ack_count integer not null default 0,
+    -- Set by the background reply-watcher (watch_replies.py) once per
+    -- account per cycle, success or failure -- the only way to tell "the
+    -- worker is alive for this account" from "the worker is down" without
+    -- reading process logs. last_error is cleared (NULL) on a successful
+    -- check, so a set value always means "still true as of the heartbeat
+    -- above," not "happened once, ages ago."
+    worker_heartbeat_at timestamptz,
+    last_error text,
     created_at timestamptz not null default now()
 );
 
@@ -94,6 +102,12 @@ create table public.reviews (
     original_draft_reply text,
     status text not null default 'pending',
     gmail_message_id text,
+    -- True when the Send-As alias lookup behind sender classification failed
+    -- and fell back to just the primary address (see gmail.get_own_addresses).
+    -- A degraded lookup under-recognizes "ours", which can misclassify the
+    -- operator's own alias reply as a stranger -- this makes that visible on
+    -- the review card instead of only in a log.
+    degraded_classification boolean not null default false,
     created_at timestamptz not null default now()
 );
 create index reviews_account_status_idx on public.reviews (account_id, status);
@@ -318,17 +332,43 @@ The sheet needs this header row in its **first tab**:
 
 ### CLI (optional, per account)
 
-The batch scripts also run standalone, scoped to one account by email:
+`send_outreach.py` runs standalone, scoped to one account by email:
 
 ```
 python send_outreach.py you@company.com
-python watch_replies.py you@company.com --once
-python watch_replies.py you@company.com        # poll every 5 minutes
 ```
 
-When a customer replies, the account's notification email gets the reply plus
-an AI-drafted response. Review it in the dashboard and send it from there —
-this tool never sends replies automatically.
+### Background reply watcher
+
+`watch_replies.py` polls **every account with a configured sheet** in one
+process, sequentially, every 5 minutes:
+
+```
+python watch_replies.py --once   # one cycle across all accounts, then exit
+python watch_replies.py          # every 5 minutes, forever
+```
+
+To restrict a run to one account for debugging (no worker heartbeat is
+written in this mode, so it can't be mistaken for the real worker running):
+
+```
+python watch_replies.py you@company.com --once
+```
+
+For an always-on deployment, run it as its own service rather than a
+foreground process — see `deploy/agent-hub-worker.service` for a systemd
+unit template. It's independent of the `uvicorn` process: either can restart
+without affecting the other.
+
+Each account's `worker_heartbeat_at` and `last_error` columns record when the
+worker last looked at that account and what happened — a stale heartbeat
+means the worker isn't reaching that account (down, or stuck earlier in the
+loop); a fresh heartbeat with a `last_error` set means the worker is running
+fine but that account needs attention (most commonly "Google disconnected —
+reconnect in Settings", since Testing-mode OAuth tokens expire every 7 days).
+
+Reviewing a drafted reply still happens in the dashboard — this tool never
+sends replies automatically.
 
 ## Notes
 
