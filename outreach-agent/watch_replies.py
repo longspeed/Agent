@@ -194,6 +194,12 @@ def check_for_replies(account):
             review_id = reviews_db.add_review(
                 account["id"], row_index, name, email, thread_id, reply_body, draft,
                 gmail_message_id=candidate["message_id"], degraded_classification=degraded,
+                # draft_reply hands back its last attempt even when validation
+                # still fails, so record what was still wrong with it. The
+                # operator gets told why a draft is suspect instead of having to
+                # notice. Does not affect the lane -- a reply is full-text
+                # whatever this says.
+                validator_problems=agent.reply_problems(account, draft),
             )
             new_reviews.append(reviews_db.get_review(account["id"], review_id))
             print(f"Reply detected from {name}, queued for review in the app.")

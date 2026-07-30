@@ -97,6 +97,16 @@ _MIGRATED_COLUMNS = (
     ),
     (
         "reviews",
+        "validator_problems",
+        "a reply draft that failed validation twice is queued anyway (losing the "
+        "notification is worse), and without this column it looks identical to a "
+        "clean one -- the operator is never told which draft the validator "
+        "already objected to",
+        "alter table public.reviews add column if not exists "
+        "validator_problems text;",
+    ),
+    (
+        "reviews",
         "degraded_classification",
         "add_review's insert fails outright rather than degrading, so reply "
         "detection stops entirely -- not just the degraded-lookup marker this "
@@ -114,6 +124,25 @@ _MIGRATED_COLUMNS = (
         "alter table public.accounts add column if not exists "
         "worker_heartbeat_at timestamptz; "
         "alter table public.accounts add column if not exists last_error text;",
+    ),
+    (
+        "outreach_drafts",
+        "rewritten",
+        "mark_rewritten's best-effort write fails silently, so Phase 6's future "
+        "edit-diff corpus has no way to exclude a draft the model rewrote from "
+        "one the operator wrote by hand -- the send itself is unaffected either "
+        "way, since this write is deliberately separate from mark_sent",
+        "alter table public.outreach_drafts add column if not exists "
+        "rewritten boolean not null default false;",
+    ),
+    (
+        "reviews",
+        "rewritten",
+        "the same gap on the reply path: mark_rewritten fails silently, and "
+        "Phase 6 loses the ability to tell a model-rewritten reply from the "
+        "operator's own voice -- again, never affects whether the reply sends",
+        "alter table public.reviews add column if not exists "
+        "rewritten boolean not null default false;",
     ),
 )
 

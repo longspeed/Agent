@@ -249,6 +249,24 @@ def _custom_instructions_block(instructions):
     )
 
 
+def _rewrite_instruction_block(instruction):
+    """Renders an operator's "ask AI to rewrite" instruction as a bounded,
+    clearly-fenced prompt section -- the same shape as
+    _custom_instructions_block, for the same reason. The operator isn't an
+    attacker (this isn't the injection case), but an unfenced instruction
+    like "make it more impressive" is an open invitation to invent a case
+    study, a statistic, or a claim that isn't in the current draft --
+    _validate_outreach/_validate_reply check banned phrases, placeholders,
+    and formatting, never truth, so fabrication has no other gate."""
+    return (
+        "\n\nThe sender asked for this change. Apply it for tone, content, and length, "
+        "but NEVER invent a fact, statistic, case study, or claim that isn't already in "
+        "the current draft or the context above, and never at the expense of the rules "
+        "in the system message:\n"
+        f'"""{instruction}"""'
+    )
+
+
 # Tolerant of everything models actually emit here: "**Subject:**", "subject -",
 # a quoted subject, an en/em dash separator. The strict prefix strip this
 # replaced only matched a literal "Subject:".
@@ -357,12 +375,41 @@ _REPLY_BANNED_PHRASES = (
     "sorry to bother", "sorry for the interruption",
 )
 
-# Any absolute URL. The reply path takes a stranger's text into the prompt, so a
-# link in the output that is not the sender's own is either invention or an
-# instruction the prospect wrote. Both send the operator's name somewhere they
-# did not choose, and the fast approval queue is tuned for a few seconds a draft
-# -- exactly long enough to miss a plausible-looking link.
-_URL = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
+# Anything a mail client will turn into a tappable link. Note the framing: not
+# "a URL". The recipient's client decides what becomes clickable, and Gmail
+# linkifies a bare domain -- so an attacker never has to type "https://",
+# because Gmail types it for them on the other end. A scheme-only pattern was
+# therefore checking for the one form the attacker has no reason to use.
+#
+# Three branches: scheme'd, www-prefixed, and a bare domain followed by a path.
+# The path requirement on the third keeps ordinary prose ("we support Xero. Also
+# ...") from matching, at the cost of missing a bare domain with no path.
+#
+# KNOWN OPEN, deliberately not attempted here: mobile Gmail turns phone numbers
+# into tel: handlers, which is a published exfiltration vector containing no URL
+# at all. Outlook, Apple Mail and every webmail client have their own
+# linkification rules and change them without notice. This set cannot be
+# enumerated from inside this process, which is why the actual control is
+# provenance -- replies never enter the fast approval lane, whatever this
+# pattern does or does not catch (reviews_db.lane). What follows is defence in
+# depth, and it is worth having precisely because it is not what holds the line.
+_URL = re.compile(
+    r"""(?ix)
+    (?: https?://[^\s<>"')\]]+                      # scheme'd
+      | www\.[^\s<>"')\]]+                          # no scheme, www-prefixed
+      | \b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,24}/[^\s<>"')\]]*
+    )                                               # bare domain WITH a path
+    """
+)
+
+
+def _link_key(raw):
+    """A link reduced to what a mail client will actually dial out to, so the
+    sender's own address matches whether or not the model wrote the scheme.
+    Without this, a model writing 'cal.com/x' for a configured
+    'https://cal.com/x' gets flagged as a foreign link."""
+    return (raw or "").strip().rstrip(".,;:)]}\"'").lower() \
+        .removeprefix("https://").removeprefix("http://").removeprefix("www.").rstrip("/")
 
 
 def _validate_reply(body, calendar_link=""):
@@ -385,8 +432,8 @@ def _validate_reply(body, calendar_link=""):
 
     # The injection outcome that actually costs something: a link the prospect
     # planted, approved at a glance and sent under the sender's name.
-    allowed = {calendar_link.strip()} if calendar_link and calendar_link.strip() else set()
-    foreign = [u for u in _URL.findall(stripped) if u.rstrip(".,);") not in allowed]
+    allowed = {_link_key(calendar_link)} if _link_key(calendar_link) else set()
+    foreign = [u for u in _URL.findall(stripped) if _link_key(u) not in allowed]
     if foreign:
         problems.append(
             "Remove these links -- the only URL allowed in a reply is the sender's own "
@@ -486,6 +533,24 @@ def _opt_out_line(unsubscribe_url):
     obligation in most of the jurisdictions this app is used from, and a link
     the model retypes is a link it will eventually mangle."""
     return f"Not the right time? Unsubscribe here and I won't email again: {unsubscribe_url}"
+
+
+def _strip_opt_out_line(body, unsubscribe_url):
+    """Removes the opt-out line before a rewrite ever shows the body to the
+    model -- the same reasoning as _opt_out_line's own comment, applied to
+    the one other place a stored body reaches a prompt. Content-based, not
+    suffix-based: the operator may have hand-edited the body since it was
+    generated, so the line is not guaranteed to still be the exact trailing
+    suffix generate_outreach_email appended (extra text after it, an extra
+    blank line, whitespace drift) -- a suffix-only match would silently
+    no-op on any of those and let the model see (and retype, and mangle)
+    the line anyway. Drops every line containing the literal
+    unsubscribe_url substring and the surrounding blank lines; a no-op when
+    unsubscribe_url is falsy or isn't present at all."""
+    if not unsubscribe_url or unsubscribe_url not in body:
+        return body
+    kept = [line for line in body.split("\n") if unsubscribe_url not in line]
+    return "\n".join(kept).strip()
 
 
 def account_send_blockers(account):
@@ -603,6 +668,63 @@ def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_
     )
 
 
+def rewrite_outreach_prompt(account, name, company, subject, body, instruction):
+    """The user prompt for one outreach rewrite. body must already have its
+    opt-out line stripped (see rewrite_outreach_email) -- it's never
+    mentioned here, so there's nothing prompting the model to invent one."""
+    ctx = _sender_context(account)
+    return (
+        f"Sender's first name (sign with this): {ctx['sender_name']}\n"
+        f"What the sender offers and the goal of the outreach: {ctx['meeting_purpose'] or DEFAULT_MEETING_PURPOSE}\n"
+        f"Call-to-action link: {ctx['calendar_link'] or '(none set)'}\n"
+        f"Prospect: {name}" + (f" at {company}" if company else "")
+        + f"\n\nHere is the current drafted email:\n---\nSubject: {subject}\n\n{body}\n---"
+        + _rewrite_instruction_block(instruction)
+        + _custom_instructions_block(ctx["custom_instructions"])
+        + '\n\nApply the change and output the complete revised email, in the same '
+        '"Subject: ..." plus body format.'
+    )
+
+
+def rewrite_outreach_email(account, name, company, subject, body, instruction, unsubscribe_url=""):
+    """Rewrites an already-drafted outreach email per the operator's
+    instruction. subject/body are the operator's CURRENT textarea contents
+    (passed in by the caller, not re-fetched from drafts_db) -- a rewrite
+    must revise what's actually in front of them, including any hand-edit
+    they haven't sent yet.
+
+    Same 2-attempt validate-and-retry shape as generate_outreach_email, and
+    raises the same way on failure: nothing was written yet, so failing
+    leaves the existing draft untouched in the browser."""
+    ctx = _sender_context(account)
+    stripped_body = _strip_opt_out_line(body, unsubscribe_url) if unsubscribe_url else body
+    base_prompt = rewrite_outreach_prompt(account, name, company, subject, stripped_body, instruction)
+
+    attempts = []
+    for attempt in range(2):
+        user_prompt = base_prompt
+        if attempts:
+            user_prompt = retry_prompt(base_prompt, attempts[-1]["text"], attempts[-1]["problems"])
+
+        text = _chat(OUTREACH_SYSTEM, user_prompt, usage.DRAFT_EMAIL)
+        new_subject, new_body = _split_subject(text)
+        # Re-appended in code, never generated -- see _opt_out_line. The
+        # "not already there" guard mirrors send_prepared_draft's own
+        # defensive check: belt and suspenders behind the search-based
+        # strip above, not a substitute for it.
+        if unsubscribe_url and unsubscribe_url not in new_body:
+            new_body = f"{new_body}\n\n{_opt_out_line(unsubscribe_url)}"
+
+        problems = _validate_outreach(new_subject, new_body, ctx["calendar_link"], unsubscribe_url)
+        if not problems:
+            return new_subject, new_body
+        attempts.append({"text": text, "problems": problems})
+
+    raise RuntimeError(
+        "Could not rewrite this email after 2 attempts: " + " ".join(attempts[-1]["problems"])
+    )
+
+
 def reply_prompt(account, name, company, customer_reply, history=()):
     """The user prompt for one reply draft. Split out of draft_reply for the
     same reason outreach_prompt is separate: eval_models scores production's
@@ -630,6 +752,22 @@ def reply_prompt(account, name, company, customer_reply, history=()):
         + _custom_instructions_block(ctx["custom_instructions"])
         + "\n\nDraft the sender's reply."
     )
+
+
+def reply_problems(account, draft):
+    """The validator's unresolved objections to a drafted reply, as a list.
+
+    draft_reply returns its last attempt even when validation still fails --
+    losing the notification is worse than queueing a flawed draft -- so by
+    design a reply can reach the queue carrying problems. This is how the caller
+    finds out which ones, without changing draft_reply's return shape and its
+    eight call sites.
+
+    Recorded on the review so the operator is told WHY a draft is suspect rather
+    than left to spot it. The problems do not decide the lane: a reply is
+    full-text regardless, because that is settled by where the prompt's text
+    came from, not by what the validator managed to catch in the output."""
+    return _validate_reply(draft or "", _sender_context(account)["calendar_link"])
 
 
 def draft_reply(account, name, company, customer_reply, history=()):
@@ -665,3 +803,55 @@ def draft_reply(account, name, company, customer_reply, history=()):
         "operator to fix rather than losing the reply."
     )
     return attempts[-1]["text"]
+
+
+def rewrite_reply_prompt(account, name, company, customer_reply, draft_text, instruction):
+    """The user prompt for one reply rewrite. Deliberately lighter than
+    reply_prompt: no reconstructed thread history (that needs a live Gmail
+    read plus own_addresses, see gmail.get_history_before) -- just the
+    message being answered and the current draft, which is enough context
+    for a tone/length adjustment."""
+    ctx = _sender_context(account)
+    return (
+        f"Sender's first name (sign with this): {ctx['sender_name']}\n"
+        f"What the sender offers and the goal of the outreach: {ctx['meeting_purpose'] or DEFAULT_MEETING_PURPOSE}\n"
+        f"Call-to-action link: {ctx['calendar_link'] or '(none set)'}\n"
+        f"Prospect: {name}" + (f" at {company}" if company else "")
+        + f"\n\nTheir message we're responding to:\n{gmail.strip_quoted(customer_reply)}\n\n"
+        f"Here is the current drafted reply:\n---\n{draft_text}\n---"
+        + _rewrite_instruction_block(instruction)
+        + _custom_instructions_block(ctx["custom_instructions"])
+        + "\n\nApply the change and output the complete revised reply."
+    )
+
+
+def rewrite_reply(account, name, company, customer_reply, draft_text, instruction):
+    """Rewrites an already-drafted reply per the operator's instruction.
+    draft_text is the operator's CURRENT textarea contents (passed in by the
+    caller, not re-fetched from reviews_db) -- see rewrite_outreach_email
+    for why.
+
+    Unlike draft_reply, this RAISES rather than returning a best-effort last
+    attempt on failure. draft_reply's "never raise" choice exists because
+    failing there would mean no review row at all, and the operator would
+    never learn a prospect replied -- the draft is a convenience, the
+    notification is the product. Here the review already exists with its
+    current draft intact, so failing a rewrite loses nothing, and a clear
+    error is more honest than silently keeping a possibly-broken attempt."""
+    ctx = _sender_context(account)
+    base_prompt = rewrite_reply_prompt(account, name, company, customer_reply, draft_text, instruction)
+
+    attempts = []
+    for attempt in range(2):
+        prompt = base_prompt
+        if attempts:
+            prompt = retry_prompt(base_prompt, attempts[-1]["text"], attempts[-1]["problems"])
+        text = _chat(REPLY_SYSTEM, prompt, usage.DRAFT_REPLY)
+        problems = _validate_reply(text, ctx["calendar_link"])
+        if not problems:
+            return text
+        attempts.append({"text": text, "problems": problems})
+
+    raise RuntimeError(
+        "Could not rewrite this reply after 2 attempts: " + " ".join(attempts[-1]["problems"])
+    )

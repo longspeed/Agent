@@ -798,12 +798,20 @@ def prepare_campaigns(request: Request, payload: PrepareCampaignBody):
 
 @app.get("/api/outreach/drafts")
 def list_drafts(request: Request):
-    return drafts_db.list_pending_drafts(request.state.account_id)
+    # `lane` is decided server-side and sent down, rather than letting the
+    # frontend work it out. The rule is a safety property (see reviews_db.lane),
+    # and a rule the client re-derives is a rule that drifts from this one the
+    # first time either side changes.
+    drafts = drafts_db.list_pending_drafts(request.state.account_id)
+    for d in drafts:
+        d["lane"] = drafts_db.lane(d)
+    return drafts
 
 
 class SendDraftBody(BaseModel):
     subject: str
     body: str
+    rewritten: bool = False
 
 
 def _guard_draft_send(account: dict, draft: dict):
@@ -834,11 +842,42 @@ def send_draft(request: Request, draft_id: int, payload: SendDraftBody):
     # after Gmail accepts it -- doing it out here meant a failed sheet write threw
     # past this line and left the draft pending, i.e. queued to send again.
     result = send_outreach.send_prepared_draft(
-        account, draft, subject=payload.subject, body=payload.body
+        account, draft, subject=payload.subject, body=payload.body, rewritten=payload.rewritten
     )
     # 200, not an error: the email was delivered. Only the sheet needs a fix, and
     # returning this as a failure is what prompted an operator to click Send twice.
     return {"ok": True, "sheet_warning": result["sheet_error"]}
+
+
+class RewriteDraftBody(BaseModel):
+    subject: str
+    body: str
+    instruction: str
+
+
+@app.post("/api/outreach/drafts/{draft_id}/rewrite", status_code=202)
+def rewrite_draft(request: Request, draft_id: int, payload: RewriteDraftBody):
+    account = _account(request)
+    draft = drafts_db.get_draft(account["id"], draft_id)
+    if not draft or draft["status"] != "pending":
+        raise HTTPException(status_code=404, detail="Draft not found or already handled")
+    if not payload.instruction.strip():
+        raise HTTPException(status_code=400, detail="Tell the AI what to change.")
+    # Scoped per draft, not per account: an account-wide limit fails ordinary
+    # use (a batch of 25 drafts with one rewrite pass each is 25 calls against
+    # a shared counter), not just abuse. This bounds hammering ONE draft.
+    if not ratelimit.check(f"rewrite-draft:{account['id']}:{draft_id}", limit=10, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many rewrite requests for this draft. Try again later.")
+
+    def job():
+        unsub_url = auth.unsubscribe_url(account["id"], draft["email"])
+        subject, body = agent.rewrite_outreach_email(
+            account, draft["name"], draft["company"], payload.subject, payload.body,
+            payload.instruction, unsubscribe_url=unsub_url,
+        )
+        return {"subject": subject, "body": body}
+
+    return {"job_id": start_job(account["id"], job)}
 
 
 @app.post("/api/outreach/drafts/{draft_id}/discard")
@@ -892,7 +931,14 @@ def check_replies(request: Request):
 
 @app.get("/api/outreach/replies")
 def list_replies(request: Request):
-    return reviews_db.list_pending_reviews(request.state.account_id)
+    # Always "full". Sent explicitly anyway, so the fast-approval UI reads the
+    # lane off every item uniformly instead of carrying a rule like "replies are
+    # the ones you slow down for" -- a rule in the client is a rule that can be
+    # forgotten in a refactor, and this is the one that must not be.
+    reviews = reviews_db.list_pending_reviews(request.state.account_id)
+    for r in reviews:
+        r["lane"] = reviews_db.lane(r)
+    return reviews
 
 
 @app.post("/api/outreach/campaigns/{row}/check-reply")
@@ -915,6 +961,7 @@ def check_single_reply(request: Request, row: int):
 
 class SendReplyBody(BaseModel):
     body: str
+    rewritten: bool = False
 
 
 @app.post("/api/outreach/replies/{review_id}/send")
@@ -939,7 +986,40 @@ def send_reply(request: Request, review_id: int, payload: SendReplyBody):
 
     gmail.send_reply(account, review["thread_id"], review["email"], payload.body)
     reviews_db.mark_sent(account["id"], review_id, payload.body)
+    # Separate, best-effort -- never part of mark_sent's update. See
+    # reviews_db.mark_rewritten for why this must never be able to make that
+    # write (or this send) fail.
+    if payload.rewritten:
+        reviews_db.mark_rewritten(account["id"], review_id)
     return {"ok": True}
+
+
+class RewriteReplyBody(BaseModel):
+    body: str
+    instruction: str
+
+
+@app.post("/api/outreach/replies/{review_id}/rewrite", status_code=202)
+def rewrite_reply_draft(request: Request, review_id: int, payload: RewriteReplyBody):
+    account = _account(request)
+    review = reviews_db.get_review(account["id"], review_id)
+    # SENDABLE_STATUSES, not VISIBLE_STATUSES: excludes flagged (nothing
+    # drafted yet to adjust until the sender is confirmed) and
+    # answered_elsewhere (nothing to send).
+    if not review or review["status"] not in reviews_db.SENDABLE_STATUSES:
+        raise HTTPException(status_code=404, detail="Review not found or already handled")
+    if not payload.instruction.strip():
+        raise HTTPException(status_code=400, detail="Tell the AI what to change.")
+    if not ratelimit.check(f"rewrite-reply:{account['id']}:{review_id}", limit=10, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many rewrite requests for this reply. Try again later.")
+
+    def job():
+        body = agent.rewrite_reply(
+            account, review["name"], "", review["customer_reply"], payload.body, payload.instruction,
+        )
+        return {"body": body}
+
+    return {"job_id": start_job(account["id"], job)}
 
 
 @app.post("/api/outreach/replies/{review_id}/dismiss")
@@ -997,7 +1077,10 @@ def _confirm_sender_job(account, review):
         draft = ""
         warning = f"Confirmed, but drafting failed ({e}). Write the reply yourself."
 
-    confirmed = reviews_db.confirm_sender(account["id"], review["id"], draft_reply=draft)
+    confirmed = reviews_db.confirm_sender(
+        account["id"], review["id"], draft_reply=draft,
+        validator_problems=agent.reply_problems(account, draft),
+    )
     if not confirmed:
         # Dismissed (or otherwise moved off "flagged") between the re-check
         # above and this write -- the draft just generated has nowhere to go.

@@ -674,6 +674,33 @@ def test_confirm_sender_is_a_no_op_on_a_non_flagged_review():
         assert fake.rows[0]["status"] == status, "and must not touch it either"
 
 
+def test_reviews_mark_rewritten_writes_the_flag():
+    fake = _ReviewsTable(rows=[{"id": 9, "account_id": "a1", "rewritten": False}])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        reviews_db.mark_rewritten("a1", 9)
+    assert fake.rows[0]["rewritten"] is True
+
+
+def test_reviews_mark_rewritten_is_best_effort():
+    def boom():
+        raise RuntimeError("supabase down")
+    with patched(reviews_db, "_get_client", boom):
+        reviews_db.mark_rewritten("a1", 9)  # must not raise
+
+
+def test_reviews_mark_sent_does_not_touch_rewritten():
+    """Regression guard for the finding that shaped this design: mark_sent
+    is the durable record require_send_log-equivalent logic gates the whole
+    send on -- rewritten must never join that update. Seeded True (as if
+    mark_rewritten already ran) so an accidental "rewritten": False in
+    mark_sent's own update dict would flip it back and be caught here,
+    rather than trusting by convention that it was never added."""
+    fake = _ReviewsTable(rows=[{"id": 9, "account_id": "a1", "status": "pending", "rewritten": True}])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        reviews_db.mark_sent("a1", 9, "sent body")
+    assert fake.rows[0]["rewritten"] is True, "mark_sent must never write the rewritten column"
+
+
 # ------------------------------------------------- reply validation
 
 def test_validate_reply_flags_each_failure_mode():
@@ -751,6 +778,61 @@ def test_a_reply_that_never_validates_is_returned_not_raised():
     assert "hi" in calls[1], "the retry must include the rejected text to correct"
 
 
+# ------------------------------------------------------------- rewrite: reply
+
+def test_rewrite_reply_prompt_contains_the_fenced_instruction_and_custom_instructions():
+    account = dict(ACCOUNT, custom_instructions="Keep replies to two short lines.")
+    prompt = agent.rewrite_reply_prompt(account, "John", "Acme", "sounds good", "current draft text", "more casual")
+    assert "more casual" in prompt
+    assert "never invent a fact" in prompt.lower()
+    assert "two short lines" in prompt
+    assert "current draft text" in prompt
+    assert "sounds good" in prompt
+
+
+def test_rewrite_reply_calls_chat_with_draft_reply_purpose():
+    captured = {}
+    def fake_chat(system, user_prompt, purpose):
+        captured["purpose"] = purpose
+        return "A perfectly fine short reply."
+    with patched(agent, "_chat", fake_chat):
+        agent.rewrite_reply(ACCOUNT, "John", "Acme", "sounds good", "old draft", "shorter")
+    assert captured["purpose"] == usage.DRAFT_REPLY
+
+
+def test_rewrite_reply_succeeds_on_a_valid_first_response():
+    with patched(agent, "_chat", lambda s, u, p: "Sure, happy to help with that."):
+        result = agent.rewrite_reply(ACCOUNT, "John", "Acme", "sounds good", "old draft", "shorter")
+    assert result == "Sure, happy to help with that."
+
+
+def test_rewrite_reply_retries_once_then_succeeds():
+    outputs = iter(["hi", "Sure, happy to help with that whenever works for you."])
+    with patched(agent, "_chat", lambda s, u, p: next(outputs)):
+        result = agent.rewrite_reply(ACCOUNT, "John", "Acme", "sounds good", "old draft", "shorter")
+    assert "happy to help" in result
+
+
+def test_rewrite_reply_raises_after_2_failed_attempts_unlike_draft_reply():
+    """The one deliberate behavioral divergence from draft_reply: draft_reply
+    never raises, because failing there would mean no review row and the
+    operator never learns a prospect replied. Here the review already
+    exists with its current draft intact, so a failed rewrite has nothing
+    to lose by raising -- and an honest error beats silently keeping a
+    possibly-broken attempt."""
+    calls = {"n": 0}
+    def always_bad(system, prompt, purpose):
+        calls["n"] += 1
+        return "hi"
+    with patched(agent, "_chat", always_bad):
+        try:
+            agent.rewrite_reply(ACCOUNT, "John", "Acme", "sounds good", "old draft", "shorter")
+        except RuntimeError:
+            assert calls["n"] == 2
+            return
+    raise AssertionError("a rewrite that never validates must raise, not return a broken draft")
+
+
 def test_a_reply_is_queued_even_when_every_provider_is_down():
     """The failure this guards is silent and total: providers down or a free
     tier exhausted meant the exception escaped, add_review never ran, and a
@@ -772,6 +854,143 @@ def test_a_reply_is_queued_even_when_every_provider_is_down():
     assert calls["add_review"][0][2] == "", "queued with an empty draft, not lost"
     assert any("drafting a response failed" in e for e in result["row_errors"]), (
         f"and the operator is told why the box is empty: {result['row_errors']}"
+    )
+
+
+def test_link_check_catches_what_gmail_will_linkify_not_just_what_has_a_scheme():
+    """The check was scheme-only, which is the one form an attacker has no
+    reason to use: Gmail linkifies a bare domain, so it supplies the scheme on
+    the recipient's screen for free. Requiring 'https://' meant checking for the
+    considerate version of the attack."""
+    link = "https://cal.com/oanh/15min"
+    for body in ["Sure, book here: attacker.example/cal",
+                 "Sure, book at www.attacker.example/cal",
+                 "Details at evil-site.co.uk/pay now"]:
+        assert agent._validate_reply(body + " " * 30, link), f"missed: {body!r}"
+
+
+def test_the_senders_own_link_is_not_flagged_however_the_model_writes_it():
+    """The cost of widening the pattern. A model that drops the scheme on the
+    sender's OWN link would be flagged as foreign, the draft regenerated twice,
+    and the operator handed a warning about their own calendar."""
+    link = "https://cal.com/oanh/15min"
+    for body in ["Grab a slot: https://cal.com/oanh/15min and see you then",
+                 "Grab a slot: cal.com/oanh/15min and see you then",
+                 "Grab a slot: www.cal.com/oanh/15min and see you then",
+                 "Grab a slot: https://cal.com/oanh/15min. See you then"]:
+        assert agent._validate_reply(body, link) == [], f"false flag: {body!r}"
+
+    for prose in ["We support Xero. Also Stripe, and SSO is available today. Sam",
+                  "Thanks Priya. I will follow up Tuesday, e.g. after your call. Sam"]:
+        assert agent._validate_reply(prose, link) == [], f"false flag on prose: {prose!r}"
+
+
+def test_the_link_check_does_not_pretend_to_be_complete():
+    """Documents a door that is open on purpose. Mobile Gmail turns a phone
+    number into a tel: handler with no URL involved -- a published exfiltration
+    vector this pattern does not and cannot cover, along with whatever the next
+    client decides to linkify. Recorded as a test so that if someone later
+    closes it the failure reads as 'we improved this' rather than leaving a
+    comment claiming coverage nobody verified.
+
+    The reason it is acceptable to leave open: the control is provenance, not
+    detection. A reply never enters the fast lane whatever this catches."""
+    problems = agent._validate_reply(
+        "Call +1 555 0100 to confirm the refund please." + " " * 20,
+        "https://cal.com/oanh/15min",
+    )
+    assert problems == [], (
+        "if this now fails, the phone-number vector is covered -- update the "
+        "comment in agent._URL and this test rather than reverting"
+    )
+    assert reviews_db.lane({"validator_problems": None}) == "full", (
+        "and the reply is still full-text regardless, which is the actual control"
+    )
+
+
+# ------------------------------------------------- approval lane (provenance)
+
+def test_a_reply_can_never_reach_the_fast_lane():
+    """The load-bearing guarantee. A reply is generated from a prompt containing
+    a stranger's arbitrary text, so it goes to full-text review on provenance --
+    a property of where the draft came from, not of what it says.
+
+    Every argument below is a review that some content check might have waved
+    through. None of them move the lane, because nothing about the individual
+    reply is consulted."""
+    assert reviews_db.FAST_LANE_ELIGIBLE is False
+    for review in [
+        {},
+        {"draft_reply": "Sounds good, talk then. Sam", "validator_problems": None},
+        {"draft_reply": "clean", "validator_problems": "", "status": "pending"},
+        {"status": "pending", "degraded_classification": False},
+    ]:
+        assert reviews_db.lane(review) == "full", (
+            f"no reply may be promoted to the fast path, got {reviews_db.lane(review)} "
+            f"for {review}"
+        )
+
+
+def test_an_empty_problem_list_does_not_promote_a_reply():
+    """The specific way this would rot. If a clean validator result moved a
+    reply into the fast lane, then every blind spot in the validator would
+    silently widen the low-attention surface -- and the blind spots are the
+    known part. A bare domain like 'attacker.example/cal' carries no scheme, so
+    the URL check does not fire, and Gmail linkifies it on the recipient's
+    screen anyway. Detection decides what to SHOW the operator. It must never
+    decide how long they look."""
+    clean = {"draft_reply": "Great, speak then. Sam", "validator_problems": None}
+    assert reviews_db.lane(clean) == "full"
+
+
+def test_an_outreach_draft_in_the_queue_has_always_passed_validation():
+    """Why drafts_db.lane needs no content check. generate_outreach_email RAISES
+    after two failed attempts rather than returning the bad text, so a draft
+    that reached the queue passed the validator by construction. A
+    validator_problems check there would read as a safety gate and be a
+    permanent no-op -- the shape this whole review keeps finding."""
+    calls = []
+
+    def always_bad(system, prompt, purpose):
+        calls.append(prompt)
+        return "Subject: hi\n\nhi"
+
+    with patched(agent, "_chat", always_bad):
+        try:
+            agent.generate_outreach_email(ACCOUNT, "John", "Acme", "", "https://u/x")
+            assert False, "must raise rather than return an invalid draft"
+        except RuntimeError as e:
+            assert "2 attempts" in str(e), str(e)
+    assert len(calls) == 2
+    assert drafts_db.lane({"subject": "hi", "body": "hi"}) == "fast"
+
+
+def test_unresolved_reply_problems_are_recorded_on_the_review():
+    """draft_reply hands back its last attempt even when validation still fails,
+    so a queued reply can carry real problems. Before this column it looked
+    identical to a clean one and the operator had no way to know which draft the
+    validator had already objected to."""
+    problems = agent.reply_problems(
+        ACCOUNT, "Sure, book here instead: https://attacker.example/cal and see you then."
+    )
+    assert problems and "attacker.example" in problems[0], problems
+
+    cap = _Capture()
+    with patched(reviews_db, "find_review_id", lambda *a, **k: None), \
+         patched(reviews_db, "_get_client", lambda: cap):
+        reviews_db.add_review("a1", 2, "John", "j@x.com", "t1", "their reply",
+                              "bad draft", gmail_message_id="m1",
+                              validator_problems=problems)
+    assert "attacker.example" in cap.inserted["validator_problems"]
+
+    with patched(reviews_db, "find_review_id", lambda *a, **k: None), \
+         patched(reviews_db, "_get_client", lambda: cap):
+        reviews_db.add_review("a1", 2, "John", "j@x.com", "t1", "their reply",
+                              "clean draft", gmail_message_id="m2",
+                              validator_problems=[])
+    assert cap.inserted["validator_problems"] is None, (
+        "no problems must store NULL, not an empty string -- a reader cannot "
+        "tell '' from 'not recorded yet'"
     )
 
 
@@ -1041,6 +1260,121 @@ def test_generate_outreach_second_attempt_can_succeed():
     with patched(agent, "_chat", lambda s, u, p: next(outputs)):
         subject, body = agent.generate_outreach_email(ACCOUNT, "John", "Acme")
     assert subject == "Cutting invoice matching"
+
+
+# --------------------------------------------------------- rewrite: outreach
+
+_UNSUB = "https://app.example.com/unsubscribe?t=abc.def"
+
+
+def test_strip_opt_out_line_removes_the_trailing_suffix():
+    body = f"{GOOD_EMAIL_BODY}\n\nNot the right time? Unsubscribe here and I won't email again: {_UNSUB}"
+    assert agent._strip_opt_out_line(body, _UNSUB) == GOOD_EMAIL_BODY
+
+
+def test_strip_opt_out_line_removes_it_even_when_hand_edited_around():
+    """A hand-edited body may have extra content after the opt-out line, an
+    extra blank line, or whitespace drift -- none of which the operator did
+    anything wrong to cause. A suffix-only match would silently no-op on any
+    of these; content-based matching must not."""
+    body = (
+        f"{GOOD_EMAIL_BODY}\n\n"
+        f"Not the right time? Unsubscribe here and I won't email again: {_UNSUB}\n\n"
+        "P.S. one more thing I added after the opt-out line."
+    )
+    stripped = agent._strip_opt_out_line(body, _UNSUB)
+    assert _UNSUB not in stripped
+    assert "P.S. one more thing" in stripped
+
+
+def test_strip_opt_out_line_is_a_no_op_when_absent():
+    assert agent._strip_opt_out_line(GOOD_EMAIL_BODY, _UNSUB) == GOOD_EMAIL_BODY
+    assert agent._strip_opt_out_line(GOOD_EMAIL_BODY, "") == GOOD_EMAIL_BODY
+
+
+def test_rewrite_outreach_email_never_shows_the_model_the_unsubscribe_url():
+    """rewrite_outreach_prompt renders whatever body it's handed verbatim --
+    the stripping happens one level up, in rewrite_outreach_email, before
+    the prompt is ever built. This tests that pipeline end to end via the
+    prompt _chat actually receives, not the prompt-builder in isolation."""
+    captured = {}
+    body_with_optout = f"{GOOD_EMAIL_BODY}\n\nNot the right time? Unsubscribe here and I won't email again: {_UNSUB}"
+
+    def fake_chat(system, user_prompt, purpose):
+        captured["prompt"] = user_prompt
+        return GOOD_EMAIL
+
+    with patched(agent, "_chat", fake_chat):
+        agent.rewrite_outreach_email(
+            ACCOUNT, "John", "Acme", "Cutting invoice matching", body_with_optout,
+            "make it shorter", unsubscribe_url=_UNSUB,
+        )
+    assert _UNSUB not in captured["prompt"], "the opt-out line must be stripped before the model ever sees the body"
+    assert "make it shorter" in captured["prompt"]
+
+
+def test_rewrite_outreach_prompt_contains_the_fenced_instruction_and_custom_instructions():
+    account = dict(ACCOUNT, custom_instructions="Always mention our free trial.")
+    prompt = agent.rewrite_outreach_prompt(
+        account, "John", "Acme", "Subj", GOOD_EMAIL_BODY, "more casual",
+    )
+    assert "more casual" in prompt
+    assert "never invent a fact" in prompt.lower()
+    assert "free trial" in prompt
+
+
+def test_rewrite_outreach_email_appends_the_opt_out_line_exactly_once():
+    with patched(agent, "_chat", lambda s, u, p: GOOD_EMAIL):
+        subject, body = agent.rewrite_outreach_email(
+            ACCOUNT, "John", "Acme", "old subject", GOOD_EMAIL_BODY, "shorter", unsubscribe_url=_UNSUB,
+        )
+    assert body.count(_UNSUB) == 1
+
+
+def test_rewrite_outreach_email_still_exactly_once_on_a_hand_edited_body():
+    """Regression test for the failure mode this whole design targets: a
+    hand-edited input body must not produce a doubled opt-out line."""
+    hand_edited = (
+        f"{GOOD_EMAIL_BODY}\n\n"
+        f"Not the right time? Unsubscribe here and I won't email again: {_UNSUB}\n\n"
+        "One more sentence the operator typed after it."
+    )
+    with patched(agent, "_chat", lambda s, u, p: GOOD_EMAIL):
+        subject, body = agent.rewrite_outreach_email(
+            ACCOUNT, "John", "Acme", "old subject", hand_edited, "shorter", unsubscribe_url=_UNSUB,
+        )
+    assert body.count(_UNSUB) == 1
+
+
+def test_rewrite_outreach_email_calls_chat_with_draft_email_purpose():
+    captured = {}
+    def fake_chat(system, user_prompt, purpose):
+        captured["purpose"] = purpose
+        return GOOD_EMAIL
+    with patched(agent, "_chat", fake_chat):
+        agent.rewrite_outreach_email(ACCOUNT, "John", "Acme", "s", GOOD_EMAIL_BODY, "shorter")
+    assert captured["purpose"] == usage.DRAFT_EMAIL
+
+
+def test_rewrite_outreach_email_retries_once_then_succeeds():
+    outputs = iter(["Subject: hi\n\ntoo short", GOOD_EMAIL])
+    with patched(agent, "_chat", lambda s, u, p: next(outputs)):
+        subject, body = agent.rewrite_outreach_email(ACCOUNT, "John", "Acme", "s", GOOD_EMAIL_BODY, "shorter")
+    assert subject == "Cutting invoice matching"
+
+
+def test_rewrite_outreach_email_raises_after_2_failed_attempts():
+    calls = {"n": 0}
+    def bad_chat(system, user_prompt, purpose):
+        calls["n"] += 1
+        return "Subject: hi\n\nLet's hop on a call to discuss synergies."
+    with patched(agent, "_chat", bad_chat):
+        try:
+            agent.rewrite_outreach_email(ACCOUNT, "John", "Acme", "s", GOOD_EMAIL_BODY, "shorter")
+        except RuntimeError:
+            assert calls["n"] == 2
+            return
+    raise AssertionError("invalid rewrite output must raise, not return")
 
 
 # ------------------------------------------------------ subject parsing + validator
@@ -1385,7 +1719,7 @@ def _watch_env(calls, reply_map, existing_reviews=None, bounce_map=None):
 
     def fake_add_review(account_id, row_index, name, email, thread_id, customer_reply,
                         draft_reply, gmail_message_id=None, status="pending",
-                        degraded_classification=False):
+                        degraded_classification=False, validator_problems=None):
         calls.setdefault("add_review", []).append(
             (thread_id, customer_reply, draft_reply, status, degraded_classification, email)
         )
@@ -2256,6 +2590,97 @@ def test_server_prepare_blocked_by_settings():
         assert account["id"] not in server._accounts_sending, "no lock should be held on a rejected batch"
 
 
+# --------------------------------------------------------- drafts_db: rewritten
+
+class _DraftsTable:
+    """Minimal PostgREST-shaped fake for outreach_drafts, enough for
+    mark_rewritten/mark_sent: update + eq + execute."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self._eq = []
+        self._values = None
+
+    def table(self, name):
+        return self
+
+    def update(self, values):
+        self._values = values
+        return self
+
+    def eq(self, col, val):
+        self._eq.append((col, val))
+        return self
+
+    def execute(self):
+        eq = self._eq
+        self._eq = []
+        matched = [r for r in self.rows if all(r.get(c) == v for c, v in eq)]
+        for r in matched:
+            r.update(self._values)
+        return type("R", (), {"data": matched})()
+
+
+def test_drafts_mark_rewritten_writes_the_flag():
+    fake = _DraftsTable(rows=[{"id": 7, "account_id": "a1", "rewritten": False}])
+    with patched(drafts_db, "_get_client", lambda: fake):
+        drafts_db.mark_rewritten("a1", 7)
+    assert fake.rows[0]["rewritten"] is True
+
+
+def test_drafts_mark_rewritten_is_best_effort():
+    def boom():
+        raise RuntimeError("supabase down")
+    with patched(drafts_db, "_get_client", boom):
+        drafts_db.mark_rewritten("a1", 7)  # must not raise
+
+
+def test_drafts_mark_sent_does_not_touch_rewritten():
+    """Regression guard for the finding that shaped this design: mark_sent
+    is the durable record require_send_log gates the whole send on --
+    rewritten must never join that update. Seeded True (as if
+    mark_rewritten already ran) so an accidental "rewritten": False in
+    mark_sent's own update dict would flip it back and be caught here."""
+    fake = _DraftsTable(rows=[{"id": 7, "account_id": "a1", "status": "pending", "rewritten": True}])
+    with patched(drafts_db, "_get_client", lambda: fake):
+        drafts_db.mark_sent("a1", 7, "subject", "body")
+    assert fake.rows[0]["rewritten"] is True, "mark_sent must never write the rewritten column"
+
+
+def test_send_all_prepared_never_marks_a_draft_rewritten():
+    """send_prepared_draft's rewritten default is False by construction for
+    the batch path -- there is no browser-side rewritten state a
+    server-side batch send could pass. Proven against the REAL
+    send_prepared_draft (not a fake standing in for it), by patching
+    mark_rewritten to raise on any call and confirming a full batch run
+    still completes -- not just by trusting today's default value."""
+    drafts = [{"id": 1, "row_index": 2, "email": "a@x.com", "subject": "S", "body": "b"}]
+
+    def boom(*a, **k):
+        raise AssertionError("send_all_prepared must never mark a draft rewritten")
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(send_outreach, "_MARK_RETRY_DELAY", 0))
+        stack.enter_context(patched(send_outreach, "_SEND_ALL_MIN_GAP", 0))
+        stack.enter_context(patched(send_outreach, "_SEND_ALL_MAX_GAP", 0))
+        stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x.y"))
+        stack.enter_context(patched(drafts_db, "list_pending_drafts", lambda aid: drafts))
+        stack.enter_context(patched(drafts_db, "count_sent_last_24_hours", lambda aid: 0))
+        stack.enter_context(patched(drafts_db, "count_sent_since", lambda aid, since: 0))
+        stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(sheets, "campaign_readiness", lambda account, sent_today=0, rows=None: {"remaining_today": 5}))
+        stack.enter_context(patched(sheets, "get_all_rows", lambda account: []))
+        stack.enter_context(patched(gmail, "send_email", lambda *a, **k: "t-1"))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: None))
+        stack.enter_context(patched(drafts_db, "mark_rewritten", boom))
+        stack.enter_context(patched(send_outreach, "mark_row_sent", lambda *a, **k: None))
+        stack.enter_context(patched(send_outreach, "notify", lambda *a: None))
+        result = send_outreach.send_all_prepared(ACCOUNT)
+    assert result["sent"] == 1
+
+
 # --------------------------------------------------- server: draft send/discard routes
 
 def _srv_req(account_id="acct-1"):
@@ -2278,6 +2703,113 @@ def test_send_draft_404_when_missing_or_handled():
             raise AssertionError("expected 404")
         except server.HTTPException as e:
             assert e.status_code == 404
+
+
+_REWRITABLE_DRAFT = dict(_PENDING_DRAFT, name="John", company="Acme")
+
+
+def test_rewrite_draft_404_when_missing_or_handled():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: None))
+        try:
+            server.rewrite_draft(_srv_req(), 7, server.RewriteDraftBody(subject="s", body="b", instruction="shorter"))
+            raise AssertionError("expected 404")
+        except server.HTTPException as e:
+            assert e.status_code == 404
+
+
+def test_rewrite_draft_400_on_blank_instruction():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_REWRITABLE_DRAFT)))
+        try:
+            server.rewrite_draft(_srv_req(), 7, server.RewriteDraftBody(subject="s", body="b", instruction="   "))
+            raise AssertionError("expected 400")
+        except server.HTTPException as e:
+            assert e.status_code == 400
+
+
+def test_rewrite_draft_429_scoped_per_draft_not_per_account():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_REWRITABLE_DRAFT, id=did)))
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: "job-x"))
+        body = server.RewriteDraftBody(subject="s", body="b", instruction="shorter")
+        for _ in range(10):
+            server.rewrite_draft(_srv_req(), 7, body)  # exhaust the limit for draft 7
+        try:
+            server.rewrite_draft(_srv_req(), 7, body)
+            raise AssertionError("expected 429 once the per-draft limit is exhausted")
+        except server.HTTPException as e:
+            assert e.status_code == 429
+        # A different draft is unaffected -- proves the scoping, not just that some limit exists.
+        assert server.rewrite_draft(_srv_req(), 8, body) == {"job_id": "job-x"}
+
+
+def test_rewrite_draft_job_uses_the_payloads_text_not_the_stored_row():
+    """Regression test for the finding that shaped this design: the stored
+    row's subject/body must never be what gets rewritten, only the
+    operator's current (payload) text -- otherwise a hand-edit vanishes
+    with no warning the moment a preset is clicked."""
+    import server
+    captured = {}
+    stored = dict(_REWRITABLE_DRAFT, subject="STALE stored subject", body="STALE stored body")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(stored)))
+        stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
+        stack.enter_context(patched(server.agent, "rewrite_outreach_email",
+            lambda account, name, company, subject, body, instruction, unsubscribe_url="":
+                captured.update(subject=subject, body=body) or (subject, body)))
+        captured_fn = {}
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured_fn.update(fn=fn) or "job-1"))
+        server.rewrite_draft(
+            _srv_req(), 7,
+            server.RewriteDraftBody(subject="fresh typed subject", body="fresh typed body", instruction="shorter"),
+        )
+        captured_fn["fn"]()
+    assert captured["subject"] == "fresh typed subject"
+    assert captured["body"] == "fresh typed body"
+
+
+def test_rewrite_draft_never_calls_plans_check():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_REWRITABLE_DRAFT)))
+        stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
+        stack.enter_context(patched(server.agent, "rewrite_outreach_email",
+            lambda *a, **k: ("s", "b")))
+        stack.enter_context(patched(server.plans, "check",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not check quota"))))
+        captured_fn = {}
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured_fn.update(fn=fn) or "job-1"))
+        server.rewrite_draft(_srv_req(), 7, server.RewriteDraftBody(subject="s", body="b", instruction="shorter"))
+        result = captured_fn["fn"]()
+    assert result == {"subject": "s", "body": "b"}
+
+
+def test_rewrite_draft_never_writes_to_drafts_db():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_REWRITABLE_DRAFT)))
+        stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
+        stack.enter_context(patched(server.agent, "rewrite_outreach_email", lambda *a, **k: ("s", "b")))
+        for method in ("mark_sent", "mark_rewritten", "add_draft", "discard"):
+            stack.enter_context(patched(server.drafts_db, method,
+                lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"must not call drafts_db.{method}"))))
+        captured_fn = {}
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured_fn.update(fn=fn) or "job-1"))
+        server.rewrite_draft(_srv_req(), 7, server.RewriteDraftBody(subject="s", body="b", instruction="shorter"))
+        captured_fn["fn"]()  # must not raise
 
 
 def test_send_draft_409_and_discards_when_suppressed():
@@ -2324,7 +2856,7 @@ def test_send_draft_happy_path_marks_edited_copy():
         stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
 
-        def fake_send(a, d, subject=None, body=None):
+        def fake_send(a, d, subject=None, body=None, rewritten=False):
             marked.update(draft_id=d["id"], subject=subject, body=body)
             return {"thread_id": "t-1", "body": "sent body with optout", "sheet_error": None}
 
@@ -2356,13 +2888,60 @@ def test_send_draft_returns_200_with_a_warning_when_only_the_sheet_failed():
         stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
         stack.enter_context(patched(server.send_outreach, "send_prepared_draft",
-            lambda a, d, subject=None, body=None: {
+            lambda a, d, subject=None, body=None, rewritten=False: {
                 "thread_id": "t-1", "body": "b",
                 "sheet_error": "j@x.com was emailed successfully, but its sheet row was not updated",
             }))
         result = server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
     assert result["ok"] is True
     assert "emailed successfully" in result["sheet_warning"]
+
+
+def test_send_draft_calls_mark_rewritten_when_payload_says_so():
+    """send_draft doesn't call mark_rewritten itself -- it delegates to the
+    real send_outreach.send_prepared_draft, which does (see
+    test_send_all_prepared_never_marks_a_draft_rewritten for the batch-path
+    half of this invariant). send_prepared_draft is deliberately NOT faked
+    away here, unlike the tests above, so the payload.rewritten ->
+    mark_rewritten wire is proven end to end rather than assumed."""
+    import server
+    marked = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "count_sent_last_24_hours", lambda aid: 0))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
+        stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
+        stack.enter_context(patched(gmail, "send_email", lambda *a, **k: "t-1"))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: None))
+        stack.enter_context(patched(drafts_db, "mark_rewritten", lambda aid, did: marked.append(did)))
+        stack.enter_context(patched(send_outreach, "mark_row_sent", lambda *a, **k: None))
+        result = server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b", rewritten=True))
+    assert result == {"ok": True, "sheet_warning": None}
+    assert marked == [7]
+
+
+def test_send_draft_does_not_call_mark_rewritten_by_default():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "count_sent_last_24_hours", lambda aid: 0))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
+        stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
+        stack.enter_context(patched(gmail, "send_email", lambda *a, **k: "t-1"))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: None))
+        stack.enter_context(patched(drafts_db, "mark_rewritten",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not mark rewritten without the flag"))))
+        stack.enter_context(patched(send_outreach, "mark_row_sent", lambda *a, **k: None))
+        result = server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
+    assert result == {"ok": True, "sheet_warning": None}
 
 
 def test_discard_draft_happy_and_404():
@@ -2454,6 +3033,149 @@ def test_send_reply_happy_path_when_not_suppressed():
     assert sent == {"to": "john@x.com", "body": "hi", "marked": (9, "hi")}
 
 
+def test_send_reply_calls_mark_rewritten_when_payload_says_so():
+    import server
+    marked = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.gmail, "send_reply", lambda a, tid, to, body: None))
+        stack.enter_context(patched(server.reviews_db, "mark_sent", lambda aid, rid, body: None))
+        stack.enter_context(patched(server.reviews_db, "mark_rewritten", lambda aid, rid: marked.append(rid)))
+        result = server.send_reply(_srv_req(), 9, server.SendReplyBody(body="hi", rewritten=True))
+    assert result == {"ok": True}
+    assert marked == [9]
+
+
+def test_send_reply_does_not_call_mark_rewritten_by_default():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.gmail, "send_reply", lambda a, tid, to, body: None))
+        stack.enter_context(patched(server.reviews_db, "mark_sent", lambda aid, rid, body: None))
+        stack.enter_context(patched(server.reviews_db, "mark_rewritten",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not mark rewritten without the flag"))))
+        result = server.send_reply(_srv_req(), 9, server.SendReplyBody(body="hi"))
+    assert result == {"ok": True}
+
+
+def test_rewrite_reply_404_when_missing_or_handled():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: None))
+        try:
+            server.rewrite_reply_draft(_srv_req(), 9, server.RewriteReplyBody(body="b", instruction="shorter"))
+            raise AssertionError("expected 404")
+        except server.HTTPException as e:
+            assert e.status_code == 404
+
+
+def test_rewrite_reply_404_when_flagged():
+    """SENDABLE_STATUSES, not VISIBLE_STATUSES: a flagged review has nothing
+    drafted yet to adjust until the sender is confirmed, so it must be
+    excluded from rewrite the same way it's excluded from send."""
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_FLAGGED_REVIEW)))
+        try:
+            server.rewrite_reply_draft(_srv_req(), 9, server.RewriteReplyBody(body="b", instruction="shorter"))
+            raise AssertionError("expected 404 for a flagged review")
+        except server.HTTPException as e:
+            assert e.status_code == 404
+
+
+def test_rewrite_reply_400_on_blank_instruction():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
+        try:
+            server.rewrite_reply_draft(_srv_req(), 9, server.RewriteReplyBody(body="b", instruction="   "))
+            raise AssertionError("expected 400")
+        except server.HTTPException as e:
+            assert e.status_code == 400
+
+
+def test_rewrite_reply_429_scoped_per_review_not_per_account():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW, id=rid)))
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: "job-x"))
+        body = server.RewriteReplyBody(body="b", instruction="shorter")
+        for _ in range(10):
+            server.rewrite_reply_draft(_srv_req(), 9, body)  # exhaust the limit for review 9
+        try:
+            server.rewrite_reply_draft(_srv_req(), 9, body)
+            raise AssertionError("expected 429 once the per-review limit is exhausted")
+        except server.HTTPException as e:
+            assert e.status_code == 429
+        # A different review is unaffected -- proves the scoping, not just that some limit exists.
+        assert server.rewrite_reply_draft(_srv_req(), 10, body) == {"job_id": "job-x"}
+
+
+def test_rewrite_reply_job_uses_the_payloads_text_not_the_stored_row():
+    """Regression test mirroring test_rewrite_draft_job_uses_the_payloads_text_not_the_stored_row:
+    the stored review's draft_reply must never be what gets rewritten, only
+    the operator's current (payload) text."""
+    import server
+    captured = {}
+    stored = dict(_PENDING_REVIEW, draft_reply="STALE stored reply")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(stored)))
+        stack.enter_context(patched(server.agent, "rewrite_reply",
+            lambda account, name, company, customer_reply, draft_text, instruction:
+                captured.update(draft_text=draft_text) or "rewritten reply"))
+        captured_fn = {}
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured_fn.update(fn=fn) or "job-1"))
+        server.rewrite_reply_draft(
+            _srv_req(), 9,
+            server.RewriteReplyBody(body="fresh typed reply", instruction="shorter"),
+        )
+        result = captured_fn["fn"]()
+    assert captured["draft_text"] == "fresh typed reply"
+    assert result == {"body": "rewritten reply"}
+
+
+def test_rewrite_reply_never_calls_plans_check():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
+        stack.enter_context(patched(server.agent, "rewrite_reply", lambda *a, **k: "b"))
+        stack.enter_context(patched(server.plans, "check",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not check quota"))))
+        captured_fn = {}
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured_fn.update(fn=fn) or "job-1"))
+        server.rewrite_reply_draft(_srv_req(), 9, server.RewriteReplyBody(body="b", instruction="shorter"))
+        result = captured_fn["fn"]()
+    assert result == {"body": "b"}
+
+
+def test_rewrite_reply_never_writes_to_reviews_db():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
+        stack.enter_context(patched(server.agent, "rewrite_reply", lambda *a, **k: "b"))
+        for method in ("mark_sent", "mark_rewritten", "add_review", "dismiss"):
+            stack.enter_context(patched(server.reviews_db, method,
+                lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"must not call reviews_db.{method}"))))
+        captured_fn = {}
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured_fn.update(fn=fn) or "job-1"))
+        server.rewrite_reply_draft(_srv_req(), 9, server.RewriteReplyBody(body="b", instruction="shorter"))
+        captured_fn["fn"]()  # must not raise
+
+
 def test_confirm_sender_404_when_not_flagged():
     import server
     with contextlib.ExitStack() as stack:
@@ -2490,7 +3212,7 @@ def test_confirm_sender_job_happy_path_drafts_and_confirms():
         calls = _confirm_sender_env(stack, _FLAGGED_REVIEW)
         confirmed = {}
         stack.enter_context(patched(server.reviews_db, "confirm_sender",
-            lambda aid, rid, draft_reply="": confirmed.update(id=rid, draft=draft_reply) or True))
+            lambda aid, rid, draft_reply="", validator_problems=None: confirmed.update(id=rid, draft=draft_reply) or True))
         result = server._confirm_sender_job(ACCOUNT, dict(_FLAGGED_REVIEW))
     assert result == {"warning": None}
     assert confirmed == {"id": 9, "draft": "Here's a reply."}
@@ -2508,7 +3230,7 @@ def test_confirm_sender_job_quota_exceeded_confirms_with_empty_draft_and_the_ric
         stack.enter_context(patched(server.plans, "check", boom))
         confirmed = {}
         stack.enter_context(patched(server.reviews_db, "confirm_sender",
-            lambda aid, rid, draft_reply="": confirmed.update(draft=draft_reply) or True))
+            lambda aid, rid, draft_reply="", validator_problems=None: confirmed.update(draft=draft_reply) or True))
         result = server._confirm_sender_job(ACCOUNT, dict(_FLAGGED_REVIEW))
     assert result == {"warning": str(exc)}
     assert confirmed == {"draft": ""}, "quota exceeded must still confirm the sender, just with no draft"
@@ -2524,7 +3246,7 @@ def test_confirm_sender_job_drafting_failure_confirms_anyway():
         stack.enter_context(patched(server.agent, "draft_reply", boom))
         confirmed = {}
         stack.enter_context(patched(server.reviews_db, "confirm_sender",
-            lambda aid, rid, draft_reply="": confirmed.update(draft=draft_reply) or True))
+            lambda aid, rid, draft_reply="", validator_problems=None: confirmed.update(draft=draft_reply) or True))
         result = server._confirm_sender_job(ACCOUNT, dict(_FLAGGED_REVIEW))
     assert "Confirmed, but drafting failed" in result["warning"]
     assert confirmed == {"draft": ""}
@@ -2554,7 +3276,7 @@ def test_confirm_sender_job_discards_the_draft_if_dismissed_mid_flight():
     with contextlib.ExitStack() as stack:
         _confirm_sender_env(stack, _FLAGGED_REVIEW)
         stack.enter_context(patched(server.reviews_db, "confirm_sender",
-            lambda aid, rid, draft_reply="": False))
+            lambda aid, rid, draft_reply="", validator_problems=None: False))
         result = server._confirm_sender_job(ACCOUNT, dict(_FLAGGED_REVIEW))
     assert result == {"warning": "This review was handled elsewhere while confirming."}
 

@@ -77,7 +77,7 @@ def find_review_id(account_id, thread_id, gmail_message_id, customer_reply=None)
 
 def add_review(account_id, row_index, name, email, thread_id, customer_reply,
                draft_reply, gmail_message_id=None, status="pending",
-               degraded_classification=False):
+               degraded_classification=False, validator_problems=None):
     # Two layers, deliberately. This check-then-insert closes the realistic
     # overlapping-job case (the auto-poll firing while a previous check is still
     # in flight, both reads catching the same message before either write lands)
@@ -117,11 +117,23 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply,
         "gmail_message_id": gmail_message_id,
         "status": status,
         "degraded_classification": degraded_classification,
+        # What the validator still objected to when this was queued. draft_reply
+        # returns its last attempt even when validation fails, so a queued reply
+        # can carry real problems -- and before this column the operator had no
+        # way to know which draft that was. Stored newline-joined rather than
+        # JSON because the only consumer is a human reading it.
+        #
+        # Explicitly NOT a lane input. The lane is decided by provenance in
+        # lane() above, so an empty list here never promotes a reply into the
+        # fast path. If it did, the fence's blind spots would silently widen the
+        # low-attention surface -- which is the failure mode this whole split
+        # exists to remove.
+        "validator_problems": "\n".join(validator_problems) if validator_problems else None,
     }).execute()
     return result.data[0]["id"]
 
 
-def confirm_sender(account_id, review_id, draft_reply=""):
+def confirm_sender(account_id, review_id, draft_reply="", validator_problems=None):
     """Promotes a flagged (off-sheet sender) review to pending once the
     operator has confirmed the observed sender really is (or represents) the
     contact -- drafting is deferred to this point (see watch_replies.py), so
@@ -138,6 +150,12 @@ def confirm_sender(account_id, review_id, draft_reply=""):
             "status": "pending",
             "draft_reply": draft_reply,
             "original_draft_reply": draft_reply or None,
+            # The draft is attached here rather than at insert, so this is where
+            # its unresolved problems get recorded too. Written unconditionally,
+            # including as None when the draft is clean -- a stale value from an
+            # earlier attempt would mark a good draft suspect, or worse, leave a
+            # bad one looking clean.
+            "validator_problems": "\n".join(validator_problems) if validator_problems else None,
         })
         .eq("account_id", account_id)
         .eq("id", review_id)
@@ -145,6 +163,42 @@ def confirm_sender(account_id, review_id, draft_reply=""):
         .execute()
     )
     return bool(result.data)
+
+
+# Reply drafts never enter the fast approval path. Unconditionally, and not as
+# a policy that can be relaxed by a good eval result.
+#
+# The reason is provenance, not content. A reply is generated from a prompt that
+# contains a stranger's arbitrary text -- the prospect's own email, which anyone
+# we cold-emailed can write anything into. An outreach draft is generated from
+# the sender's own settings and a row in the sheet they own. That difference is
+# a property of where the draft came from, so it can be decided here, once,
+# without inspecting a single character of output.
+#
+# The alternative -- detect the dangerous output and fast-lane the rest -- is a
+# wall that cannot be finished. The thing needing detection is not "a URL", it
+# is "any string some mail client will render as a tappable link", and that set
+# is defined by software we do not control and cannot enumerate. Gmail linkifies
+# a bare domain, so an attacker never has to type "https://" because Gmail types
+# it for them on the recipient's screen. Mobile Gmail turns phone numbers into
+# tel: handlers, which is a published exfiltration vector with no URL in it at
+# all. Outlook, Apple Mail and every webmail client have their own rules and
+# change them without telling us.
+#
+# _validate_reply is still worth having and is still improving, but it is
+# defence in depth behind this line, never the thing holding it. Provenance does
+# not degrade when Gmail ships a new linkifier.
+FAST_LANE_ELIGIBLE = False
+
+
+def lane(review=None):
+    """Which approval surface a reply belongs on. Always the full-text one.
+
+    Takes an argument it ignores on purpose: the signature matches
+    drafts_db.lane so a caller cannot accidentally treat the two as
+    interchangeable, and the ignored parameter is the point -- nothing about
+    this particular reply can move it into the fast path."""
+    return "full"
 
 
 # Which statuses the operator is meant to SEE, and which they may ACT on.
@@ -213,6 +267,25 @@ def mark_sent(account_id, review_id, sent_body):
     _get_client().table(TABLE).update(
         {"status": "sent", "draft_reply": sent_body}
     ).eq("account_id", account_id).eq("id", review_id).execute()
+
+
+def mark_rewritten(account_id, review_id):
+    """Records that an AI rewrite touched this reply before it was sent, for
+    Phase 6's future edit-diff corpus to exclude or label -- otherwise the
+    diff between original_draft_reply and the sent copy is the model's own
+    rewrite, not the human's voice.
+
+    Deliberately a SEPARATE, best-effort write from mark_sent, never in the
+    same update and never called before it -- a failed write there means a
+    review stays "pending" after already being sent, and a second click from
+    the operator is a second reply to a prospect. This column must never be
+    able to cause that. Matches usage.record's own convention: never break
+    the action being observed."""
+    try:
+        _get_client().table(TABLE).update({"rewritten": True}) \
+            .eq("account_id", account_id).eq("id", review_id).execute()
+    except Exception as e:
+        print(f"Could not record the rewritten flag for review {review_id}: {e}")
 
 
 def dismiss(account_id, review_id):

@@ -25,6 +25,39 @@ def _get_client():
 _send_log_verified = False
 
 
+# Outreach drafts are generated from the sender's own settings and a row in the
+# sheet they own. No third-party text reaches the prompt, so a fast approval
+# path is coherent here in a way it is not for replies -- see reviews_db, where
+# the same constant is False and explains why.
+#
+# Eligible is not the same as fast: a draft the validator complained about still
+# routes to full text (see lane), because "the model produced something the
+# rules rejected" is a reason to read it whatever its provenance.
+FAST_LANE_ELIGIBLE = True
+
+
+def lane(draft):
+    """Which approval surface an outreach draft belongs on. Always the fast one.
+
+    Two independent reasons, and it is worth being explicit that the second one
+    is not doing any work:
+
+    1. Provenance. No third-party text reaches the prompt (see FAST_LANE_ELIGIBLE
+       above), which is what makes a few-seconds-per-item glance coherent here.
+    2. Validation. generate_outreach_email RAISES after two failed attempts
+       rather than returning the bad text, so a draft that reached this queue
+       passed the validator by construction. There is no such thing as a queued
+       outreach draft carrying unresolved problems.
+
+    An earlier version of this function checked a validator_problems column on
+    the draft. That column can never be populated for exactly the reason in (2),
+    so the check would have read like a safety gate and been a permanent no-op --
+    the same shape as the fence that could not block. Replies are the path where
+    unresolved problems are real, and they are handled by provenance in
+    reviews_db, not by inspecting output here."""
+    return "fast"
+
+
 def require_send_log():
     """Refuses to let a send start if the send log cannot record it.
 
@@ -141,6 +174,31 @@ def mark_sent(account_id, draft_id, sent_subject, sent_body):
         "body": sent_body,
         "sent_at": datetime.now(timezone.utc).isoformat(),
     }).eq("account_id", account_id).eq("id", draft_id).execute()
+
+
+def mark_rewritten(account_id, draft_id):
+    """Records that an AI rewrite touched this draft before it was sent, for
+    Phase 6's future edit-diff corpus to exclude or label -- otherwise the
+    diff between original_subject/original_body and the sent copy is the
+    model's own rewrite, not the human's voice, and would train as if it
+    were one.
+
+    Deliberately a SEPARATE, best-effort write from mark_sent, never in the
+    same update and never called before it. mark_sent is the durable record
+    that stops a sent email going out again -- require_send_log fails the
+    whole send closed, before Gmail is even called, specifically because a
+    database that can't record that write must not be trusted to prevent a
+    duplicate. Adding this analytics column to that same update would mean a
+    database missing THIS column (which require_send_log has no way to know
+    to check for) makes the critical write fail after Gmail has already
+    accepted the message -- reopening the exact hazard require_send_log
+    exists to close. Matches usage.record's own convention: never break the
+    action being observed."""
+    try:
+        _get_client().table(TABLE).update({"rewritten": True}) \
+            .eq("account_id", account_id).eq("id", draft_id).execute()
+    except Exception as e:
+        print(f"Could not record the rewritten flag for draft {draft_id}: {e}")
 
 
 def count_sent_since(account_id, since):
