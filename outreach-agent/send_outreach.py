@@ -202,11 +202,22 @@ def prepare_drafts(account):
     }
 
 
-def send_prepared_draft(account, draft, subject=None, body=None):
+def send_prepared_draft(account, draft, subject=None, body=None, rewritten=False):
     """Sends one approved draft, then records it. `subject`/`body` override the
     stored copy when the operator edited it in the UI. The one-click opt-out link
     and List-Unsubscribe headers are (re)applied here, so a legally-required
     unsubscribe is present even if the operator edited it out.
+
+    rewritten says whether an AI rewrite touched this draft before it was
+    sent (see agent.rewrite_outreach_email / drafts_db.mark_rewritten) -- for
+    Phase 6's future edit-diff corpus to exclude or label these pairs rather
+    than learn from the model's own rewrite as if it were the operator's
+    voice. Called from exactly two places: the single-draft send endpoint
+    (which passes whatever the request said) and send_all_prepared's batch
+    loop (which passes nothing, so this stays False). That's correct by
+    construction, not luck -- a server-side batch send has no browser-side
+    rewritten state to pass -- but it reads as obvious right up until someone
+    adds a parameter near it later, hence writing it down here.
 
     Returns {"thread_id", "body", "sheet_error"}, where sheet_error is a message
     when the email went out but its sheet row could not be updated. That is a
@@ -245,6 +256,11 @@ def send_prepared_draft(account, draft, subject=None, body=None):
         lambda: drafts_db.mark_sent(account["id"], draft["id"], subject, body),
         f"Email was sent to {email}, but recording it in the draft queue failed",
     )
+    # Separate, best-effort -- never part of the critical write above. See
+    # drafts_db.mark_rewritten for why this must never be able to make that
+    # write (or this send) fail.
+    if rewritten:
+        drafts_db.mark_rewritten(account["id"], draft["id"])
 
     sheet_error = None
     try:

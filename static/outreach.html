@@ -287,9 +287,16 @@
       <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Subject</div>
       <input class="dc-subject w-full text-sm rounded-lg px-4 py-2.5 focus-visible:outline-none focus:ring-2" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);">
     </div>
-    <div class="mb-4">
+    <div class="mb-3">
       <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Email</div>
       <textarea class="dc-body w-full text-sm rounded-lg px-4 py-3 leading-relaxed resize-y focus-visible:outline-none focus:ring-2" rows="10" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);"></textarea>
+    </div>
+    <div class="mb-4 flex items-center gap-2 flex-wrap">
+      <button class="dc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make it shorter.">Shorter</button>
+      <button class="dc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make the tone more casual.">More casual</button>
+      <button class="dc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make the tone more formal.">More formal</button>
+      <input class="dc-instruction flex-1 min-w-[140px] text-xs rounded-lg px-3 py-1.5 focus-visible:outline-none focus:ring-2" placeholder="Or tell the AI what to change…" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);">
+      <button class="dc-rewrite btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">Ask AI</button>
     </div>
     <div class="flex items-center justify-end gap-3">
       <span class="dc-status text-xs" style="color:var(--green);"></span>
@@ -315,6 +322,13 @@
     <div class="mb-4">
       <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Your reply</div>
       <textarea class="rc-draft w-full text-sm rounded-lg px-4 py-3 leading-relaxed resize-y focus-visible:outline-none focus:ring-2" rows="6" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);"></textarea>
+      <div class="mt-2 flex items-center gap-2 flex-wrap">
+        <button class="rc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make it shorter.">Shorter</button>
+        <button class="rc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make the tone more casual.">More casual</button>
+        <button class="rc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make the tone more formal.">More formal</button>
+        <input class="rc-instruction flex-1 min-w-[140px] text-xs rounded-lg px-3 py-1.5 focus-visible:outline-none focus:ring-2" placeholder="Or tell the AI what to change…" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);">
+        <button class="rc-rewrite btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">Ask AI</button>
+      </div>
     </div>
     <div class="flex items-center justify-end gap-3">
       <span class="rc-status text-xs" style="color:var(--green);"></span>
@@ -356,6 +370,44 @@
       if (job.status !== 'running') return job;
       await new Promise((r) => setTimeout(r, intervalMs));
     }
+  }
+
+  // Shared by renderDraft and renderReview (pending status only). Wires the
+  // preset buttons + free-text instruction + "Ask AI" button on a card to
+  // the given rewrite endpoint. buildPayload reads the card's CURRENT
+  // textarea/input values at click time -- never a stale re-fetch, so
+  // whatever the operator has typed and not yet sent is exactly what gets
+  // rewritten.
+  function wireRewrite(card, { presetSel, instructionSel, buttonSel, statusEl, endpoint, buildPayload, onResult }) {
+    const instructionEl = card.querySelector(instructionSel);
+    const btn = card.querySelector(buttonSel);
+    card.querySelectorAll(presetSel).forEach((p) => {
+      p.addEventListener('click', () => { instructionEl.value = p.dataset.instruction; });
+    });
+    btn.addEventListener('click', async () => {
+      const instruction = instructionEl.value.trim();
+      if (!instruction) { instructionEl.focus(); return; }
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = 'Asking AI…';
+      try {
+        const { job_id } = await fetch(endpoint, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...buildPayload(), instruction }),
+        }).then((r) => r.json());
+        const job = await pollJob(job_id);
+        if (job.status === 'error') throw new Error(job.error);
+        onResult(job.result);
+        instructionEl.value = '';
+        card.dataset.rewritten = 'true';
+      } catch (e) {
+        statusEl.style.color = 'var(--accent)';
+        statusEl.textContent = e.message || 'Could not rewrite — try again.';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
   }
 
   const statusStyle = {
@@ -478,12 +530,31 @@
     card.dataset.id = d.id;
     tpl.querySelector('.dc-name').textContent = d.name || 'Unknown';
     tpl.querySelector('.dc-email').textContent = d.email || '';
-    tpl.querySelector('.dc-subject').value = d.subject || '';
-    tpl.querySelector('.dc-body').value = d.body || '';
+    const subjectEl = tpl.querySelector('.dc-subject');
+    const bodyEl = tpl.querySelector('.dc-body');
+    // .defaultValue set alongside .value (not just .value) so "Send pending
+    // batch" can later tell a hand-edited/rewritten card apart from an
+    // untouched one by comparing the two -- native HTML behavior for
+    // exactly this, no separate bookkeeping to keep in sync.
+    subjectEl.value = subjectEl.defaultValue = d.subject || '';
+    bodyEl.value = bodyEl.defaultValue = d.body || '';
 
     const sendBtn = tpl.querySelector('.dc-send');
     const discardBtn = tpl.querySelector('.dc-discard');
     const statusEl = tpl.querySelector('.dc-status');
+
+    wireRewrite(card, {
+      presetSel: '.dc-preset', instructionSel: '.dc-instruction', buttonSel: '.dc-rewrite', statusEl,
+      endpoint: `/api/outreach/drafts/${d.id}/rewrite`,
+      buildPayload: () => ({
+        subject: card.querySelector('.dc-subject').value,
+        body: card.querySelector('.dc-body').value,
+      }),
+      onResult: (result) => {
+        card.querySelector('.dc-subject').value = result.subject;
+        card.querySelector('.dc-body').value = result.body;
+      },
+    });
 
     sendBtn.addEventListener('click', async () => {
       sendBtn.disabled = true; discardBtn.disabled = true;
@@ -495,6 +566,7 @@
           body: JSON.stringify({
             subject: card.querySelector('.dc-subject').value,
             body: card.querySelector('.dc-body').value,
+            rewritten: card.dataset.rewritten === 'true',
           }),
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to send');
@@ -668,6 +740,13 @@
         replyWrapper
       );
     } else {
+      wireRewrite(card, {
+        presetSel: '.rc-preset', instructionSel: '.rc-instruction', buttonSel: '.rc-rewrite', statusEl,
+        endpoint: `/api/outreach/replies/${r.id}/rewrite`,
+        buildPayload: () => ({ body: card.querySelector('.rc-draft').value }),
+        onResult: (result) => { card.querySelector('.rc-draft').value = result.body; },
+      });
+
       sendBtn.addEventListener('click', async () => {
         sendBtn.disabled = true;
         dismissBtn.disabled = true;
@@ -676,7 +755,10 @@
           const res = await fetch(`/api/outreach/replies/${r.id}/send`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ body: card.querySelector('.rc-draft').value }),
+            body: JSON.stringify({
+              body: card.querySelector('.rc-draft').value,
+              rewritten: card.dataset.rewritten === 'true',
+            }),
           });
           if (!res.ok) throw new Error('Failed');
           statusEl.textContent = 'Sent ✓';
@@ -803,7 +885,21 @@
     const resultEl = document.getElementById('send-result');
     const count = document.querySelectorAll('.draft-card').length;
     if (!count) return;
-    if (!confirm(`Send all ${count} approved draft${count === 1 ? '' : 's'} now? They go out one at a time, spaced apart, from your Gmail. Anyone who unsubscribed in the meantime is skipped.`)) return;
+    // "Send pending batch" sends the STORED copy of every draft, not
+    // whatever's currently in a card's textarea -- true of a hand-edit
+    // today and now also true of an AI rewrite. Comparing .value against
+    // .defaultValue (set when each card was rendered) catches both
+    // identically, so the warning below is honest about its own scope
+    // rather than naming only rewrites and staying silent about hand-edits.
+    const dirtyCount = [...document.querySelectorAll('.draft-card')].filter((card) => {
+      const subjectEl = card.querySelector('.dc-subject');
+      const bodyEl = card.querySelector('.dc-body');
+      return subjectEl.value !== subjectEl.defaultValue || bodyEl.value !== bodyEl.defaultValue;
+    }).length;
+    const dirtyWarning = dirtyCount
+      ? `${dirtyCount} draft${dirtyCount === 1 ? ' has' : 's have'} unsent changes — Send all will use the original stored version${dirtyCount === 1 ? '' : 's'}, not what's shown. `
+      : '';
+    if (!confirm(`${dirtyWarning}Send all ${count} approved draft${count === 1 ? '' : 's'} now? They go out one at a time, spaced apart, from your Gmail. Anyone who unsubscribed in the meantime is skipped.`)) return;
 
     setLoading(btn, true, 'Sending…');
     resultEl.classList.add('hidden');

@@ -108,6 +108,12 @@ create table public.reviews (
     -- operator's own alias reply as a stranger -- this makes that visible on
     -- the review card instead of only in a log.
     degraded_classification boolean not null default false,
+    -- Set (via mark_rewritten, a separate best-effort write -- never part of
+    -- mark_sent's update) when an AI rewrite touched this reply before it
+    -- was sent. Without it, the diff between original_draft_reply and the
+    -- sent copy would look like a labelled human-preference pair when it's
+    -- really the model's own rewrite on both sides.
+    rewritten boolean not null default false,
     created_at timestamptz not null default now()
 );
 create index reviews_account_status_idx on public.reviews (account_id, status);
@@ -146,6 +152,10 @@ create table public.outreach_drafts (
     -- is what makes an edit a labelled example rather than a deletion.
     original_subject text,
     original_body text,
+    -- Same "AI touched this before send" flag as reviews.rewritten, and the
+    -- same reason: without it the diff against original_subject/original_body
+    -- would look like the operator's voice when it's the model's own rewrite.
+    rewritten boolean not null default false,
     status text not null default 'pending',  -- pending | sent | discarded
     created_at timestamptz not null default now()
 );
