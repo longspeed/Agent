@@ -59,6 +59,16 @@
   pytest needed) covering the outreach agent's pure logic with all external
   boundaries (Gmail, Sheets, OpenRouter, Supabase) faked. Run it after any
   change to `outreach-agent/*.py`. Added 2026-07-19.
+- test (second suite): `cd outreach-agent && python -m unittest discover tests`
+  — leads dedup, rate limiting, and usage metering. Must be run from
+  `outreach-agent/`; from the repo root `tests` resolves to the suite above and
+  unittest exits 4 without running anything. Listed here because leaving it out
+  is how it went stale: the plan-quota gate added a Supabase read to
+  `find_leads`, nothing faked it, and this suite spent a while issuing live
+  queries against the production database on every run while the documented
+  health command stayed green. Added 2026-07-26.
+  Both suites must pass with sockets blocked — that is the actual invariant:
+  `python -c "import socket,unittest;socket.socket.connect=lambda *a:(_ for _ in ()).throw(AssertionError('network'));unittest.TextTestRunner().run(unittest.TestLoader().discover('tests'))"`
 - typecheck: `python -m py_compile server.py outreach-agent/*.py` (syntax
   errors only — not a real type checker; Python has no static types here)
 - model eval: `python outreach-agent/eval_models.py --n 50` — scores each
@@ -75,6 +85,25 @@
   **This is a release gate:** the fast approval queue targets ~3.6 seconds per
   draft, which is what turns human approval from a real control into a nominal
   one. Do not ship it while this eval is failing on the injection cases.
+
+- frontend build: `app/` (Settings, Getting Started) and `site/` (the
+  logged-out landing page) are separate Vite/React projects that compile to
+  `static/app/` and `static/landing/` respectively — editing their `src/`
+  changes nothing live until each is rebuilt with `cd app && npm run build`
+  / `cd site && npm run build`. Added 2026-08-05 after a review found both
+  compiled bundles 3-12 days stale: a source-level copy fix ("verified
+  emails" → "approved emails", the false "Verified emails only" claim on the
+  landing page) sat correct in git for days while the deployed HTML/JS still
+  shipped the old, false text — nothing had ever rebuilt it.
+- build freshness: `python check_build_freshness.py` — compares the commit
+  SHA each bundle was built from (stamped into `static/app/.build-commit` /
+  `static/landing/.build-commit` by a Vite plugin, not read off file mtimes
+  or commit *dates*, which change under rebase/amend without the content
+  changing) against the latest commit touching that project's `src/`. Run it
+  after `npm run build`, before deploying: if it warns, rebuild — this is
+  advisory (always exits 0, no CI exists yet to consume a hard failure), a
+  human has to act on the output, the script does not enforce anything.
+  Added 2026-08-05, same review as above.
 
 No linter or dead-code tool is configured (nothing on PATH, no config
 files). Update this section if `ruff`/`pytest` get added.
