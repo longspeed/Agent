@@ -50,7 +50,7 @@ function renderNav(breadcrumb) {
 // Respects prefers-reduced-motion by jumping straight to the final value.
 function animateCount(el, target, { duration = 700, prefix = '', suffix = '', locale = false } = {}) {
   if (!el) return;
-  const format = (n) => prefix + (locale ? n.toLocaleString() : n) + suffix;
+  const format = (n) => prefix + (locale ? n.toLocaleString('en-US') : n) + suffix;
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     el.textContent = format(target);
     return;

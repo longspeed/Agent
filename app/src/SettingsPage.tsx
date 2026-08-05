@@ -17,6 +17,7 @@ interface MeResponse {
   googleConnected: boolean
   settings: AccountSettings
   onboarded: boolean
+  sendBlockers: string[]
 }
 
 interface UsageSummary {
@@ -24,9 +25,18 @@ interface UsageSummary {
 }
 
 interface PlanInfo {
+  name: string
   price_monthly_usd: number
   daily_send_limit: number
   lead_searches_per_hour: number
+  monthly_drafts: number | null
+  lead_allowance: number | null
+  usage: {
+    drafts_used: number
+    drafts_remaining: number | null
+    leads_used: number
+    leads_remaining: number | null
+  }
 }
 
 interface SheetOption {
@@ -74,7 +84,7 @@ function StatTile({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-xl p-4 bg-floating border border-line">
       <div className="font-display text-2xl" style={{ letterSpacing: '-0.02em' }}>
-        {animated.toLocaleString()}
+        {animated.toLocaleString('en-US')}
       </div>
       <div className="text-xs mt-1 text-sand">{label}</div>
     </div>
@@ -107,11 +117,15 @@ export function SettingsPage() {
       google_sheet_id: meRes.settings.google_sheet_id || '',
     })
 
-    const usageRes = await (await fetch('/api/usage')).json()
+    // usage and plan don't depend on meRes -- fetch both concurrently
+    // instead of awaiting three requests in sequence.
+    const [usageRes, planRes] = await Promise.all([
+      fetch('/api/usage').then((r) => r.json()),
+      fetch('/api/plan').then((r) => r.json()),
+    ])
     setUsage(usageRes)
-
-    const planRes = await (await fetch('/api/plan')).json()
     setPlan(planRes)
+    return meRes
   }
 
   useEffect(() => {
@@ -142,9 +156,18 @@ export function SettingsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-    setSaveStatus(res.ok ? 'Saved.' : 'Save failed — try again.')
-    setTimeout(() => setSaveStatus(''), 2500)
-    if (res.ok) load()
+    if (res.ok) {
+      const meRes = await load()
+      if (meRes.sendBlockers.length) {
+        setSaveStatus(`Saved — but: ${meRes.sendBlockers.join(' ')}`)
+      } else {
+        setSaveStatus('Saved.')
+        setTimeout(() => setSaveStatus(''), 2500)
+      }
+    } else {
+      setSaveStatus('Save failed — try again.')
+      setTimeout(() => setSaveStatus(''), 2500)
+    }
   }
 
   async function loadSheetsList() {
@@ -306,6 +329,18 @@ export function SettingsPage() {
           <h2 className="font-display text-lg mb-5" style={{ letterSpacing: '-0.01em' }}>
             Outreach settings
           </h2>
+          {me.sendBlockers.length > 0 && (
+            <div
+              className="rounded-lg px-4 py-3 text-sm mb-5 border border-line"
+              style={{ background: 'rgba(232,98,44,0.12)', color: 'var(--color-accent)' }}
+            >
+              <ul className="space-y-1">
+                {me.sendBlockers.map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="grid gap-4">
             <div className="text-sm">
               <span className="block mb-1.5 text-sand">Lead sheet</span>
@@ -338,7 +373,11 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
-              <button type="button" onClick={() => setManualSheetVisible((v) => !v)} className="text-xs mt-2 text-mute transition-colors duration-150">
+              <button
+                type="button"
+                onClick={() => setManualSheetVisible((v) => !v)}
+                className="text-xs mt-2 text-accent underline underline-offset-[3px] decoration-accent/40 rounded-[3px] transition-colors duration-200 ease-spring hover:text-accent-hover hover:decoration-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 active:opacity-85"
+              >
                 Or paste a Sheet ID/URL manually
               </button>
               {manualSheetVisible && (
@@ -373,7 +412,9 @@ export function SettingsPage() {
             </div>
 
             <label className="text-sm">
-              <span className="block mb-1.5 text-sand">Sender first name (signs your emails)</span>
+              <span className="block mb-1.5 text-sand">
+                Sender first name (signs your emails) <span className="text-sand/50">(required)</span>
+              </span>
               <input
                 type="text"
                 value={form.sender_name ?? ''}
@@ -384,7 +425,9 @@ export function SettingsPage() {
             </label>
 
             <label className="text-sm">
-              <span className="block mb-1.5 text-sand">Company name (shown under your name in the signature)</span>
+              <span className="block mb-1.5 text-sand">
+                Company name (shown under your name in the signature) <span className="text-sand/50">(optional)</span>
+              </span>
               <input
                 type="text"
                 value={form.sender_company ?? ''}
@@ -395,7 +438,9 @@ export function SettingsPage() {
             </label>
 
             <label className="text-sm">
-              <span className="block mb-1.5 text-sand">What you're reaching out about (one sentence, used in every email)</span>
+              <span className="block mb-1.5 text-sand">
+                What you're reaching out about (one sentence, used in every email) <span className="text-sand/50">(required)</span>
+              </span>
               <input
                 type="text"
                 value={form.meeting_purpose ?? ''}
@@ -475,12 +520,28 @@ export function SettingsPage() {
         {plan && (
           <section className="rounded-2xl p-6 card-shadow mt-6 bg-elevated border border-line">
             <h2 className="font-display text-lg mb-1" style={{ letterSpacing: '-0.01em' }}>
-              Pilot plan
+              {plan.name} plan
             </h2>
             <p className="text-sm text-sand">
               ${plan.price_monthly_usd}/month · up to {plan.daily_send_limit} approved emails per inbox every 24 hours · {plan.lead_searches_per_hour}{' '}
               lead searches per hour.
             </p>
+            {(plan.monthly_drafts != null || plan.lead_allowance != null) && (
+              <div className="flex flex-wrap gap-4 mt-4">
+                {plan.monthly_drafts != null && (
+                  <span className="text-xs text-sand">
+                    <span className="text-cream font-medium">{plan.usage.drafts_used.toLocaleString('en-US')}</span> of{' '}
+                    {plan.monthly_drafts.toLocaleString('en-US')} drafts used this month
+                  </span>
+                )}
+                {plan.lead_allowance != null && (
+                  <span className="text-xs text-sand">
+                    <span className="text-cream font-medium">{plan.usage.leads_used.toLocaleString('en-US')}</span> of{' '}
+                    {plan.lead_allowance.toLocaleString('en-US')} leads sourced
+                  </span>
+                )}
+              </div>
+            )}
             <p className="text-xs mt-3 text-mute">This is a pricing placeholder while checkout is being validated with early customers.</p>
           </section>
         )}
