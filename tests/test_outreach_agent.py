@@ -1451,6 +1451,53 @@ def test_account_send_blockers_requires_real_sender_name():
     assert agent.account_send_blockers({"sender_name": "Long", "meeting_purpose": "sell CLIs to devs"}) == []
 
 
+def test_meeting_purpose_guard_blocks_near_emptiness():
+    """REGRESSION (BUGS.md BUG guard-audit / review 2026-08-05): the guard used
+    to compare only against the literal DEFAULT_MEETING_PURPOSE string, so any
+    other short filler sailed through. Below MIN_MEETING_PURPOSE_LENGTH is
+    blocked regardless of wording."""
+    account = {"sender_name": "Long", "meeting_purpose": "hi"}
+    assert agent.account_send_blockers(account)
+    account = {"sender_name": "Long", "meeting_purpose": "quick sync"}
+    assert agent.account_send_blockers(account)
+
+
+def test_meeting_purpose_guard_allows_short_specific_purposes():
+    """A short, concrete purpose must not be blocked just for being short --
+    length is not a specificity check. Locks in the exact case that made the
+    40-char version of this guard (an earlier draft) wrong: it would have
+    blocked this."""
+    account = {"sender_name": "Long", "meeting_purpose": "sell CLIs to devs"}
+    assert agent.account_send_blockers(account) == []
+
+
+def test_meeting_purpose_guard_blocks_paraphrases_of_the_default():
+    from config import DEFAULT_MEETING_PURPOSE
+
+    account = {"sender_name": "Long", "meeting_purpose": DEFAULT_MEETING_PURPOSE}
+    assert agent.account_send_blockers(account)
+    # A light reword of the default, not a byte-identical copy -- this is
+    # what the near-duplicate check exists for; the old exact-string
+    # comparison let this straight through.
+    account = {
+        "sender_name": "Long",
+        "meeting_purpose": "a fast intro call to see if we are a fit to work together",
+    }
+    assert agent.account_send_blockers(account)
+
+
+def test_meeting_purpose_guard_disclosed_gap_wordy_but_empty():
+    """DISCLOSED GAP, not a bug: a wordy-but-content-free purpose that neither
+    resembles the default nor is short enough to trip the near-emptiness floor
+    is NOT caught. Verified during the 2026-08-05 review that no length floor
+    can close this without also blocking legitimate short purposes (the
+    previous test) -- length is not a proxy for specificity in either
+    direction. This test exists so a future reader sees the gap is known and
+    intentional, not an unnoticed regression -- see TODOS.md."""
+    account = {"sender_name": "Long", "meeting_purpose": "To have a meeting with our team"}
+    assert agent.account_send_blockers(account) == []
+
+
 # ---------------------------------------------------------------------- sheets
 
 def _row(status="", email="j@x.com", sent_at="", thread="", name="John", body="", company="Acme"):
@@ -2588,6 +2635,72 @@ def test_server_prepare_blocked_by_settings():
         except server.HTTPException as e:
             assert e.status_code == 409 and "Settings" in e.detail
         assert account["id"] not in server._accounts_sending, "no lock should be held on a rejected batch"
+
+
+# ------------------------------------------------------------- signup/login
+
+def _fake_request(ip="1.2.3.4"):
+    from types import SimpleNamespace
+    return SimpleNamespace(headers={}, client=SimpleNamespace(host=ip))
+
+
+def test_signup_rejects_bad_format_without_consuming_ratelimit():
+    """REGRESSION (BUGS.md BUG-2): format validation must run before the rate
+    limit is charged, so a mistyped email or a too-short password doesn't burn
+    one of the 5 signup attempts a real user gets per hour."""
+    import server
+    calls = []
+    with patched(server.ratelimit, "check", lambda *a, **k: calls.append(a) or True):
+        try:
+            server.signup_submit(_fake_request(), server.CredentialsBody(email="not-an-email", password="longenough"))
+            raise AssertionError("expected 400 for invalid email")
+        except server.HTTPException as e:
+            assert e.status_code == 400
+        try:
+            server.signup_submit(_fake_request(), server.CredentialsBody(email="a@b.com", password="short"))
+            raise AssertionError("expected 400 for a too-short password")
+        except server.HTTPException as e:
+            assert e.status_code == 400
+    assert calls == [], "malformed signups must not consume a rate-limit slot"
+
+
+def test_login_rejects_empty_credentials_before_ratelimit_and_lookup():
+    """REGRESSION (BUGS.md BUG-2, BUG-3): an empty submit is not a guessed
+    credential -- it must not cost a rate-limit slot, and must not be reported
+    as "Wrong email or password" (which points a first-time visitor at a
+    password reset that doesn't exist rather than at signup)."""
+    import server
+    ratelimit_calls = []
+    lookup_calls = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: ratelimit_calls.append(a) or True))
+        stack.enter_context(patched(server.accounts_db, "get_account_by_email", lambda e: lookup_calls.append(e) or None))
+        try:
+            server.login_submit(_fake_request(), server.CredentialsBody(email="", password=""))
+            raise AssertionError("expected 400 for empty credentials")
+        except server.HTTPException as e:
+            assert e.status_code == 400
+            assert "wrong" not in e.detail.lower()
+    assert ratelimit_calls == [], "empty submit must not consume a rate-limit slot"
+    assert lookup_calls == [], "empty submit must not reach the account lookup"
+
+
+def test_me_surfaces_send_blockers():
+    """REGRESSION (BUGS.md BUG-1): /api/me must expose the same blockers the
+    campaign preview gates sending on, so Settings can render them next to the
+    field that fixes each one instead of only at send time."""
+    import server
+    account = dict(ACCOUNT, email="oanh@x.com", sender_name="", meeting_purpose=agent.DEFAULT_MEETING_PURPOSE)
+    from types import SimpleNamespace
+    req = SimpleNamespace(state=SimpleNamespace(account_id=account["id"]))
+    with patched(server, "_account", lambda r: account):
+        result = server.me(req)
+    assert len(result["sendBlockers"]) == 2, result["sendBlockers"]
+
+    ready_account = dict(ACCOUNT, email="oanh@x.com")
+    with patched(server, "_account", lambda r: ready_account):
+        result = server.me(req)
+    assert result["sendBlockers"] == []
 
 
 # --------------------------------------------------------- drafts_db: rewritten

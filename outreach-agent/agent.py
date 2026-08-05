@@ -1,3 +1,4 @@
+import difflib
 import re
 import time
 
@@ -553,6 +554,41 @@ def _strip_opt_out_line(body, unsubscribe_url):
     return "\n".join(kept).strip()
 
 
+# A floor against near-emptiness only -- deliberately NOT calibrated to catch
+# "To have a meeting with our team" (31 chars), the live example that started
+# this fix. That case cannot be reached by raising this number: an existing,
+# intentional test (test_account_send_blockers_requires_real_sender_name)
+# requires a 17-character purpose ("sell CLIs to devs") to pass, and any
+# floor above 17 breaks it. Since the
+# 31-char reported case is *longer* than that legitimate short example, no
+# length floor can block one without also blocking the other -- length is not
+# a proxy for specificity, in either direction. Set just above single-word/
+# stub answers ("hi", "meeting", "sync up"), which is the only thing a length
+# check can honestly claim to catch. Blocker copy must say "add more detail",
+# never imply quality was checked, or a guard that only measures length ends
+# up implying a judgment it never made. The reported case is a disclosed,
+# known gap -- see TODOS.md -- not silently pretended-away.
+MIN_MEETING_PURPOSE_LENGTH = 15
+
+# How similar a purpose can be to DEFAULT_MEETING_PURPOSE (59 chars) before
+# it is treated as a reword of the default rather than a real answer. This
+# check and MIN_MEETING_PURPOSE_LENGTH catch DISJOINT failure modes, not
+# overlapping ones: the default itself is 59 characters, well above the
+# floor, so only this check catches it. Do not remove either one -- each
+# blocks something the other misses entirely.
+_MEETING_PURPOSE_SIMILARITY_THRESHOLD = 0.8
+
+
+def _is_near_duplicate_of_default(purpose: str) -> bool:
+    """True if `purpose` is a light reword of DEFAULT_MEETING_PURPOSE rather
+    than a distinct answer. difflib's ratio is 2*matches/(len(a)+len(b)) --
+    a paraphrase-of-the-default tolerance, not a typo tolerance."""
+    ratio = difflib.SequenceMatcher(
+        None, purpose.lower(), DEFAULT_MEETING_PURPOSE.lower()
+    ).ratio()
+    return ratio >= _MEETING_PURPOSE_SIMILARITY_THRESHOLD
+
+
 def account_send_blockers(account):
     """Settings that must be filled before any outreach can be generated, as a
     list of human-readable reasons (empty = ready). The campaign preview shows
@@ -574,10 +610,21 @@ def account_send_blockers(account):
             "Add your first name in Settings - outreach is signed 'the team' until you do, "
             "which reads as a bot."
         )
-    if not ctx["meeting_purpose"] or ctx["meeting_purpose"] == DEFAULT_MEETING_PURPOSE:
+    meeting_purpose = ctx["meeting_purpose"]
+    if not meeting_purpose:
         blockers.append(
             "Describe what you're reaching out about in Settings - the default text is too "
             "generic to write a useful email from."
+        )
+    elif len(meeting_purpose) < MIN_MEETING_PURPOSE_LENGTH:
+        blockers.append(
+            "Add more detail to what you're reaching out about in Settings - a specific "
+            "offer, audience, or outcome. Short purposes produce empty-sounding emails."
+        )
+    elif _is_near_duplicate_of_default(meeting_purpose):
+        blockers.append(
+            "What you're reaching out about in Settings is too close to the default text - "
+            "describe your own offer, audience, or outcome instead."
         )
     return blockers
 

@@ -300,13 +300,16 @@ class CredentialsBody(BaseModel):
 
 @app.post("/signup", status_code=201)
 def signup_submit(request: Request, payload: CredentialsBody):
-    if not ratelimit.check(f"signup:{_client_ip(request)}", limit=5, window_seconds=3600):
-        raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
     email = payload.email.strip().lower()
     if "@" not in email or "." not in email.partition("@")[2]:
         raise HTTPException(status_code=400, detail="Enter a valid email address")
     if len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    # Rate-limit only after format validation passes, so a malformed
+    # email/password can't burn an attempt against someone who was never going
+    # to reach account creation anyway (see BUGS.md BUG-2).
+    if not ratelimit.check(f"signup:{_client_ip(request)}", limit=5, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
     try:
         account = accounts_db.create_account(email, auth.hash_password(payload.password))
     except ValueError as e:
@@ -316,9 +319,15 @@ def signup_submit(request: Request, payload: CredentialsBody):
 
 @app.post("/login")
 def login_submit(request: Request, payload: CredentialsBody):
+    email = payload.email.strip().lower()
+    # Reject empty fields before both the rate limit and the lookup: an empty
+    # submit isn't a guessed credential, so it shouldn't cost a rate-limit slot
+    # or come back as "Wrong email or password" (see BUGS.md BUG-2, BUG-3).
+    if not email or not payload.password:
+        raise HTTPException(status_code=400, detail="Enter your email and password")
     if not ratelimit.check(f"login:{_client_ip(request)}", limit=10, window_seconds=300):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again in a few minutes.")
-    account = accounts_db.get_account_by_email(payload.email.strip().lower())
+    account = accounts_db.get_account_by_email(email)
     if account and not account.get("password_hash"):
         raise HTTPException(status_code=401, detail='This account signs in with Google — use "Continue with Google."')
     if not account or not auth.verify_password(payload.password, account["password_hash"]):
@@ -371,6 +380,10 @@ def me(request: Request):
         "onboarded": bool(account.get("google_token"))
         and bool((account.get("google_sheet_id") or "").strip())
         and bool((account.get("calendar_booking_link") or "").strip()),
+        # Same blockers the campaign preview gates sending on (see
+        # agent.account_send_blockers) -- surfaced here too so Settings can show
+        # them next to the field that fixes each one, instead of only at send time.
+        "sendBlockers": agent.account_send_blockers(account),
     }
 
 
