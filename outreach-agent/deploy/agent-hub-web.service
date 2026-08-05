@@ -1,0 +1,37 @@
+# Systemd unit for the web server (server.py / uvicorn).
+#
+# This is a template, not a ready-to-run file: it does nothing until a real
+# host exists to install it on. Fill in the placeholders below, then:
+#
+#   sudo cp agent-hub-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agent-hub-web
+#   sudo systemctl status agent-hub-web
+#   journalctl -u agent-hub-web -f              # live logs
+#
+# Deliberately independent of the worker's unit (agent-hub-worker.service):
+# either can restart, crash, or be redeployed without taking the other down.
+# Binds 127.0.0.1 only -- this process is never meant to be reachable
+# directly. A named Cloudflare Tunnel (not a quick tunnel -- those rotate
+# URLs on restart and break the registered OAuth redirect URIs) terminates
+# TLS and forwards to 127.0.0.1:8000, which is also why server.py trusts
+# CF-Connecting-IP for rate limiting instead of the raw socket peer -- see
+# VALIDATION-WEEK.md for the tunnel setup steps.
+
+[Unit]
+Description=Agent Hub web server (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# CHANGE ME: the non-root user this should run as, and the checkout path.
+User=CHANGE_ME
+WorkingDirectory=/CHANGE_ME
+EnvironmentFile=/CHANGE_ME/outreach-agent/.env
+ExecStart=/usr/bin/python3 -m uvicorn server:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

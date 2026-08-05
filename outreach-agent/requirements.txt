@@ -6,5 +6,6 @@ python-dotenv
 schedule
 fastapi
 uvicorn
+python-multipart
 supabase
 cryptography
