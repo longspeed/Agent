@@ -18,7 +18,7 @@ jobs:
         run: pip install -r outreach-agent/requirements.txt
       - name: Syntax check
         run: python -m py_compile server.py outreach-agent/*.py check_build_freshness.py
-      - name: Main test suite (338 cases, no network, no real credentials)
+      - name: Main test suite (334 cases, no network, no real credentials)
         run: python tests/test_outreach_agent.py
       - name: Build-freshness script tests
         run: python tests/test_build_freshness.py
