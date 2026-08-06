@@ -8,10 +8,11 @@ they matter once there's more than one customer, or once sending volume grows.
 
 Filed while reviewing a live QA report (autopilot-vs-approval messaging, false
 "verified emails" claims, a Prepare-drafts UX dead end, locale-naive
-formatting, the Replied? column, and an exact-string meeting-purpose guard) —
-the review is complete and a fix plan is agreed, but implementation has not
-landed yet. Mode was HOLD SCOPE; these two are the parts explicitly deferred
-from that plan rather than included in it.
+formatting, the Replied? column, and an exact-string meeting-purpose guard).
+**Resolution:** implementation landed and passed `/plan-eng-review` on
+2026-08-05 (T1-T13 from the CEO review, plus fixes found during the eng
+pass — see below). Mode was HOLD SCOPE; these two are the parts explicitly
+deferred from that plan rather than included in it.
 
 ### Extend the legal-copy review to static/landing/'s marketing claims
 **What:** `static/landing/`'s pricing tiers and feature bullets ("verified
@@ -20,11 +21,13 @@ for `/privacy`, `/terms`, `/security` etc.
 **Why:** This review found a live, false "Verified emails only" / "never
 touches an address it couldn't verify" claim on the public landing page —
 automated verification (NeverBounce) was removed 2026-07-18; today
-verification is manual-only. Correcting that specific copy is in the agreed
-fix plan (not yet implemented), but the underlying question ("does every
-claim on this page hold up") wasn't fully audited beyond what this review
-happened to check, and the legal pages already have a planned review this
-page isn't currently in scope for.
+verification is manual-only. **Correcting that specific copy landed
+2026-08-05** (turned out to already be fixed in `site/src/` source as of
+commit `15a420c` — the deployed bundle was just 12+ days stale; a rebuild
+shipped it), but the underlying question ("does every claim on this page
+hold up") wasn't fully audited beyond what this review happened to check,
+and the legal pages already have a planned review this page isn't currently
+in scope for.
 **Context:** `static/landing/` (compiled React bundle — edit the source under
 whatever `app/` (or equivalent) directory builds it, not the compiled JS
 directly); existing TODOS entry "Legal pages need a lawyer's review before
@@ -39,9 +42,9 @@ hard blocker.
 `static/landing/` (the logged-out marketing bundle) currently carry two
 independently-maintained descriptions of the product. This review found they
 had already drifted (one said "runs itself / autonomous agents," the other
-said "no autopilot mode — the approval step is the product"); the agreed fix
-plan rewrites `index.html` in place to match (not yet implemented) — but the
-two-surface structure itself would still invite the same drift again.
+said "no autopilot mode — the approval step is the product"); **`index.html`
+was rewritten in place to match on 2026-08-05** — but the two-surface
+structure itself still invites the same drift again.
 **Why:** The root cause of this review's central finding wasn't a single
 wrong sentence, it was that nothing would have caught the sentence going
 wrong. Two sources of truth for "what does this product do" will drift again
@@ -55,6 +58,24 @@ functional dashboard shell, not just swap in landing's marketing copy.
 pages still load Tailwind from the CDN" below) — XS to note the dependency now.
 **Priority:** P3
 **Depends on:** The outreach/leads pages completing their React conversion first.
+
+## Deferred from the trust/messaging fix's eng review (2026-08-05, `/plan-eng-review`)
+
+### Settings shows a generic "Save failed" for a rejected-too-long meeting purpose
+**What:** `SettingsPage.tsx`'s `handleSave()` doesn't distinguish a 422
+(validation rejection — e.g. `meeting_purpose` over its new 500-char cap)
+from any other failed save; both show "Save failed — try again."
+**Why:** A user who somehow pastes 500+ characters gets no clue why saving
+failed specifically.
+**Pros:** Clearer error message for an edge case.
+**Cons:** Realistic likelihood of hitting this is near zero — the field is
+described as "one sentence, used in every email," and 500 characters is
+generous for that.
+**Context:** `app/src/SettingsPage.tsx` `handleSave()`; `server.py`'s
+`SettingsBody.meeting_purpose` (`Field(max_length=500)`, added 2026-08-05).
+**Effort:** XS (human) → XS (CC + gstack)
+**Priority:** P3
+**Depends on:** Nothing blocking.
 
 ## Guard audit: where each safety check gets its inputs (2026-07-26)
 

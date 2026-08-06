@@ -436,6 +436,13 @@
   }
 
   let campaignsCache = [];
+  // Guards against duplicate concurrent fetches: loadCampaigns() is called
+  // both unconditionally at page load and again inside loadCampaignSafety()
+  // when eligible===0 (to read a fresh campaignsCache for the empty-state
+  // message) -- those two calls can overlap. A second call while one is
+  // already in flight reuses that same pending request instead of firing a
+  // duplicate GET.
+  let campaignsLoadPromise = null;
   let campaignPreview = null;
   let campaignBlockedReason = null; // 409 detail (e.g. Google not connected) — shown when Prepare is clicked anyway
   function setPrepareEnabled(enabled) {
@@ -638,7 +645,15 @@
     animateCount(document.getElementById('stat-drafts'), count);
     document.getElementById('send-all-btn').classList.toggle('hidden', count === 0);
   }
-  async function loadCampaigns() {
+  function loadCampaigns() {
+    if (campaignsLoadPromise) return campaignsLoadPromise;
+    campaignsLoadPromise = _loadCampaignsImpl().finally(() => {
+      campaignsLoadPromise = null;
+    });
+    return campaignsLoadPromise;
+  }
+
+  async function _loadCampaignsImpl() {
     const body = document.getElementById('campaigns-body');
     try {
       const res = await fetch('/api/outreach/campaigns');

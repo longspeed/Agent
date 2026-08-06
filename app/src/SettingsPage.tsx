@@ -157,13 +157,13 @@ export function SettingsPage() {
       body: JSON.stringify(body),
     })
     if (res.ok) {
-      const meRes = await load()
-      if (meRes.sendBlockers.length) {
-        setSaveStatus(`Saved — but: ${meRes.sendBlockers.join(' ')}`)
-      } else {
-        setSaveStatus('Saved.')
-        setTimeout(() => setSaveStatus(''), 2500)
-      }
+      await load()
+      // The blockers banner above the form (rendered from me.sendBlockers)
+      // already carries this message persistently -- repeating it here too
+      // showed the same sentence twice on screen with no way to dismiss
+      // either copy.
+      setSaveStatus('Saved.')
+      setTimeout(() => setSaveStatus(''), 2500)
     } else {
       setSaveStatus('Save failed — try again.')
       setTimeout(() => setSaveStatus(''), 2500)

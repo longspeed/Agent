@@ -15,6 +15,25 @@ yet (see claude.md Health Stack), and a check that can itself fail the run
 is a worse regression than the staleness it exists to catch. Run it, read
 the output, rebuild if it warns -- that instruction, not this script, is
 what actually closes the gap.
+
+check_one() per project:
+
+    .build-commit missing?  ──yes──▶  WARN "no build found"
+           │no
+           ▼
+    .build-commit empty?    ──yes──▶  WARN "is empty"
+           │no
+           ▼
+    `git log -1 -- src/` fails? ──yes──▶  WARN "could not read git history"
+           │no (latest_src_commit)
+           ▼
+    latest_src_commit an ancestor of the stamped build SHA?
+           │                                  │
+          yes                                 no
+           ▼                                  ▼
+      None (fresh)              WARN "STALE -- N commits since"
+                                 (rev-list count best-effort; falls back
+                                  to "unknown number of" on its own failure)
 """
 import subprocess
 import sys

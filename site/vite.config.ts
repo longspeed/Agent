@@ -14,10 +14,19 @@ function buildCommitStamp(srcDir: string, outDir: string): Plugin {
   return {
     name: 'build-commit-stamp',
     closeBundle() {
-      const sha = execSync(`git log -1 --format=%H -- ${srcDir}`, { cwd: __dirname })
-        .toString()
-        .trim()
-      writeFileSync(resolve(__dirname, outDir, '.build-commit'), sha + '\n')
+      // Advisory, same as check_build_freshness.py that reads this file: a
+      // git failure here (unusual environment, git missing, detached HEAD)
+      // must not abort the production build -- it degrades to the same
+      // "no build found" state the freshness check already handles for a
+      // missing stamp, not a build-breaking error.
+      try {
+        const sha = execSync(`git log -1 --format=%H -- ${srcDir}`, { cwd: __dirname })
+          .toString()
+          .trim()
+        writeFileSync(resolve(__dirname, outDir, '.build-commit'), sha + '\n')
+      } catch (err) {
+        console.warn(`[build-commit-stamp] could not stamp ${outDir} -- ${(err as Error).message}`)
+      }
     },
   }
 }

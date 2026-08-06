@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from googleapiclient.errors import HttpError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import accounts_db
 import agent
@@ -390,7 +390,12 @@ def me(request: Request):
 class SettingsBody(BaseModel):
     sender_name: str | None = None
     sender_company: str | None = None
-    meeting_purpose: str | None = None
+    # "One sentence, used in every email" per the Settings UI copy -- 500 is
+    # generous for that while bounding agent._is_near_duplicate_of_default's
+    # difflib comparison, which has no cap otherwise (eng review 2026-08-05:
+    # measured ~0.2s at 100KB of adversarial input on an otherwise-uncapped
+    # field; low severity on its own, but free to close outright).
+    meeting_purpose: str | None = Field(default=None, max_length=500)
     custom_instructions: str | None = None
     calendar_booking_link: str | None = None
     notify_email: str | None = None

@@ -1462,6 +1462,39 @@ def test_meeting_purpose_guard_blocks_near_emptiness():
     assert agent.account_send_blockers(account)
 
 
+def test_meeting_purpose_guard_exact_length_boundary():
+    """REGRESSION (eng review 2026-08-05): pins the exact cutoff so an
+    off-by-one (< vs <=, or MIN_MEETING_PURPOSE_LENGTH drifting by one on a
+    future edit) fails loudly instead of passing every other test silently.
+    14 chars -- one under the floor -- must block; 15 -- exactly at it --
+    must pass (assuming it isn't also a near-duplicate of the default,
+    which neither of these is)."""
+    assert len("xxxxxxxxxxxxxx") == 14
+    assert len("xxxxxxxxxxxxxxx") == 15
+    account = {"sender_name": "Long", "meeting_purpose": "xxxxxxxxxxxxxx"}
+    assert agent.account_send_blockers(account)
+    account = {"sender_name": "Long", "meeting_purpose": "xxxxxxxxxxxxxxx"}
+    assert agent.account_send_blockers(account) == []
+
+
+def test_settings_body_caps_meeting_purpose_length():
+    """REGRESSION (eng review 2026-08-05, Performance): meeting_purpose had no
+    length cap anywhere, so an adversarial paste ran unbounded through
+    agent._is_near_duplicate_of_default's difflib comparison on every
+    account_send_blockers() call. 500 chars is generous for "one sentence,
+    used in every email" (the Settings UI's own description of the field)
+    while bounding that cost."""
+    import server
+    from pydantic import ValidationError
+
+    server.SettingsBody(meeting_purpose="x" * 500)  # must not raise
+    try:
+        server.SettingsBody(meeting_purpose="x" * 501)
+        raise AssertionError("expected a validation error over 500 chars")
+    except ValidationError:
+        pass
+
+
 def test_meeting_purpose_guard_allows_short_specific_purposes():
     """A short, concrete purpose must not be blocked just for being short --
     length is not a specificity check. Locks in the exact case that made the
