@@ -2,6 +2,10 @@
 outreach-agent/.env
 outreach-agent/credentials.json
 outreach-agent/token.json
+# per-developer MCP config -- copy .mcp.json.example and fill in your own
+# Supabase project_ref; the real one isn't a secret (no key alongside it)
+# but there's no reason to publish which project backs a given deployment
+.mcp.json
 
 # local data / generated artifacts
 server.log
@@ -36,3 +40,12 @@ e2e-shots/
 # locally-installed agent skills + their lockfile — tooling, not project code
 .claude/skills/
 skills-lock.json
+
+# AI-agent tooling and internal working docs — kept locally, not published.
+# TODOS.md and BUGS.md are the deliberate exception: those stay tracked.
+.agents/
+.claude/
+claude.md
+skill.md
+Agent-Hub-*.md
+Agent-Hub-*.pdf

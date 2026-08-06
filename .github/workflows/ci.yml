@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: pip install -r outreach-agent/requirements.txt
+      - name: Syntax check
+        run: python -m py_compile server.py outreach-agent/*.py check_build_freshness.py
+      - name: Main test suite (338 cases, no network, no real credentials)
+        run: python tests/test_outreach_agent.py
+      - name: Build-freshness script tests
+        run: python tests/test_build_freshness.py
+      - name: Second suite (leads dedup, rate limiting, usage metering)
+        working-directory: outreach-agent
+        run: python -m unittest discover tests
+      - name: Same suite, with sockets blocked (the actual invariant)
+        working-directory: outreach-agent
+        run: |
+          python -c "import socket,unittest;socket.socket.connect=lambda *a:(_ for _ in ()).throw(AssertionError('network'));r=unittest.TextTestRunner().run(unittest.TestLoader().discover('tests'));exit(0 if r.wasSuccessful() else 1)"
+
+  frontend-typecheck:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [app, site]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        working-directory: ${{ matrix.project }}
+        run: npm ci
+      - name: Typecheck
+        working-directory: ${{ matrix.project }}
+        run: npx tsc -b
+
+  build-freshness:
+    runs-on: ubuntu-latest
+    needs: frontend-typecheck
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build app/
+        working-directory: app
+        run: npm ci && npm run build
+      - name: Build site/
+        working-directory: site
+        run: npm ci && npm run build
+      - name: Check freshness (advisory -- see check_build_freshness.py)
+        run: python check_build_freshness.py
