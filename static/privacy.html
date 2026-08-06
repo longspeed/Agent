@@ -45,7 +45,6 @@
     <thead><tr><th>Data</th><th>Why</th><th>How it is held</th></tr></thead>
     <tbody>
       <tr><td>Email address</td><td>Identifies your account</td><td>Plain text</td></tr>
-      <tr><td>Password</td><td>Sign-in, if you did not use Google</td><td>Hashed with PBKDF2-SHA256, 260,000 iterations, unique per-password salt. Never stored or logged in plain text and not recoverable by us</td></tr>
       <tr><td>Google OAuth token</td><td>Sending mail and reading your sheet on your behalf</td><td>Encrypted at rest (Fernet, AES) before it reaches the database</td></tr>
       <tr><td>Your settings</td><td>Sender name, meeting purpose, calendar link, notification address, Sheet ID</td><td>Plain text</td></tr>
       <tr><td>Usage counters</td><td>Metering LLM tokens and searches</td><td>Event kind, quantity, and a short detail string capped at 200 characters</td></tr>
@@ -145,10 +144,11 @@
 
   <h2>Security</h2>
 
-  <p>Sessions use a signed, HttpOnly cookie that expires after 14 days.
-  Google tokens are encrypted before storage. Sign-in and sign-up are rate
-  limited. Outbound sending is capped per account per 24 hours. More detail is
-  on the <a href="/security">security page</a>.</p>
+  <p>Sessions use a signed, HttpOnly cookie that expires after 7 days.
+  Google tokens are encrypted before storage. Sign-in is Google OAuth only —
+  there is no password to guess or leak. Outbound sending is capped per
+  account per 24 hours. More detail is on the <a href="/security">security
+  page</a>.</p>
 
   <h2>Contact</h2>
 

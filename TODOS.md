@@ -427,37 +427,41 @@ cause re-sends either. Both duplication paths closed.
    Now genuinely returns `[]` on a request/JSON failure (so one flaky query
    doesn't abort a 3-query lead search) and meters only on success; still
    raises loudly for the missing-key config error.
-**Still open (follow-ups, NOT done here):**
-- Email verification on signup + password reset flow (needs a transactional
-  email provider — unchanged from below). The takeover vector is closed
-  without it, but verified signup is still the proper long-term fix and would
-  let password users also enable Google SSO (currently they're told to use
-  their password).
-- Authenticated "link Google identity to my existing account" flow, so a
-  password user can opt into SSO after proving ownership.
+**Still open (follow-ups, NOT done here):** ~~Email verification on signup +
+password reset flow~~ / ~~authenticated "link Google identity to my existing
+account" flow~~ — both superseded 2026-08-06: password auth (and signup
+itself) was deleted outright rather than hardened (see PLAN-WEEK-2026-08-05.md,
+M1). There is no password to verify, reset, or link against anymore, so
+neither follow-up applies. Items 1 and 2 in the numbered list above describe
+`_client_ip`-keyed rate limiting and `AccountLinkBlocked`, both of which were
+deleted in the same change — vestigial, not reverted; the takeover vector they
+closed can't recur without a password path to take over.
 
-### Auth hardening
+### Auth hardening — closed 2026-08-06 (resolved by deletion, not built)
 **What:** ~~Rate limiting on `/login` and `/signup`~~ **done 2026-07-17**
-(proxy-IP correctness fixed 2026-07-22, see the security pass above). Still
-open: email verification on signup, password reset flow.
-**Why:** Currently anyone can mass-create accounts with an unverified email, and
-there's no way to recover a lost password. Fine for one trusted customer, not
-fine once signup is public. (The account-*takeover* consequence of unverified
-signup was closed 2026-07-22; the mass-creation/abuse vector remains.)
-**Pros:** Closes remaining abuse/support-load vectors.
-**Cons:** Real implementation work — email verification and password reset both
-need a transactional email path (provider not chosen).
-**Context:** `accounts_db.create_account` has no email-confirmation step.
-Rate limiting (`outreach-agent/ratelimit.py`) is wired into all four
-endpoints an earlier commit's message claimed but never actually
-connected server-side — `server.py` had zero references to `ratelimit`
-until this fix. Discovered while doing an unrelated `/loop` pass: wiring
-it in surfaced a stale/incorrect commit message worth knowing about.
-Verified live: 11 rapid `/login` attempts → 401 ×10, then 429.
-**Effort:** M (human) → S (CC + gstack)
-**Priority:** P2
-**Depends on:** Nothing blocking; email verification / password reset can land
-independently of each other.
+(proxy-IP correctness fixed 2026-07-22). Email verification on signup and
+password reset were never built — instead, password auth itself was deleted
+(PLAN-WEEK-2026-08-05.md, M1): Google SSO is now the only sign-in path, so
+there is no unverified email to abuse and no password to lose or reset.
+**Context:** `accounts_db.create_account`, `auth.hash_password`/`verify_password`,
+and the `/signup`+`/login` POST handlers no longer exist.
+
+### Session revocation — deferred by decision, not oversight
+**What:** No server-side session store or `session_version` column; a stolen
+session cookie stays valid until `auth.SESSION_TTL_SECONDS` expires (shortened
+14 → 7 days 2026-08-06 alongside the password-auth deletion — see
+PLAN-WEEK-2026-08-05.md, M5). There is no way to force-expire one account's
+sessions early (e.g. "sign out everywhere").
+**Why not built now:** `auth.verify_session_token` is a pure HMAC check with
+zero I/O. Adding a revocation list/version would turn it into a database read
+on every request through `require_auth` — i.e. on every authenticated
+request the app serves. With the password vector gone, the main way a session
+gets stolen (credential stuffing / leaked password) no longer applies, and
+Testing-mode Google tokens already die on their own after 7 days, which
+self-limits the exposure window without that cost.
+**Revisit when:** the app leaves Google OAuth Testing mode, or there's a
+concrete report of a stolen/leaked session cookie.
+**Priority:** P3
 
 ### Deliverability infra
 **What:** SPF/DKIM/DMARC (DNS-level, not code), per-account send warm-up ramp,

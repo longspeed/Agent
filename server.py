@@ -2,6 +2,7 @@ import contextlib
 import html
 import os
 import posixpath
+import re
 import sys
 import threading
 import uuid
@@ -203,24 +204,6 @@ def _secure_cookies() -> bool:
     return os.environ.get("SECURE_COOKIES", "").strip().lower() in ("1", "true", "yes")
 
 
-# Behind the Cloudflare tunnel every request reaches uvicorn from 127.0.0.1
-# (the cloudflared process), so request.client.host collapses every visitor
-# into one bucket -- making the per-IP rate limits on /login and /signup
-# global. Anyone could then lock every customer out with 10 login attempts.
-# Cloudflare's edge sets CF-Connecting-IP to the real client IP and overwrites
-# any value the client tries to send, so it is authoritative here. Fall back
-# to the socket peer for local/dev where the header is absent (matching the
-# pre-tunnel behavior, so tests that don't set the header are unaffected).
-# X-Forwarded-For is deliberately NOT trusted: without a known proxy chain it
-# is client-spoofable, which would let an attacker bypass the limiter entirely
-# by rotating fake IPs -- strictly worse than the shared-bucket bug.
-def _client_ip(request: Request) -> str:
-    cf_ip = request.headers.get("cf-connecting-ip", "").strip()
-    if cf_ip:
-        return cf_ip
-    return request.client.host if request.client else "unknown"
-
-
 def _set_session_cookie(response, account_id: str):
     response.set_cookie(
         auth.COOKIE_NAME,
@@ -231,10 +214,6 @@ def _set_session_cookie(response, account_id: str):
         max_age=auth.SESSION_TTL_SECONDS,
     )
     return response
-
-
-def _session_response(payload: dict, account_id: str, status_code: int = 200) -> JSONResponse:
-    return _set_session_cookie(JSONResponse(payload, status_code=status_code), account_id)
 
 
 # --- Pages -------------------------------------------------------------------
@@ -288,52 +267,14 @@ def login_page():
 
 @app.get("/signup")
 def signup_page():
-    return FileResponse(STATIC_DIR / "signup.html")
+    # No separate signup flow anymore -- creating an account and signing in
+    # are the same action (see M2, PLAN-WEEK-2026-08-05.md). Kept as a route
+    # rather than deleted because the marketing site's "Start free" CTA and
+    # any bookmarked/shared links point here.
+    return RedirectResponse("/auth/google/login")
 
 
 # --- Accounts & sessions -------------------------------------------------------
-
-class CredentialsBody(BaseModel):
-    email: str
-    password: str
-
-
-@app.post("/signup", status_code=201)
-def signup_submit(request: Request, payload: CredentialsBody):
-    email = payload.email.strip().lower()
-    if "@" not in email or "." not in email.partition("@")[2]:
-        raise HTTPException(status_code=400, detail="Enter a valid email address")
-    if len(payload.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    # Rate-limit only after format validation passes, so a malformed
-    # email/password can't burn an attempt against someone who was never going
-    # to reach account creation anyway (see BUGS.md BUG-2).
-    if not ratelimit.check(f"signup:{_client_ip(request)}", limit=5, window_seconds=3600):
-        raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
-    try:
-        account = accounts_db.create_account(email, auth.hash_password(payload.password))
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return _session_response({"ok": True}, account["id"], status_code=201)
-
-
-@app.post("/login")
-def login_submit(request: Request, payload: CredentialsBody):
-    email = payload.email.strip().lower()
-    # Reject empty fields before both the rate limit and the lookup: an empty
-    # submit isn't a guessed credential, so it shouldn't cost a rate-limit slot
-    # or come back as "Wrong email or password" (see BUGS.md BUG-2, BUG-3).
-    if not email or not payload.password:
-        raise HTTPException(status_code=400, detail="Enter your email and password")
-    if not ratelimit.check(f"login:{_client_ip(request)}", limit=10, window_seconds=300):
-        raise HTTPException(status_code=429, detail="Too many login attempts. Try again in a few minutes.")
-    account = accounts_db.get_account_by_email(email)
-    if account and not account.get("password_hash"):
-        raise HTTPException(status_code=401, detail='This account signs in with Google — use "Continue with Google."')
-    if not account or not auth.verify_password(payload.password, account["password_hash"]):
-        raise HTTPException(status_code=401, detail="Wrong email or password")
-    return _session_response({"ok": True}, account["id"])
-
 
 @app.post("/logout")
 def logout():
@@ -342,13 +283,39 @@ def logout():
     return response
 
 
+NEXT_COOKIE_NAME = "post_login_next"
+_SAFE_NEXT_RE = re.compile(r"^/[^/\\]")
+
+
+def _safe_next(value: str) -> str | None:
+    """Same-site absolute paths only. Rejects "//evil.com", "https://…", and
+    "\\evil.com" so a crafted /login?next=… link can't redirect a freshly
+    authenticated user off to a phishing page. Mirrors the client-side check
+    in static/login.html, which is defense in depth, not the authority --
+    this is the check that actually gates the cookie."""
+    return value if value and _SAFE_NEXT_RE.match(value) else None
+
+
 @app.get("/auth/google/login")
-def google_login_start():
-    return RedirectResponse(google_auth.build_login_auth_url(auth.create_oauth_state()))
+def google_login_start(next: str = ""):
+    response = RedirectResponse(google_auth.build_login_auth_url(auth.create_oauth_state()))
+    safe_next = _safe_next(next)
+    if safe_next:
+        # Short-lived and HttpOnly: this only needs to survive the round trip
+        # to Google and back, and nothing on the page needs to read it. Kept
+        # out of the OAuth `state` param on purpose -- state is a fixed-shape
+        # CSRF nonce (see auth.create_oauth_state), and widening it to also
+        # carry a path would make it easier to confuse for the differently
+        # shaped session token it deliberately can't be mistaken for.
+        response.set_cookie(
+            NEXT_COOKIE_NAME, safe_next,
+            httponly=True, samesite="lax", secure=_secure_cookies(), max_age=600,
+        )
+    return response
 
 
 @app.get("/auth/google/callback")
-def google_login_callback(state: str = "", code: str = "", error: str = ""):
+def google_login_callback(request: Request, state: str = "", code: str = "", error: str = ""):
     if error:
         return RedirectResponse(f"/login?google_error={error}")
     if not auth.verify_oauth_state(state):
@@ -358,16 +325,15 @@ def google_login_callback(state: str = "", code: str = "", error: str = ""):
     except Exception:
         return RedirectResponse("/login?google_error=auth_failed")
 
-    try:
-        account = accounts_db.link_or_create_google_account(
-            identity["email"].lower(), identity["google_id"]
-        )
-    except accounts_db.AccountLinkBlocked:
-        # This email already has a password account (unverified). Don't silently
-        # merge -- send them to sign in with their password (see AccountLinkBlocked).
-        return RedirectResponse("/login?google_error=account_exists")
+    account = accounts_db.link_or_create_google_account(
+        identity["email"].lower(), identity["google_id"]
+    )
     onboarded = bool(account.get("google_token")) and bool((account.get("google_sheet_id") or "").strip())
-    return _set_session_cookie(RedirectResponse("/" if onboarded else "/settings"), account["id"])
+    safe_next = _safe_next(request.cookies.get(NEXT_COOKIE_NAME, ""))
+    target = safe_next or ("/" if onboarded else "/settings")
+    response = _set_session_cookie(RedirectResponse(target), account["id"])
+    response.delete_cookie(NEXT_COOKIE_NAME)
+    return response
 
 
 @app.get("/api/me")

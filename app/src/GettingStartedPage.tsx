@@ -206,9 +206,9 @@ export function GettingStartedPage() {
 
             <Section id="step-1" title="1. Create your account">
               <p>
-                Go to <Code>/signup</Code> and register with your email and a password of at least 8
-                characters. You can also use <strong className="text-cream">Sign in with Google</strong>,
-                which skips the password entirely.
+                Go to <Code>/login</Code> and click{' '}
+                <strong className="text-cream">Continue with Google</strong>. That's the whole account —
+                there's no separate password to set.
               </p>
               <Callout>
                 If the person running this instance is still in Google's testing program, they need
@@ -528,8 +528,6 @@ export function GettingStartedPage() {
                   ['Lead searches', plan ? `${plan.lead_searches_per_hour} per hour` : 'Capped per hour (sign in to see yours)'],
                   ['Leads per search', '1 to 25'],
                   ['Reply checks', '45 per hour'],
-                  ['Signup attempts', '5 per hour per IP'],
-                  ['Login attempts', '10 per 5 minutes per IP'],
                 ]}
               />
             </Section>

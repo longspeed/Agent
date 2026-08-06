@@ -58,10 +58,13 @@ blocker text, rather than reporting an unqualified success.
 
 ## BUG-2 — Failed input validation burns a rate-limit attempt (found while tracing BUG-1)
 
-**Status:** FIXED — `ratelimit.check` now runs after format validation in
-`signup_submit`, and after an empty-field guard in `login_submit`. Regression
-test: `test_signup_rejects_bad_format_without_consuming_ratelimit` in
-`tests/test_outreach_agent.py`.
+**Status:** FIXED, now vestigial (2026-08-06) — `signup_submit` and
+`login_submit` no longer exist; password auth was deleted outright rather
+than hardened further (PLAN-WEEK-2026-08-05.md, M1). The fix and its
+regression test (`test_signup_rejects_bad_format_without_consuming_ratelimit`)
+were removed with it (M4) — there is no rate-limit-before-validation ordering
+left to test. Left FIXED, not reopened: the code path this bug lived in is
+gone, not broken again.
 
 `server.py:303` and `:319` call `ratelimit.check(...)` **before** any input
 validation. `ratelimit.check` *records* the attempt when it allows it (see
@@ -98,11 +101,12 @@ six bad-format attempts followed by one valid one should succeed, not 429.
 
 ## BUG-3 — Empty email reports "Wrong email or password" (minor, same trace)
 
-**Status:** FIXED — `login_submit` now rejects an empty email/password with a
-400 ("Enter your email and password") before the rate limit or the account
-lookup. Regression test:
-`test_login_rejects_empty_credentials_before_ratelimit_and_lookup` in
-`tests/test_outreach_agent.py`.
+**Status:** FIXED, now vestigial (2026-08-06) — `login_submit` no longer
+exists; password auth was deleted outright rather than hardened further
+(PLAN-WEEK-2026-08-05.md, M1). There is no "Wrong email or password" message
+left to send, correctly or otherwise. The fix and its regression test
+(`test_login_rejects_empty_credentials_before_ratelimit_and_lookup`) were
+removed with it (M4). Left FIXED, not reopened.
 
 `server.py:321-325`: an empty email produces no account, which falls through to
 `401 "Wrong email or password"`. For a first-time visitor who submitted an

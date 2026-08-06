@@ -57,8 +57,8 @@
   <ul>
     <li>Names, business email addresses, company names</li>
     <li>The content of outreach messages sent and replies received</li>
-    <li>For your account: email address, password hash, encrypted Google token,
-    settings, usage counters</li>
+    <li>For your account: email address, encrypted Google token, settings,
+    usage counters</li>
   </ul>
   <p>Agent Hub is not intended for special-category data. Do not put it in your
   sheet.</p>
@@ -128,9 +128,10 @@
   </ul>
 
   <h2>Security measures</h2>
-  <p>Summarised on the <a href="/security">security page</a>: encrypted Google
-  tokens at rest, hashed passwords, signed HttpOnly session cookies, row-level
-  security for tenant isolation, and rate limits on authentication and sending.</p>
+  <p>Summarised on the <a href="/security">security page</a>: Google OAuth-only
+  sign-in (no password), encrypted Google tokens at rest, signed HttpOnly
+  session cookies, row-level security for tenant isolation, and rate limits on
+  sending.</p>
 
   <h2>Data subject requests</h2>
   <p>Because your lead data lives in your own Google Sheet, most access,

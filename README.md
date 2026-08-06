@@ -129,7 +129,8 @@ Google Sheet, and their own review queue and usage metering in Supabase.
 To give someone access, just send them the URL — they onboard themselves
 with no code or config changes:
 
-1. **Sign up** at `/signup` (their own email + password).
+1. **Sign in** at `/login` with **Continue with Google** — that's the whole
+   account, no separate password to set.
 2. **Connect Google** from the Settings page — an in-browser OAuth consent
    for their Gmail and Sheets. Their token is stored encrypted on their
    account row; it never touches disk. (While the app's Google OAuth consent

@@ -35,11 +35,8 @@ bookable from your emails.
 
 ## Step 1 — Create your account
 
-Go to `/signup` and register with your email and a password of at least 8
-characters. You can also use **Sign in with Google**, which skips the password
-entirely.
-
-Signup is limited to 5 attempts per hour from one IP address.
+Go to `/login` and click **Continue with Google**. That's the whole account —
+there's no separate password to set.
 
 > **If the instance owner is still in Google's testing program**, they need to
 > add your Google account as a test user in Google Cloud Console before step 2
@@ -288,8 +285,6 @@ approve.
 | Lead searches | 10 per hour |
 | Leads per search | 1 to 25 |
 | Reply checks | 45 per hour |
-| Signup attempts | 5 per hour per IP |
-| Login attempts | 10 per 5 minutes per IP |
 
 ---
 

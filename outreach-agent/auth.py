@@ -1,9 +1,8 @@
-"""Per-account authentication: PBKDF2 password hashing and signed session
-tokens that carry which account is logged in (not just "authenticated")."""
+"""Per-account authentication: signed session tokens that carry which account
+is logged in (not just "authenticated")."""
 import base64
 import hashlib
 import hmac
-import secrets
 import time
 
 from urllib.parse import quote
@@ -11,33 +10,7 @@ from urllib.parse import quote
 from config import APP_SECRET_KEY, SESSION_SIGNING_KEY, PUBLIC_BASE_URL
 
 COOKIE_NAME = "session"
-SESSION_TTL_SECONDS = 60 * 60 * 24 * 14  # 14 days
-PBKDF2_ITERATIONS = 260_000
-
-
-# --- Passwords ---------------------------------------------------------------
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256", password.encode(), bytes.fromhex(salt), PBKDF2_ITERATIONS
-    ).hex()
-    return f"pbkdf2${PBKDF2_ITERATIONS}${salt}${digest}"
-
-
-def verify_password(password: str, stored: str | None) -> bool:
-    if not stored:
-        return False  # account was created via Google sign-in, has no password
-    try:
-        scheme, iterations, salt, digest = stored.split("$")
-        if scheme != "pbkdf2":
-            return False
-        candidate = hashlib.pbkdf2_hmac(
-            "sha256", password.encode(), bytes.fromhex(salt), int(iterations)
-        ).hex()
-        return hmac.compare_digest(candidate, digest)
-    except (ValueError, AttributeError):
-        return False
+SESSION_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 days
 
 
 # --- Session tokens ----------------------------------------------------------

@@ -30,9 +30,7 @@ Column order used everywhere in the lead sheet:
 - **`_secure_cookies()`** — Reads `SECURE_COOKIES` env against an explicit
   truthy set (`1/true/yes`) so `"0"`/`"false"` correctly stay off.
 - **`_set_session_cookie(response, account_id)`** — Attaches the signed session
-  cookie (HttpOnly, SameSite=lax, Secure when configured, 14-day expiry).
-- **`_session_response(payload, account_id, status)`** — JSON response with the
-  session cookie already set (used by signup/login).
+  cookie (HttpOnly, SameSite=lax, Secure when configured, 7-day expiry).
 
 ### Page routes (serve static HTML)
 - **`home()`** `GET /` — App home (agents) for logged-in users. Logged-out users
@@ -40,21 +38,21 @@ Column order used everywhere in the lead sheet:
 - **`outreach_page()`** `GET /outreach` — Outreach agent page.
 - **`leads_page()`** `GET /leads` — Lead sourcing agent page.
 - **`settings_page()`** `GET /settings` — Settings page.
-- **`login_page()`** `GET /login` — Login page.
-- **`signup_page()`** `GET /signup` — Signup page.
+- **`login_page()`** `GET /login` — One-button "Continue with Google" page.
+- **`signup_page()`** `GET /signup` — 302s straight to `/auth/google/login`;
+  kept as a route only because the marketing site's "Start free" CTA and
+  bookmarked links point here.
 
 ### Auth
-- **`signup_submit(request, payload)`** `POST /signup` — Rate-limited (5/hr/IP).
-  Validates email + 8-char password, creates the account, returns a session.
-- **`login_submit(request, payload)`** `POST /login` — Rate-limited (10/5min/IP).
-  Verifies password (constant-time); tells Google-only accounts to use Google;
-  returns a session on success.
 - **`logout()`** `POST /logout` — Clears the session cookie.
-- **`google_login_start()`** `GET /auth/google/login` — Redirects to Google's
-  "Sign in with Google" identity consent (no Gmail/Sheets scopes).
-- **`google_login_callback(state, code, error)`** `GET /auth/google/callback` —
+- **`google_login_start(next)`** `GET /auth/google/login` — Redirects to
+  Google's "Sign in with Google" identity consent (no Gmail/Sheets scopes). If
+  `?next=` is a validated same-site path, sets a short-lived HttpOnly cookie
+  carrying it for the callback to pick up.
+- **`google_login_callback(request, state, code, error)`** `GET /auth/google/callback` —
   Verifies the CSRF state, exchanges the code for the Google identity, links or
-  creates the account, and drops the user at `/` or `/settings` (by onboarding state).
+  creates the account, and drops the user at the `next` cookie's path if
+  present, else `/` or `/settings` by onboarding state.
 
 ### Account / settings
 - **`me(request)`** `GET /api/me` — Returns the logged-in user's email, Google
@@ -122,15 +120,11 @@ Column order used everywhere in the lead sheet:
 
 ---
 
-## outreach-agent/auth.py — passwords & signed tokens
+## outreach-agent/auth.py — signed tokens
 
-- **`hash_password(password)`** — PBKDF2-SHA256, 260k iterations, random per-
-  password salt; returns `pbkdf2$iters$salt$digest`.
-- **`verify_password(password, stored)`** — Constant-time verify; False for
-  Google-only (password-less) accounts.
 - **`_sign(payload)`** — HMAC-SHA256 of a payload with `APP_SECRET_KEY`.
 - **`create_session_token(account_id, ttl)`** — Signed `account_id.expiry.hmac`
-  session token (14-day default).
+  session token (7-day default).
 - **`verify_session_token(token)`** — Returns the account id if the token is
   valid, correctly signed, and unexpired; else None.
 - **`create_oauth_state(ttl)`** — Signed, short-lived (10 min) CSRF nonce for the
@@ -142,13 +136,11 @@ Column order used everywhere in the lead sheet:
 - **`_get_client()`** — Lazily builds the Supabase client.
 - **`encrypt_secret(plaintext)` / `decrypt_secret(ciphertext)`** — Fernet
   encrypt/decrypt for the stored Google token.
-- **`create_account(email, password_hash)`** — Inserts an account; ValueError if
-  the email exists.
 - **`get_account_by_email / get_account / get_account_by_google_id`** — Row
   lookups by each key.
 - **`link_or_create_google_account(email, google_id)`** — For Google sign-in:
   reuse the Google-linked account, else link the matching email account, else
-  create a fresh password-less one.
+  create a fresh account.
 - **`_normalize_sheet_id(value)`** — Accepts a full Sheets URL or a bare id and
   returns just the id.
 - **`update_settings(account_id, settings)`** — Writes only the editable settings
@@ -304,9 +296,11 @@ Column order used everywhere in the lead sheet:
 
 ## Frontend
 
-- **`static/*.html`** — The app UI (login, signup, settings, outreach, leads),
-  Tailwind via CDN, vanilla JS calling the `/api/*` routes above.
-  `login.html` sanitizes the `next=` redirect to same-site paths only.
+- **`static/*.html`** — The app UI (login, settings, outreach, leads), Tailwind
+  via CDN, vanilla JS calling the `/api/*` routes above. `login.html` is the
+  only entry point (`/signup` redirects to it via Google); it sanitizes the
+  `next=` redirect to same-site paths only before forwarding it to
+  `/auth/google/login`, which is what actually sets the redirect-target cookie.
 - **`site/`** — The React/Vite marketing landing page (source), built into
   **`static/landing/`** and served at `/` for logged-out visitors. Components:
   `hero.tsx` (nav, hero, how-it-works), `mockup.tsx` (review-queue mockup),

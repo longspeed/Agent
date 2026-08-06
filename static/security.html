@@ -31,17 +31,13 @@
 
   <h2>Accounts and sessions</h2>
   <ul>
-    <li>Passwords are hashed with <strong>PBKDF2-SHA256, 260,000 iterations</strong>,
-    with a unique random salt per password. Verification is constant-time.</li>
-    <li>Sign in with Google is supported and uses an identity-only scope,
-    separate from the Gmail and Sheets permissions.</li>
+    <li>Sign-in is Google OAuth only — <strong>Sign in with Google</strong>,
+    using an identity-only scope, separate from the Gmail and Sheets
+    permissions. There is no password: nothing to guess, phish, or leak.</li>
     <li>Sessions are a signed token in an <strong>HttpOnly</strong> cookie with
     <code>SameSite=lax</code>, marked <code>Secure</code> in production, expiring
-    after 14 days. The signature is HMAC-SHA256, so the account id inside it
+    after 7 days. The signature is HMAC-SHA256, so the account id inside it
     cannot be altered.</li>
-    <li>Sign-in is limited to 10 attempts per 5 minutes per IP; sign-up to 5 per
-    hour. Behind a proxy the real client IP is read from a trusted header rather
-    than the socket, so one visitor cannot exhaust everyone's limit.</li>
   </ul>
 
   <h2>Your Google connection</h2>
@@ -77,8 +73,6 @@
   <p>Stated openly, because a security page that lists only strengths is not
   worth reading:</p>
   <ul>
-    <li>Email verification on sign-up is not implemented yet.</li>
-    <li>Password reset is not implemented yet. Contact support if locked out.</li>
     <li>Self-service account deletion is not implemented yet.</li>
     <li>Reply drafting sends prospect message text to a third-party language
     model provider. See the <a href="/privacy">privacy policy</a>.</li>

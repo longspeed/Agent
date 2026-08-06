@@ -2670,54 +2670,6 @@ def test_server_prepare_blocked_by_settings():
         assert account["id"] not in server._accounts_sending, "no lock should be held on a rejected batch"
 
 
-# ------------------------------------------------------------- signup/login
-
-def _fake_request(ip="1.2.3.4"):
-    from types import SimpleNamespace
-    return SimpleNamespace(headers={}, client=SimpleNamespace(host=ip))
-
-
-def test_signup_rejects_bad_format_without_consuming_ratelimit():
-    """REGRESSION (BUGS.md BUG-2): format validation must run before the rate
-    limit is charged, so a mistyped email or a too-short password doesn't burn
-    one of the 5 signup attempts a real user gets per hour."""
-    import server
-    calls = []
-    with patched(server.ratelimit, "check", lambda *a, **k: calls.append(a) or True):
-        try:
-            server.signup_submit(_fake_request(), server.CredentialsBody(email="not-an-email", password="longenough"))
-            raise AssertionError("expected 400 for invalid email")
-        except server.HTTPException as e:
-            assert e.status_code == 400
-        try:
-            server.signup_submit(_fake_request(), server.CredentialsBody(email="a@b.com", password="short"))
-            raise AssertionError("expected 400 for a too-short password")
-        except server.HTTPException as e:
-            assert e.status_code == 400
-    assert calls == [], "malformed signups must not consume a rate-limit slot"
-
-
-def test_login_rejects_empty_credentials_before_ratelimit_and_lookup():
-    """REGRESSION (BUGS.md BUG-2, BUG-3): an empty submit is not a guessed
-    credential -- it must not cost a rate-limit slot, and must not be reported
-    as "Wrong email or password" (which points a first-time visitor at a
-    password reset that doesn't exist rather than at signup)."""
-    import server
-    ratelimit_calls = []
-    lookup_calls = []
-    with contextlib.ExitStack() as stack:
-        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: ratelimit_calls.append(a) or True))
-        stack.enter_context(patched(server.accounts_db, "get_account_by_email", lambda e: lookup_calls.append(e) or None))
-        try:
-            server.login_submit(_fake_request(), server.CredentialsBody(email="", password=""))
-            raise AssertionError("expected 400 for empty credentials")
-        except server.HTTPException as e:
-            assert e.status_code == 400
-            assert "wrong" not in e.detail.lower()
-    assert ratelimit_calls == [], "empty submit must not consume a rate-limit slot"
-    assert lookup_calls == [], "empty submit must not reach the account lookup"
-
-
 def test_me_surfaces_send_blockers():
     """REGRESSION (BUGS.md BUG-1): /api/me must expose the same blockers the
     campaign preview gates sending on, so Settings can render them next to the
@@ -3588,14 +3540,6 @@ def test_session_token_roundtrip_and_tamper():
     assert auth.verify_session_token(expired) is None
 
 
-def test_password_hash_roundtrip():
-    stored = auth.hash_password("hunter2")
-    assert auth.verify_password("hunter2", stored)
-    assert not auth.verify_password("wrong", stored)
-    assert not auth.verify_password("hunter2", None)
-    assert not auth.verify_password("hunter2", "garbage")
-
-
 def test_oauth_state_roundtrip():
     state = auth.create_oauth_state()
     assert auth.verify_oauth_state(state)
@@ -3681,44 +3625,10 @@ def test_encrypt_decrypt_roundtrip():
 
 # ------------------------------------------------------- security fixes (2026-07-22)
 
-def test_client_ip_prefers_cf_connecting_ip():
-    """REGRESSION: behind the Cloudflare tunnel every request arrives from
-    127.0.0.1, so keying rate limits on request.client.host collapsed all
-    visitors into one bucket. CF-Connecting-IP is the authoritative client IP."""
-    import server
-    from types import SimpleNamespace
-    # Header present (behind the tunnel) -> the real client IP wins.
-    req = SimpleNamespace(headers={"cf-connecting-ip": "203.0.113.9"},
-                          client=SimpleNamespace(host="127.0.0.1"))
-    assert server._client_ip(req) == "203.0.113.9"
-    # No header (local/dev) -> socket peer, matching the old behavior.
-    req2 = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.5"))
-    assert server._client_ip(req2) == "10.0.0.5"
-    # Whitespace in the header is stripped.
-    req3 = SimpleNamespace(headers={"cf-connecting-ip": "  198.51.100.7 "},
-                           client=SimpleNamespace(host="127.0.0.1"))
-    assert server._client_ip(req3) == "198.51.100.7"
-    # No client at all -> "unknown", never an AttributeError.
-    req4 = SimpleNamespace(headers={}, client=None)
-    assert server._client_ip(req4) == "unknown"
-
-
-def test_link_google_blocks_password_account_takeover():
-    """REGRESSION: a "Sign in with Google" identity must NOT silently merge
-    into a pre-registered password account (unverified email) -- that's an
-    account-takeover primitive. See accounts_db.AccountLinkBlocked."""
-    # Case A: email already belongs to a PASSWORD account -> refuse to merge.
-    with patched(accounts_db, "get_account_by_google_id", lambda gid: None), \
-         patched(accounts_db, "get_account_by_email",
-                 lambda e: {"id": "prereg", "email": e, "password_hash": "pbkdf2$260000$x$y"}):
-        try:
-            accounts_db.link_or_create_google_account("victim@corp.com", "google-123")
-            raise AssertionError("expected AccountLinkBlocked for a password account")
-        except accounts_db.AccountLinkBlocked:
-            pass
-
-    # Case B: email belongs to a password-LESS account (itself created via
-    # Google) -> nothing to hijack, safe to attach the google_id.
+def test_link_google_account_links_by_email_or_reuses_by_google_id():
+    """link_or_create_google_account: matches an existing account by email
+    (linking the google_id to it), or reuses one already linked to this
+    google_id -- no email lookup at all in that case."""
     linked = {"id": "acct-9", "email": "u@corp.com", "google_id": "google-xyz"}
 
     class _Resp:
@@ -3740,11 +3650,11 @@ def test_link_google_blocks_password_account_takeover():
 
     with patched(accounts_db, "get_account_by_google_id", lambda gid: None), \
          patched(accounts_db, "get_account_by_email",
-                 lambda e: {"id": "acct-9", "email": e, "password_hash": None}), \
+                 lambda e: {"id": "acct-9", "email": e}), \
          patched(accounts_db, "_get_client", lambda: _Client()):
         assert accounts_db.link_or_create_google_account("u@corp.com", "google-xyz") == linked
 
-    # Case C: this google_id is already linked -> reuse, no email lookup at all.
+    # This google_id is already linked -> reuse, no email lookup at all.
     existing = {"id": "acct-1", "google_id": "google-known"}
     with patched(accounts_db, "get_account_by_google_id", lambda gid: existing):
         assert accounts_db.link_or_create_google_account("x@y.com", "google-known") is existing

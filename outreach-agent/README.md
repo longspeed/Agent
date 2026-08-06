@@ -4,11 +4,11 @@ Reads customers from a Google Sheet, sends each a personalized outreach email
 via Gmail, notifies you when the batch is done, and watches for replies —
 drafting an AI response you review and send yourself.
 
-The app is multi-tenant: each customer signs up (with a password, or via
-"Continue with Google"), connects their own Gmail/Sheets via an in-browser
-"Connect Google" button, picks their own sheet, and sees only their own
-data. The steps below set up the shared app once; individual customers
-onboard themselves through the web UI.
+The app is multi-tenant: each customer signs in with "Continue with Google",
+connects their own Gmail/Sheets via a separate in-browser "Connect Google"
+button, picks their own sheet, and sees only their own data. The steps below
+set up the shared app once; individual customers onboard themselves through
+the web UI.
 
 Note the login flow is separate from the Gmail/Sheets connection flow —
 "Continue with Google" only proves who you are (email identity, no Gmail
@@ -54,10 +54,7 @@ create extension if not exists pgcrypto;
 create table public.accounts (
     id uuid primary key default gen_random_uuid(),
     email text not null unique,
-    -- Nullable: accounts created via "Sign in with Google" have no password
-    -- (accounts_db.link_or_create_google_account inserts password_hash = NULL).
-    password_hash text,
-    -- Set only for Google-linked accounts; used by get_account_by_google_id.
+    -- Every account is Google-linked; used by get_account_by_google_id.
     google_id text unique,
     google_token text,
     google_sheet_id text,
@@ -246,8 +243,15 @@ in line with the code (harmless if the column already exists):
 ```sql
 alter table public.accounts add column if not exists google_id text;
 create unique index if not exists accounts_google_id_key on public.accounts (google_id);
--- Google-linked accounts have no password, so this column cannot be NOT NULL.
-alter table public.accounts alter column password_hash drop not null;
+```
+
+If your project predates the removal of password auth, `password_hash` is no
+longer read or written by any code path — clear it and drop it once every row
+has a `google_id` (see PLAN-WEEK-2026-08-05.md, D3 for the pre-drop account
+cleanup):
+
+```sql
+alter table public.accounts drop column if exists password_hash;
 ```
 
 RLS is enabled with no policies: the publishable/anon key can read nothing,
@@ -323,9 +327,9 @@ From the repo root:
 python -m uvicorn server:app --port 8000
 ```
 
-Each customer then onboards themselves at `http://localhost:8000/signup`:
+Each customer then onboards themselves at `http://localhost:8000/login`:
 
-1. Create an account (email + password)
+1. Sign in with **Continue with Google** (creates the account on first use)
 2. On the Settings page, click **Connect Google** and grant Gmail + Sheets +
    Drive (read-only) access
 3. Click **Choose sheet** to pick their lead sheet from a list of their
