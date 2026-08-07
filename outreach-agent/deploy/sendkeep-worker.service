@@ -3,11 +3,11 @@
 # This is a template, not a ready-to-run file: it does nothing until a real
 # host exists to install it on. Fill in the placeholders below, then:
 #
-#   sudo cp agent-hub-worker.service /etc/systemd/system/
+#   sudo cp sendkeep-worker.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now agent-hub-worker
-#   sudo systemctl status agent-hub-worker
-#   journalctl -u agent-hub-worker -f          # live logs
+#   sudo systemctl enable --now sendkeep-worker
+#   sudo systemctl status sendkeep-worker
+#   journalctl -u sendkeep-worker -f          # live logs
 #
 # Deliberately independent of the web server's unit (if any): this process
 # can restart, crash, or be redeployed without taking uvicorn down, and
@@ -15,7 +15,7 @@
 # a crash without needing the whole host to reboot.
 
 [Unit]
-Description=Agent Hub background reply watcher
+Description=Sendkeep background reply watcher
 After=network-online.target
 Wants=network-online.target
 

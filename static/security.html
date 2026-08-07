@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Security — Agent Hub</title>
+<title>Security — Sendkeep</title>
 <link rel="icon" href="/static/landing/favicon.svg" type="image/svg+xml">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/legal.css">
@@ -14,7 +14,7 @@
 <div class="topbar">
   <a class="back" href="/">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-    Agent Hub
+    Sendkeep
   </a>
 </div>
 
@@ -24,7 +24,7 @@
 
   <div class="note warn">
     <p><strong>Written from the codebase, not from a certification.</strong>
-    Agent Hub is early-stage software. This page states what is actually
+    Sendkeep is early-stage software. This page states what is actually
     implemented, including the gaps. It is not a SOC 2 report and does not claim
     to be one.</p>
   </div>
@@ -48,7 +48,7 @@
     cannot attach their Google account to your session.</li>
     <li>Disconnecting from Settings erases the stored token immediately.</li>
     <li>Mail access is used only to send your outreach and to read the threads
-    Agent Hub started. The rest of your mailbox is not scanned.</li>
+    Sendkeep started. The rest of your mailbox is not scanned.</li>
   </ul>
 
   <h2>Tenant isolation</h2>
@@ -63,7 +63,7 @@
     <li>Nothing sends without an explicit confirmation.</li>
     <li>A row is only eligible when you have approved it by clearing its Status.</li>
     <li>Sending is capped per account per 24 hours, and to 5 batches per hour.</li>
-    <li>Agent Hub refuses to write into your sheet at all until row 1 carries
+    <li>Sendkeep refuses to write into your sheet at all until row 1 carries
     the full nine-column header. That is your explicit consent that those
     columns belong to the app rather than to your own notes.</li>
     <li>No reply is sent to a prospect until you have read and approved it.</li>
@@ -76,12 +76,12 @@
     <li>Self-service account deletion is not implemented yet.</li>
     <li>Reply drafting sends prospect message text to a third-party language
     model provider. See the <a href="/privacy">privacy policy</a>.</li>
-    <li>Agent Hub has not completed Google's OAuth verification review, so
+    <li>Sendkeep has not completed Google's OAuth verification review, so
     Gmail access is currently limited to allow-listed test accounts.</li>
   </ul>
 
   <h2>Reporting a vulnerability</h2>
-  <p>Email <a href="mailto:support@agenthub.app">support@agenthub.app</a> with
+  <p>Email <a href="mailto:support@sendkeep.app">support@sendkeep.app</a> with
   enough detail to reproduce it. We will acknowledge, and we will not pursue
   anyone who reports in good faith and does not access other people's data.</p>
 

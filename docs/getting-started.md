@@ -1,4 +1,4 @@
-# Getting started with Agent Hub
+# Getting started with Sendkeep
 
 > **Content source of record** for the in-app page at `/getting-started`
 > (built from `app/src/GettingStartedPage.tsx`). Approved 2026-07-23. When you
@@ -8,7 +8,7 @@
 > Limits shown in the app are read live from `/api/plan` rather than
 > hardcoded, so the numbers below are the defaults and may differ per instance.
 
-Agent Hub emails a list of leads from your own Gmail and handles the replies.
+Sendkeep emails a list of leads from your own Gmail and handles the replies.
 Bring a list you already have, or let it find one for you.
 
 It runs two agents against one Google Sheet of leads:
@@ -55,9 +55,9 @@ things:
 
 Your token is encrypted before it is stored, and it is never written to disk.
 
-**Expect a scary screen.** While Agent Hub is in Google's testing program,
+**Expect a scary screen.** While Sendkeep is in Google's testing program,
 Google shows "This app hasn't been verified." Click **Advanced**, then **Go to
-Agent Hub** to continue. This is normal for an app that has not yet completed
+Sendkeep** to continue. This is normal for an app that has not yet completed
 Google's verification review.
 
 When it works, the Google account card reads "Connected — Gmail and Sheets are
@@ -67,7 +67,7 @@ authorized."
 
 ## Step 3 — Set up your lead sheet
 
-Agent Hub reads and writes one Google Sheet. It has to be laid out a specific
+Sendkeep reads and writes one Google Sheet. It has to be laid out a specific
 way, because every column is addressed by position.
 
 ### The fastest way: start from the template
@@ -99,7 +99,7 @@ Name | Email | Company | Status | ThreadID | SentAt | EmailBody | LeadReason | E
 Paste that into row 1 of your existing sheet and you are done. You do not need
 to start over.
 
-**Why Agent Hub is strict about this.** It refuses to write any status until
+**Why Sendkeep is strict about this.** It refuses to write any status until
 all nine labels are present. Columns D through I belong to the app, and the
 full header is your explicit consent that it may write there. Without that
 check, connecting a sheet where you keep your own notes in column E would
@@ -113,7 +113,7 @@ the same nine-column header, then bring it into Google Sheets:
 1. In Google Drive, choose **New → File upload**, or from an existing sheet
    **File → Import**.
 2. Import it as the **first tab**. If the import lands your data on a second
-   tab, Agent Hub will not see it.
+   tab, Sendkeep will not see it.
 3. Check the Status column before connecting. See the warning below.
 4. In Settings, click **Choose sheet** and pick it.
 
@@ -123,7 +123,7 @@ the same nine-column header, then bring it into Google Sheets:
 > (`Needs verification` works), then clear it row by row as you approve. The
 > daily cap limits the damage, but it does not prevent it.
 
-Agent Hub never reads the CSV file itself. Leads are read through the Google
+Sendkeep never reads the CSV file itself. Leads are read through the Google
 Sheets API, so the file has to become a Sheet first. Editing the original CSV
 afterwards changes nothing, and exporting the Sheet back to CSV does not feed
 anything back in.
@@ -272,8 +272,8 @@ approve.
 | Column | Filled in by |
 |---|---|
 | Name, Email, Company | You |
-| Status | Both you and Agent Hub |
-| ThreadID, SentAt, EmailBody | Agent Hub, when it sends |
+| Status | Both you and Sendkeep |
+| ThreadID, SentAt, EmailBody | Sendkeep, when it sends |
 | LeadReason, EmailConfidence | The lead sourcing agent |
 
 ## Reference: limits
@@ -290,11 +290,11 @@ approve.
 
 ## Troubleshooting
 
-**"Before Agent Hub can write statuses, row 1 must contain the full header."**
+**"Before Sendkeep can write statuses, row 1 must contain the full header."**
 Your sheet is missing one or more of the nine labels, or they are out of order.
 Paste the full header into row 1, or download the starter sheet from Settings.
 
-**"The sheet's header row doesn't match what Agent Hub expects."** Same cause,
+**"The sheet's header row doesn't match what Sendkeep expects."** Same cause,
 caught on a read instead of a write. The message shows what it found so you can
 compare.
 
@@ -304,8 +304,8 @@ Settings.
 **"Could not load your sheets."** Usually the Drive API is not enabled on the
 instance, or your Google token expired. Try **Reconnect** on the Settings page.
 
-**Google says "This app hasn't been verified."** Expected while Agent Hub is in
-Google's testing program. Click **Advanced**, then **Go to Agent Hub**.
+**Google says "This app hasn't been verified."** Expected while Sendkeep is in
+Google's testing program. Click **Advanced**, then **Go to Sendkeep**.
 
 **"Access blocked" from Google.** Your Google account has not been added as a
 test user yet. Ask whoever runs the instance.
@@ -313,14 +313,14 @@ test user yet. Ask whoever runs the instance.
 **A row was emailed that you did not expect.** Check its Status was not blank.
 Blank means queued. This is the most common surprise.
 
-**An email sent but the row still looks unsent.** Agent Hub marks the row
+**An email sent but the row still looks unsent.** Sendkeep marks the row
 straight after sending, and if that write fails it raises an error that says
 the email *was* sent, so you can fix the row by hand instead of emailing the
 person twice. Mark it `Sent` yourself.
 
 ---
 
-## What Agent Hub will never do
+## What Sendkeep will never do
 
 - Email anyone whose row you have not approved
 - Send a reply you have not read

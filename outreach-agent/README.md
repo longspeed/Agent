@@ -370,7 +370,7 @@ python watch_replies.py you@company.com --once
 ```
 
 For an always-on deployment, run it as its own service rather than a
-foreground process — see `deploy/agent-hub-worker.service` for a systemd
+foreground process — see `deploy/sendkeep-worker.service` for a systemd
 unit template. It's independent of the `uvicorn` process: either can restart
 without affecting the other.
 

@@ -3,13 +3,13 @@
 # This is a template, not a ready-to-run file: it does nothing until a real
 # host exists to install it on. Fill in the placeholders below, then:
 #
-#   sudo cp agent-hub-web.service /etc/systemd/system/
+#   sudo cp sendkeep-web.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now agent-hub-web
-#   sudo systemctl status agent-hub-web
-#   journalctl -u agent-hub-web -f              # live logs
+#   sudo systemctl enable --now sendkeep-web
+#   sudo systemctl status sendkeep-web
+#   journalctl -u sendkeep-web -f              # live logs
 #
-# Deliberately independent of the worker's unit (agent-hub-worker.service):
+# Deliberately independent of the worker's unit (sendkeep-worker.service):
 # either can restart, crash, or be redeployed without taking the other down.
 # Binds 127.0.0.1 only -- this process is never meant to be reachable
 # directly. A named Cloudflare Tunnel (not a quick tunnel -- those rotate
@@ -19,7 +19,7 @@
 # VALIDATION-WEEK.md for the tunnel setup steps.
 
 [Unit]
-Description=Agent Hub web server (uvicorn)
+Description=Sendkeep web server (uvicorn)
 After=network-online.target
 Wants=network-online.target
 

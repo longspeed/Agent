@@ -1,6 +1,6 @@
-# Agent Hub
+# Sendkeep
 
-Cold outreach you approve. Agent Hub finds leads, writes and queues your
+Cold outreach you approve. Sendkeep finds leads, writes and queues your
 cold emails, and drafts replies when prospects write back — every send,
 first-touch or reply, waits for you to approve it. No autopilot mode; the
 approval step is the product.
@@ -74,7 +74,7 @@ python -m uvicorn server:app --port 8000
 ```
 
 Customers then self-onboard at `/signup` — no code changes needed per
-customer. See "Sharing Agent Hub" below.
+customer. See "Sharing Sendkeep" below.
 
 Two frontend projects build into `static/`:
 
@@ -120,9 +120,9 @@ Tunnel in front (not a quick tunnel — see `VALIDATION-WEEK.md`), since
   live demand-validation pass
 - [`FUNCTIONS.md`](FUNCTIONS.md) — every backend function, one line each
 
-## Sharing Agent Hub with another person
+## Sharing Sendkeep with another person
 
-Agent Hub is multi-tenant: one running instance serves any number of
+Sendkeep is multi-tenant: one running instance serves any number of
 customers, each with their own login, their own connected Gmail, their own
 Google Sheet, and their own review queue and usage metering in Supabase.
 

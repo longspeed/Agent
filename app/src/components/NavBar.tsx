@@ -74,7 +74,7 @@ export function NavBar({ breadcrumb }: { breadcrumb?: string }) {
               </svg>
             </div>
             <span className="font-display text-lg" style={{ letterSpacing: '-0.02em' }}>
-              Agent Hub
+              Sendkeep
             </span>
           </div>
           <nav className="flex items-center gap-5 text-sm" style={{ color: 'var(--color-sand)' }}>

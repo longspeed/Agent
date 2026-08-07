@@ -39,7 +39,7 @@ export function Trust() {
             You decide.
           </h2>
           <p className="mt-6 text-sand text-base leading-[1.6] max-w-md">
-            Every email and every reply passes through your review queue. Agent Hub never sends on
+            Every email and every reply passes through your review queue. Sendkeep never sends on
             its own, never invents a contact, and never emails anyone who has opted out.
           </p>
           <div className="mt-8 flex flex-wrap gap-2">
@@ -121,7 +121,7 @@ const SECURITY_CARDS = [
   {
     icon: Unplug,
     title: 'Revoke access in one click',
-    body: 'Disconnect your Google account at any time — from Agent Hub or from your Google security settings.',
+    body: 'Disconnect your Google account at any time — from Sendkeep or from your Google security settings.',
   },
   {
     icon: Gauge,
@@ -171,7 +171,7 @@ export function Security() {
 const FAQ_ITEMS = [
   {
     q: 'Will this get my domain blacklisted?',
-    a: 'Agent Hub is built to prevent exactly that. Sends go out from your own Gmail at human volumes, capped per inbox per day, and only to addresses you approved yourself. Opt-outs are permanently suppressed. No spray-and-pray: you approve every message before it leaves.',
+    a: 'Sendkeep is built to prevent exactly that. Sends go out from your own Gmail at human volumes, capped per inbox per day, and only to addresses you approved yourself. Opt-outs are permanently suppressed. No spray-and-pray: you approve every message before it leaves.',
   },
   {
     q: 'Does it send anything without me?',
@@ -183,7 +183,7 @@ const FAQ_ITEMS = [
   },
   {
     q: 'What happens when someone replies?',
-    a: 'Agent Hub watches the thread, detects the reply, and drafts a response grounded in the actual conversation. The draft appears in your review queue where you can edit it, send it, or dismiss it.',
+    a: 'Sendkeep watches the thread, detects the reply, and drafts a response grounded in the actual conversation. The draft appears in your review queue where you can edit it, send it, or dismiss it.',
   },
   {
     q: 'Can I use my own Gmail?',
@@ -252,7 +252,7 @@ export function FinalCta() {
         </p>
         <div className="relative mt-10 flex flex-wrap items-center justify-center gap-4">
           <PrimaryButton href="/signup">Start free</PrimaryButton>
-          <GhostButton href="mailto:support@agenthub.app?subject=Demo%20request">
+          <GhostButton href="mailto:support@sendkeep.app?subject=Demo%20request">
             Book a demo
           </GhostButton>
         </div>
@@ -274,8 +274,8 @@ const FOOTER_COLS: { title: string; links: { label: string; href: string }[] }[]
   {
     title: 'Company',
     links: [
-      { label: 'Contact', href: 'mailto:support@agenthub.app' },
-      { label: 'Book a demo', href: 'mailto:support@agenthub.app?subject=Demo%20request' },
+      { label: 'Contact', href: 'mailto:support@sendkeep.app' },
+      { label: 'Book a demo', href: 'mailto:support@sendkeep.app?subject=Demo%20request' },
       { label: 'Sign in', href: '/login' },
     ],
   },
@@ -316,10 +316,10 @@ export function Footer() {
           <ul className="mt-4 flex flex-col gap-2.5 text-[13px] text-sand">
             <li>
               <a
-                href="mailto:support@agenthub.app"
+                href="mailto:support@sendkeep.app"
                 className="hover:text-cream transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
-                support@agenthub.app
+                support@sendkeep.app
               </a>
             </li>
             <li className="leading-[1.6]">
@@ -332,7 +332,7 @@ export function Footer() {
       </div>
       <div className="border-t border-line">
         <div className="max-w-6xl mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[12px] text-sand">
-          <span>© {new Date().getFullYear()} Agent Hub. All rights reserved.</span>
+          <span>© {new Date().getFullYear()} Sendkeep. All rights reserved.</span>
           <span className="flex items-center gap-1.5">
             <ShieldCheck size={13} className="text-grass" aria-hidden="true" />
             Human-approved sending. You control every send — opt-outs are suppressed for good.

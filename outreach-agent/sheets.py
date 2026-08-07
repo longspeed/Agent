@@ -53,7 +53,7 @@ def _validate_header(values):
     expected = [name.lower() for name in EXPECTED_HEADER]
     if len(found) < 2 or found != expected[:len(found)]:
         raise RuntimeError(
-            "The sheet's header row doesn't match what Agent Hub expects. "
+            "The sheet's header row doesn't match what Sendkeep expects. "
             f"Row 1 must start with: {', '.join(EXPECTED_HEADER[:2])} (full header: "
             f"{', '.join(EXPECTED_HEADER)}) — found: "
             f"{', '.join(cell for cell in values[0][:9] if cell.strip()) or '(blank)'}"
@@ -224,7 +224,7 @@ def require_full_header(account):
     into columns D-I. Reads accept a Name+Email prefix (_validate_header),
     but writing into unlabeled columns could silently overwrite data the
     owner keeps there -- the full header is their explicit consent that
-    those columns belong to Agent Hub. The error hands them the exact row
+    those columns belong to Sendkeep. The error hands them the exact row
     to paste."""
     service = _get_service(account)
     result = (
@@ -237,7 +237,7 @@ def require_full_header(account):
     header = [cell.strip().lower() for cell in (values[0] if values else [])]
     if header != [name.lower() for name in EXPECTED_HEADER]:
         raise RuntimeError(
-            "Before Agent Hub can write statuses, row 1 must contain the full "
+            "Before Sendkeep can write statuses, row 1 must contain the full "
             "header (this protects any data you keep in unlabeled columns). "
             "Paste this into row 1: " + ", ".join(EXPECTED_HEADER) + ". "
             "Starting a fresh sheet? Settings has a starter file to download "

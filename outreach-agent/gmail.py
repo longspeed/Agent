@@ -38,7 +38,7 @@ def send_email(account, to, subject, body, unsubscribe_url=""):
 def get_sending_address(account):
     """The Gmail address this account actually sends from. The connected
     mailbox is the sending identity, and it is not necessarily the address the
-    customer logged into Agent Hub with -- the deliverability check has to
+    customer logged into Sendkeep with -- the deliverability check has to
     inspect the domain that mail will really leave from."""
     service = _get_service(account)
     profile = service.users().getProfile(userId="me").execute()

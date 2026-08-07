@@ -5591,7 +5591,7 @@ def test_plan_limits_match_the_numbers_on_the_pricing_page():
     assert "Unlimited reply drafts" in page
     assert plans.PLANS["pilot"].monthly_replies is None
 
-    for tier, price in (("Pilot", 49), ("Team", 149)):
+    for tier, price in (("Pilot", 19), ("Team", 149)):
         assert f"${price}/mo" in page
         assert plans.PLANS[tier.lower()].price_monthly_usd == price
 

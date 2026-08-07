@@ -135,10 +135,10 @@ export function GettingStartedPage() {
       <main className="relative max-w-5xl mx-auto px-6 py-10">
         <div className="mb-10">
           <h1 className="font-display text-3xl mb-3 text-cream" style={{ letterSpacing: '-0.02em' }}>
-            Getting started with Agent Hub
+            Getting started with Sendkeep
           </h1>
           <p className="text-sm leading-relaxed text-sand max-w-2xl">
-            Agent Hub emails a list of leads from your own Gmail and handles the replies. Bring a
+            Sendkeep emails a list of leads from your own Gmail and handles the replies. Bring a
             list you already have, or let it find one for you. Setup takes about ten minutes: you
             need a Google account, and optionally a call-to-action link (a booking page like
             Cal.com or Calendly, a signup, a demo, a resource) if you want to drive people
@@ -167,8 +167,8 @@ export function GettingStartedPage() {
           </nav>
 
           <div className="min-w-0 flex-1">
-            <Section id="overview" title="What Agent Hub does">
-              <p>Agent Hub runs two agents against one Google Sheet of leads.</p>
+            <Section id="overview" title="What Sendkeep does">
+              <p>Sendkeep runs two agents against one Google Sheet of leads.</p>
               <div className="grid sm:grid-cols-2 gap-3">
                 <div className="rounded-lg p-4 bg-elevated border border-line">
                   <div className="flex items-baseline justify-between gap-2 mb-1.5">
@@ -226,17 +226,17 @@ export function GettingStartedPage() {
               </p>
               <p>Your token is encrypted before it is stored, and never written to disk.</p>
               <Callout tone="warn">
-                <strong className="text-cream">Expect a scary screen.</strong> While Agent Hub is in
+                <strong className="text-cream">Expect a scary screen.</strong> While Sendkeep is in
                 Google's testing program, Google shows "This app hasn't been verified." Click{' '}
                 <strong className="text-cream">Advanced</strong>, then{' '}
-                <strong className="text-cream">Go to Agent Hub</strong>. This is normal for an app
+                <strong className="text-cream">Go to Sendkeep</strong>. This is normal for an app
                 that has not yet completed Google's verification review.
               </Callout>
             </Section>
 
             <Section id="step-3" title="3. Set up your lead sheet">
               <p>
-                Agent Hub reads and writes one Google Sheet. It has to be laid out a specific way,
+                Sendkeep reads and writes one Google Sheet. It has to be laid out a specific way,
                 because every column is addressed by position.
               </p>
 
@@ -302,7 +302,7 @@ export function GettingStartedPage() {
                 start over.
               </p>
               <Callout>
-                <strong className="text-cream">Why Agent Hub is strict about this.</strong> It
+                <strong className="text-cream">Why Sendkeep is strict about this.</strong> It
                 refuses to write any status until all nine labels are present. Columns D through I
                 belong to the app, and the full header is your explicit consent that it may write
                 there. Without that check, connecting a sheet where you keep your own notes in
@@ -321,7 +321,7 @@ export function GettingStartedPage() {
                   </>,
                   <>
                     Import it as the <strong className="text-cream">first tab</strong>. If the import
-                    lands your data on a second tab, Agent Hub will not see it.
+                    lands your data on a second tab, Sendkeep will not see it.
                   </>,
                   <>
                     Check the Status column before connecting. See the warning below.
@@ -340,7 +340,7 @@ export function GettingStartedPage() {
                 approve. The daily cap limits the damage, but it does not prevent it.
               </Callout>
               <Callout>
-                Agent Hub never reads the CSV file itself. Leads are read through the Google Sheets
+                Sendkeep never reads the CSV file itself. Leads are read through the Google Sheets
                 API, so the file has to become a Sheet first. Editing the original CSV afterwards
                 changes nothing, and exporting the Sheet back to CSV does not feed anything back in.
               </Callout>
@@ -414,7 +414,7 @@ export function GettingStartedPage() {
                 </li>
                 <li>
                   <strong className="text-cream">EmailConfidence</strong> always set to{' '}
-                  <Code>unverified</Code> on new rows — Agent Hub does not check addresses for you.
+                  <Code>unverified</Code> on new rows — Sendkeep does not check addresses for you.
                   Mark a row <Code>verified</Code> yourself once you've confirmed it
                 </li>
               </ul>
@@ -509,8 +509,8 @@ export function GettingStartedPage() {
                 head={['Column', 'Filled in by']}
                 rows={[
                   ['Name, Email, Company', 'You'],
-                  ['Status', 'Both you and Agent Hub'],
-                  ['ThreadID, SentAt, EmailBody', 'Agent Hub, when it sends'],
+                  ['Status', 'Both you and Sendkeep'],
+                  ['ThreadID, SentAt, EmailBody', 'Sendkeep, when it sends'],
                   ['LeadReason, EmailConfidence', 'The lead sourcing agent'],
                 ]}
               />
@@ -536,11 +536,11 @@ export function GettingStartedPage() {
               <dl className="space-y-4">
                 {[
                   [
-                    '"Before Agent Hub can write statuses, row 1 must contain the full header."',
+                    '"Before Sendkeep can write statuses, row 1 must contain the full header."',
                     'Your sheet is missing one or more of the nine labels, or they are out of order. Paste the full header into row 1, or download the starter sheet from Settings.',
                   ],
                   [
-                    '"The sheet\'s header row doesn\'t match what Agent Hub expects."',
+                    '"The sheet\'s header row doesn\'t match what Sendkeep expects."',
                     'Same cause, caught on a read instead of a write. The message shows what it found so you can compare.',
                   ],
                   [
@@ -553,7 +553,7 @@ export function GettingStartedPage() {
                   ],
                   [
                     'Google says "This app hasn\'t been verified."',
-                    'Expected while Agent Hub is in Google\'s testing program. Click Advanced, then Go to Agent Hub.',
+                    'Expected while Sendkeep is in Google\'s testing program. Click Advanced, then Go to Sendkeep.',
                   ],
                   [
                     '"Access blocked" from Google.',
@@ -565,7 +565,7 @@ export function GettingStartedPage() {
                   ],
                   [
                     'An email sent but the row still looks unsent.',
-                    'Agent Hub marks the row straight after sending. If that write fails it raises an error saying the email was sent, so you can fix the row by hand instead of emailing the person twice. Mark it Sent yourself.',
+                    'Sendkeep marks the row straight after sending. If that write fails it raises an error saying the email was sent, so you can fix the row by hand instead of emailing the person twice. Mark it Sent yourself.',
                   ],
                 ].map(([q, a]) => (
                   <div key={q}>
@@ -578,7 +578,7 @@ export function GettingStartedPage() {
 
             <section className="rounded-xl p-5 bg-elevated border border-line">
               <h2 className="font-display text-lg mb-3 text-cream" style={{ letterSpacing: '-0.01em' }}>
-                What Agent Hub will never do
+                What Sendkeep will never do
               </h2>
               <ul className="space-y-2 text-sm text-sand">
                 {[

@@ -20,7 +20,7 @@ MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 CSV_FILENAME = "agent-hub-lead-sheet-template.csv"
 CSV_MEDIA_TYPE = "text/csv; charset=utf-8"
 
-# Agent Hub reads the FIRST tab -- config.SHEET_RANGE is "A:I", unqualified,
+# Sendkeep reads the FIRST tab -- config.SHEET_RANGE is "A:I", unqualified,
 # which Sheets resolves against the leftmost tab. So the grid stays sheet 1 and
 # the notes tab follows it, where it can never be parsed as leads.
 DATA_SHEET = "Leads"
@@ -73,19 +73,19 @@ DEMO_ROWS = [
 _COLUMN_WIDTHS = [18, 30, 22, 30, 16, 22, 46, 52, 18]
 
 _NOTES = [
-    "Agent Hub -- lead sheet template",
+    "Sendkeep -- lead sheet template",
     "",
     "HOW TO USE THIS FILE",
     "1. Put it in Google Drive and open it with Google Sheets (drag it into Drive, then",
     "   File > Save as Google Sheets).",
     "2. Delete the five example rows on the Leads tab. Keep row 1.",
     "3. Add your own leads: fill in Name, Email and Company and leave the rest empty.",
-    "4. In Agent Hub, open Settings and choose this spreadsheet as your lead sheet.",
+    "4. In Sendkeep, open Settings and choose this spreadsheet as your lead sheet.",
     "",
     "THE HEADER ROW",
     "Row 1 of the Leads tab must hold these nine labels, in this order:",
     ", ".join(EXPECTED_HEADER),
-    "Agent Hub refuses to write statuses until all nine are there. That check is what",
+    "Sendkeep refuses to write statuses until all nine are there. That check is what",
     "stops it writing over data you keep in unlabeled columns, so it is worth keeping.",
     "",
     "WHO FILLS IN WHAT",
@@ -93,14 +93,14 @@ _NOTES = [
     "Email             you",
     "Company           you",
     "Status            both -- see below",
-    "ThreadID          Agent Hub, when it sends",
-    "SentAt            Agent Hub, when it sends",
-    "EmailBody         Agent Hub, when it sends",
+    "ThreadID          Sendkeep, when it sends",
+    "SentAt            Sendkeep, when it sends",
+    "EmailBody         Sendkeep, when it sends",
     "LeadReason        the lead sourcing agent, when it finds someone for you",
     "EmailConfidence   the lead sourcing agent",
     "",
     "THE STATUS COLUMN DECIDES WHO GETS EMAILED",
-    "(blank)             queued -- Agent Hub emails this person on the next run",
+    "(blank)             queued -- Sendkeep emails this person on the next run",
     "Sent                already emailed; SentAt and ThreadID record when and where",
     "Replied             they answered, and the reply is waiting for you in Outreach",
     "Bounced             the address rejected the email permanently; never retried",

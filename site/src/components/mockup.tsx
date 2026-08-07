@@ -47,7 +47,7 @@ export function ProductMockup() {
       >
         {/* Title bar — web app, no desktop chrome */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-line">
-          <span className="text-[13px] font-medium text-cream/90">Agent Hub — Review queue</span>
+          <span className="text-[13px] font-medium text-cream/90">Sendkeep — Review queue</span>
           <div className="flex items-center gap-1 text-[12px]">
             {['Leads', 'Outreach', 'Replies'].map((tab) => (
               <span
@@ -123,13 +123,13 @@ export function ProductMockup() {
 
             <div className="mt-3 rounded-xl border border-line bg-bg/60 p-3 flex-1 flex flex-col">
               <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-mute">
-                <Sparkles size={12} className="text-gold" aria-hidden="true" /> Drafted by Agent Hub
+                <Sparkles size={12} className="text-gold" aria-hidden="true" /> Drafted by Sendkeep
               </p>
               <textarea
                 aria-label="Drafted reply"
                 className="mt-1.5 w-full flex-1 min-h-[96px] resize-none bg-transparent text-[13px] text-cream/90 leading-[1.55] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 defaultValue={
-                  "Glad it resonates, Nam! Happy to walk you through it — I have Tuesday or Thursday afternoon open next week. Here's my calendar if that's easier: cal.com/agenthub/15min. Either way, looking forward to it."
+                  "Glad it resonates, Nam! Happy to walk you through it — I have Tuesday or Thursday afternoon open next week. Here's my calendar if that's easier: cal.com/sendkeep/15min. Either way, looking forward to it."
                 }
               />
               <div className="mt-3 flex flex-wrap items-center gap-2">

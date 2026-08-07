@@ -54,7 +54,7 @@ export function Navbar() {
           className="flex items-center gap-2.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
         >
           <LogoMark className="w-8 h-8" />
-          <span className="font-display text-lg tracking-[-0.02em]">Agent Hub</span>
+          <span className="font-display text-lg tracking-[-0.02em]">Sendkeep</span>
         </a>
         <nav className="hidden md:flex items-center gap-8" aria-label="Main">
           {NAV_LINKS.map((l) => (
@@ -123,9 +123,9 @@ export function Hero() {
           transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
           className="font-display text-4xl md:text-7xl font-medium tracking-tight leading-[0.95]"
         >
-          <span className="block">Cold outreach that</span>
+          <span className="block">An AI that writes your outreach.</span>
           <span className="animate-shiny block mt-2 pb-2" style={shinyStyle}>
-            you actually approve.
+            You just approve it.
           </span>
         </motion.h1>
         <motion.p
@@ -134,8 +134,8 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
           className="mt-8 text-sand max-w-lg text-base leading-[1.6]"
         >
-          Agent Hub finds your leads, writes every message, and drafts every reply — then waits
-          for your yes. Nothing sends without you.
+          Sendkeep finds your leads, drafts every message, and writes every reply from your own
+          Gmail — the AI does the work, you keep the yes.
         </motion.p>
         <motion.div
           initial={reduced ? false : { y: 12 }}
@@ -158,7 +158,7 @@ const STEPS = [
   {
     icon: Search,
     title: 'Find leads',
-    body: 'Describe your ICP in a sentence. Agent Hub sources matching companies and contacts.',
+    body: 'Describe your ICP in a sentence. Sendkeep sources matching companies and contacts.',
   },
   {
     icon: ShieldCheck,
@@ -173,7 +173,7 @@ const STEPS = [
   {
     icon: MessageSquareReply,
     title: 'Handle replies',
-    body: 'When someone responds, Agent Hub drafts your reply and queues it for review.',
+    body: 'When someone responds, Sendkeep drafts your reply and queues it for review.',
   },
 ]
 

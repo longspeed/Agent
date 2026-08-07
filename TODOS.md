@@ -190,7 +190,7 @@ Bundled in, since TODOS explicitly tied both to this landing: (d) below
 (`sheets._verify_row_index`'s full-sheet re-read → a single-cell fast path),
 and `accounts.worker_heartbeat_at`/`last_error` for observability without
 reading process logs. A systemd unit template ships at
-`outreach-agent/deploy/agent-hub-worker.service`. Cycle duration is measured
+`outreach-agent/deploy/sendkeep-worker.service`. Cycle duration is measured
 and a WARNING is logged if a cycle exceeds `CHECK_INTERVAL_MINUTES` — the
 signal that the sequential single-process model itself needs to change
 (sharding or real concurrency), not that the inter-account delay needs

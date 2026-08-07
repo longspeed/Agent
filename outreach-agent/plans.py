@@ -111,8 +111,8 @@ PLANS: dict[str, Plan] = {
     "pilot": Plan(
         name="pilot",
         label="Pilot",
-        price_monthly_usd=49,
-        price_yearly_usd=490,
+        price_monthly_usd=19,
+        price_yearly_usd=190,
         daily_send_limit=25,
         monthly_drafts=750,
         lead_allowance=500,
@@ -250,7 +250,7 @@ def _refusal_message(plan: Plan, bucket: str, used: int, limit: int, window: str
     upgrade = {
         "trial": " Upgrade to Pilot for 750 drafts and 500 sourced leads a month.",
         "pilot": " Upgrade to Team for 3,000 drafts and 2,000 sourced leads a month.",
-        "team": " Email support@agenthub.app if you need a higher limit.",
+        "team": " Email support@sendkeep.app if you need a higher limit.",
     }.get(plan.name, "")
     return (
         f"Your {plan.label} plan includes {limit:,} {noun} {period}, and you have "

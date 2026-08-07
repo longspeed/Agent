@@ -320,8 +320,8 @@ export function SettingsPage() {
             Outreach emails are sent from this Gmail; your lead sheet is read and updated with its permission. The token is stored encrypted.
           </p>
           <p className="text-xs mt-2 text-mute">
-            Heads up: Google will show a "This app hasn't been verified" screen during connection — that's expected while Agent Hub is in Google's testing
-            program. Click "Advanced" → "Go to Agent Hub" to continue.
+            Heads up: Google will show a "This app hasn't been verified" screen during connection — that's expected while Sendkeep is in Google's testing
+            program. Click "Advanced" → "Go to Sendkeep" to continue.
           </p>
         </section>
 
@@ -406,7 +406,7 @@ export function SettingsPage() {
                 >
                   CSV
                 </a>
-                . Both carry the nine headers Agent Hub needs and an example row per status. Import
+                . Both carry the nine headers Sendkeep needs and an example row per status. Import
                 one into Google Sheets, then delete the examples.
               </p>
             </div>
