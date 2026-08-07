@@ -137,8 +137,24 @@ researching whether narrower scopes could reduce the burden first.
 `get_credentials()` handles the expiry cleanly already. Validation week
 mitigation: warn candidates, reconnect is one click (see VALIDATION-WEEK.md).
 **Effort:** M (human, mostly waiting/paperwork) → M (CC can't compress Google)
-**Priority:** P2
+**Priority:** P2 (bumped to P1 2026-08-06, reverted to P2 2026-08-07 when the
+revamp plan deferred the filing to the 100-user ceiling)
 **Depends on:** Comes before Billing (P3) can ship.
+**Reconfirmed 2026-08-06 (`/plan-ceo-review`), corrected 2026-08-07:** A
+niche-pivot review considered dropping to `gmail.send`-only to skip CASA
+entirely. Turned out not to be free — `watch_replies.py`'s poll loop calls
+`gmail.find_bounce()` off the same thread-read as reply detection, which
+feeds `bounces.py`'s automated bounce-rate circuit breaker (`assert_sendable`
+→ `pause_reason` → `SendingPaused`). `gmail.send` can't read thread content,
+so send-only would silently disable that safety net along with reply
+drafting. Decision: keep `gmail.modify`, keep both features. The CASA filing
+itself is deferred, not skipped — unverified apps run up to the 100-user
+ceiling with no CASA cost (just the warning screen and 7-day token expiry),
+so the assessment is filed when approaching that ceiling, not before there is
+evidence anyone will use the product (per the 2026-08-06 revamp plan, T6a).
+This is no longer a "worth researching" cost — but it is not an urgent one
+for a sub-100-user product, which is why the priority below stays where the
+deferral puts it.
 
 ### Background reply watcher — code done 2026-07-29, still blocked on the host
 **What:** Server-side scheduler for reply checking, so detection doesn't

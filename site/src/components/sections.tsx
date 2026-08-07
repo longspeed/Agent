@@ -20,11 +20,11 @@ const CHIPS = [
   'Revoke access anytime',
 ]
 
-const APPROVAL_LOG = [
-  { label: 'Approved', count: 12, color: 'text-grass' },
-  { label: 'Edited', count: 4, color: 'text-steel' },
-  { label: 'Dismissed', count: 2, color: 'text-sand' },
-  { label: 'Blocked as unsubscribed', count: 3, color: 'text-gold' },
+const QUEUE_GUARANTEES = [
+  { label: 'Nothing sends without your click', color: 'text-grass' },
+  { label: 'Opt-outs are suppressed — permanently', color: 'text-steel' },
+  { label: 'A bounce spike pauses sending automatically', color: 'text-sand' },
+  { label: 'Every decision is logged to your account', color: 'text-gold' },
 ]
 
 export function Trust() {
@@ -55,23 +55,21 @@ export function Trust() {
         </div>
         <div className="app-card rounded-2xl p-5">
           <p className="text-[11px] uppercase tracking-widest text-mute">
-            This week's approval log
+            What the queue guarantees
           </p>
           <div className="mt-4 flex flex-col gap-3">
-            {APPROVAL_LOG.map((row) => (
+            {QUEUE_GUARANTEES.map((row) => (
               <div
                 key={row.label}
-                className="flex items-center justify-between rounded-xl border border-line bg-floating px-4 py-3"
+                className="flex items-center gap-3 rounded-xl border border-line bg-floating px-4 py-3"
               >
+                <ShieldCheck size={16} className={row.color} aria-hidden="true" />
                 <span className="text-sm text-sand">{row.label}</span>
-                <span className={`text-lg font-semibold tabular-nums ${row.color}`}>
-                  {row.count}
-                </span>
               </div>
             ))}
           </div>
           <p className="mt-4 text-[12px] text-mute">
-            Every decision is yours — and every one is logged.
+            No activity to show yet — this is what happens the first time you use it, too.
           </p>
         </div>
       </div>
@@ -337,7 +335,7 @@ export function Footer() {
           <span>© {new Date().getFullYear()} Agent Hub. All rights reserved.</span>
           <span className="flex items-center gap-1.5">
             <ShieldCheck size={13} className="text-grass" aria-hidden="true" />
-            Human-approved sending. CAN-SPAM & GDPR aware by design.
+            Human-approved sending. You control every send — opt-outs are suppressed for good.
           </span>
         </div>
       </div>
