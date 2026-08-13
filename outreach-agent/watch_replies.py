@@ -15,11 +15,14 @@ import schedule
 
 import accounts_db
 import agent
+import auth
 import bounces
+import drafts_db
 import gmail
 import plans
 import reviews_db
 import sheets
+import suppressions_db
 import usage
 
 CHECK_INTERVAL_MINUTES = 5
@@ -50,10 +53,43 @@ def check_for_replies(account):
     # gmail.get_own_addresses for what `degraded` means and why it has to
     # travel onto every review created while it's true.
     own_addresses, degraded = gmail.get_own_addresses(account)
+    try:
+        active_follow_ups = {
+            draft.get("thread_id"): draft
+            for draft in drafts_db.list_active_follow_ups(account["id"])
+            if draft.get("thread_id")
+        }
+    except Exception as e:
+        # Follow-up state is additive. A missing migration or temporary
+        # Supabase failure must never switch off the older, load-bearing reply
+        # and bounce detection loop.
+        active_follow_ups = {}
+        print(f"Follow-up scheduling unavailable this cycle: {e}")
 
     new_reviews = []
     row_errors = []
     new_bounces = []
+
+    def cancel_follow_up(follow_up, reason, *, replied=False):
+        """Best-effort cleanup that can never hide an incoming reply.
+
+        The send endpoint repeats these checks immediately before Gmail, so a
+        temporary database failure here remains fail-closed without disabling
+        the older reply queue.
+        """
+        if not follow_up:
+            return
+        try:
+            if replied:
+                drafts_db.mark_follow_up_replied(account["id"], follow_up["id"])
+            else:
+                drafts_db.cancel_follow_up(account["id"], follow_up["id"], reason)
+            reviews_db.dismiss_follow_up_for_source(account["id"], follow_up["id"])
+        except Exception as e:
+            row_errors.append(
+                f"{follow_up.get('email', 'contact')}: could not record follow-up "
+                f"cancellation ({e}); the send-time guard will check it again."
+            )
     for row_index, row in sent_rows:
         thread_id = row[sheets.COL_THREAD_ID].strip()
         if not thread_id:
@@ -61,6 +97,7 @@ def check_for_replies(account):
 
         name = row[sheets.COL_NAME].strip()
         email = row[sheets.COL_EMAIL].strip()
+        follow_up = active_follow_ups.get(thread_id)
 
         try:
             # One read for both checks below. They ask different questions of the
@@ -76,6 +113,7 @@ def check_for_replies(account):
                 bounce = gmail.find_bounce(account, thread_id, email, thread=thread)
                 if bounce:
                     bounces.record(account, row_index, email, bounce)
+                    cancel_follow_up(follow_up, "bounce")
                     new_bounces.append({
                         "row": row_index, "email": email,
                         "code": bounce["code"], "permanent": bounce["permanent"],
@@ -85,7 +123,45 @@ def check_for_replies(account):
                         else "marked Delayed; still sendable and still watched for a reply"
                     )
                     print(f"Bounce for {email} ({bounce['code']}) -- {outcome}.")
+                    continue
+
+                if follow_up and drafts_db.is_follow_up_due(follow_up):
+                    if suppressions_db.is_suppressed(account["id"], email):
+                        cancel_follow_up(follow_up, "opt_out")
+                        continue
+                    unsubscribe_url = auth.unsubscribe_url(account["id"], email)
+                    try:
+                        plans.check(account, usage.UNIT_DRAFT_EMAIL)
+                        draft = agent.draft_follow_up(
+                            account, name, row[sheets.COL_COMPANY].strip(),
+                            follow_up.get("body") or row[sheets.COL_EMAIL_BODY].strip(),
+                            unsubscribe_url=unsubscribe_url,
+                        )
+                    except Exception as e:
+                        draft = ""
+                        row_errors.append(
+                            f"{name or email}: follow-up is due, but drafting failed ({e}). "
+                            "Write it yourself in the review queue."
+                        )
+                    review_id = reviews_db.add_follow_up(
+                        account["id"], follow_up["id"], row_index, name, email,
+                        thread_id, draft,
+                        validator_problems=agent.follow_up_problems(
+                            account, draft, unsubscribe_url=unsubscribe_url
+                        ),
+                    )
+                    try:
+                        drafts_db.mark_follow_up_queued(account["id"], follow_up["id"])
+                    except Exception:
+                        # Leave the source in waiting so the next watcher cycle
+                        # can retry instead of exposing an unsendable orphan.
+                        reviews_db.dismiss_follow_up_for_source(account["id"], follow_up["id"])
+                        raise
+                    new_reviews.append(reviews_db.get_review(account["id"], review_id))
+                    print(f"Follow-up due for {name or email}; queued for manual review.")
                 continue
+
+            cancel_follow_up(follow_up, "reply", replied=True)
 
             # A reply that already has a review -- pending, sent, or dismissed --
             # was handled in an earlier check. Skip before drafting: the auto-poll

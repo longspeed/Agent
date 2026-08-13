@@ -483,6 +483,11 @@ export function GettingStartedPage() {
                 sending. Sent replies go out in the original thread, so the conversation stays intact
                 for the person receiving it. Nothing reaches a prospect without you reading it first.
               </p>
+              <p>
+                If a contact stays silent, Sendkeep queues one follow-up after the business-day delay
+                in Settings. It never auto-sends that follow-up. A reply, bounce, opt-out, or dismissal
+                cancels it, and Outreach shows how many follow-ups are due.
+              </p>
             </Section>
 
             <Section id="status" title="Reference: what the Status column means">

@@ -22,6 +22,7 @@ const PLANS: Plan[] = [
       '50 sourced leads',
       '25 approved sends per day',
       'Manual reply queue',
+      'One manual follow-up per contact',
       'Google Sheets sync',
     ],
     cta: 'Start free',
@@ -34,6 +35,7 @@ const PLANS: Plan[] = [
     features: [
       'Drafts first-touch outreach',
       'Unlimited reply drafts',
+      'One manual follow-up per contact',
       '500 sourced leads/mo',
       '10 lead searches per hour',
       'Caps, opt-outs, and bounce pauses',

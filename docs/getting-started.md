@@ -248,7 +248,11 @@ Drafts land in a review queue. For each you can **edit the text and send**, or
 **dismiss** it without sending. Sent replies go out in the original thread, so
 the conversation stays intact for the person receiving it.
 
-Nothing is ever sent to a prospect without you reading it first.
+If a sent contact stays silent, Sendkeep queues one follow-up after the delay in
+Settings. It never sends that follow-up automatically. A reply, bounce, opt-out,
+or dismissal cancels it, and the Outreach page shows the number currently due.
+
+Nothing in the reply/follow-up queue is sent without you reading it first.
 
 You can also check a single contact with a read-only "has this person replied
 yet?" check, which drafts nothing and writes nothing.

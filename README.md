@@ -1,9 +1,10 @@
 # Sendkeep
 
 The reply queue for Gmail outbound. Sendkeep drafts first-touch emails, watches
-the threads, and drafts replies when prospects write back. Manual review is the
-default; auto-send can be enabled for first-touch outreach once the sender
-trusts the list and settings. Replies still stay in the review queue.
+the threads, queues one follow-up when a contact stays silent, and drafts
+replies when prospects write back. Manual review is the default; auto-send can
+be enabled for first-touch outreach once the sender trusts the list and
+settings. Follow-ups and replies always stay in the review queue.
 
 Multi-tenant: one running instance serves any number of customers, each
 with their own login, their own connected Gmail/Sheets, and their own
@@ -57,9 +58,9 @@ data.
                               └───────────────────┘
 ```
 
-Every account approves every send. There's no code path where an email
-leaves without a human clicking send — see `outreach-agent/send_outreach.py`
-and `static/security.html`.
+First-touch outreach can use manual or auto mode. Follow-ups and replies always
+require a human click, and a queued follow-up is cancelled if a reply, bounce,
+opt-out, or operator dismissal appears before send.
 
 ## Quickstart
 
@@ -87,7 +88,7 @@ python check_build_freshness.py   # confirms both match current source
 ## Tests
 
 ```bash
-python tests/test_outreach_agent.py          # 338 cases, no network, no real credentials
+python tests/test_outreach_agent.py          # 347 cases, no network, no real credentials
 python tests/test_build_freshness.py         # 6 cases
 cd outreach-agent && python -m unittest discover tests   # 18 cases, run from this dir
 ```
@@ -138,7 +139,8 @@ with no code or config changes:
    a test user in Google Cloud Console → APIs & Services → OAuth consent
    screen.)
 3. **Fill in Settings**: their Google Sheet ID, sender name, calendar
-   booking link, meeting purpose, notification email, and send mode. Manual
+   booking link, meeting purpose, notification email, send mode, and follow-up
+   delay (1-14 business days). Manual
    mode queues drafts for review; Auto mode sends only newly generated drafts
    after the operator confirms Prepare.
 

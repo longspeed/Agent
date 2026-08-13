@@ -24,6 +24,7 @@ EDITABLE_SETTINGS = (
     "notify_email",
     "google_sheet_id",
     "outreach_send_mode",
+    "follow_up_delay_days",
 )
 
 # Columns the code needs that a project created before them will not have, as
@@ -133,6 +134,36 @@ _MIGRATED_COLUMNS = (
         "review or are sent immediately",
         "alter table public.accounts add column if not exists outreach_send_mode "
         "text not null default 'manual' check (outreach_send_mode in ('manual', 'auto'));",
+    ),
+    (
+        ACCOUNTS_TABLE,
+        "follow_up_delay_days",
+        "follow-up due dates cannot be scheduled for newly sent outreach",
+        "alter table public.accounts add column if not exists follow_up_delay_days "
+        "integer not null default 3 check (follow_up_delay_days between 1 and 14);",
+    ),
+    (
+        "outreach_drafts",
+        "follow_up_status",
+        "sent outreach has no durable follow-up schedule or cancellation state",
+        "alter table public.outreach_drafts add column if not exists thread_id text; "
+        "alter table public.outreach_drafts add column if not exists follow_up_due_at timestamptz; "
+        "alter table public.outreach_drafts add column if not exists follow_up_status text; "
+        "alter table public.outreach_drafts add column if not exists follow_up_cancel_reason text; "
+        "alter table public.outreach_drafts add column if not exists follow_up_sent_at timestamptz; "
+        "alter table public.outreach_drafts add column if not exists follow_up_replied_at timestamptz; "
+        "create index if not exists outreach_follow_up_status_idx on public.outreach_drafts "
+        "(account_id, follow_up_status, follow_up_due_at);",
+    ),
+    (
+        "reviews",
+        "kind",
+        "the review queue cannot distinguish inbound replies from proactive follow-ups",
+        "alter table public.reviews add column if not exists kind text not null default 'reply'; "
+        "alter table public.reviews add column if not exists source_draft_id bigint "
+        "references public.outreach_drafts(id) on delete cascade; "
+        "create unique index if not exists reviews_one_follow_up_idx on public.reviews "
+        "(account_id, source_draft_id) where kind = 'follow_up';",
     ),
     (
         "reviews",

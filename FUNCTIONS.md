@@ -101,10 +101,14 @@ Column order used everywhere in the lead sheet:
   (45/hr). Spawns the reply-check job for the account.
 - **`list_replies(request)`** `GET /api/outreach/replies` — Pending review cards
   for the account.
+- **`follow_up_status(request)`** `GET /api/outreach/follow-ups/status` — Due,
+  waiting, queued, edit-acceptance, and reply-after-follow-up outcome counts for
+  the account's one-step follow-ups.
 - **`check_single_reply(request, row)`** `POST /api/outreach/campaigns/{row}/check-reply`
   — Read-only "has this one person replied?" check; no drafting, no writes.
 - **`send_reply(request, review_id, payload)`** `POST /api/outreach/replies/{id}/send`
-  — Sends the (edited) reply in-thread, marks the review sent.
+  — Sends an edited reply or follow-up in-thread. Follow-ups recheck the Gmail
+  thread, suppression list, and bounces immediately before send.
 - **`dismiss_reply(request, review_id)`** `POST /api/outreach/replies/{id}/dismiss`
   — Dismisses a review without sending.
 
@@ -197,6 +201,8 @@ Column order used everywhere in the lead sheet:
   (requires a calendar link); splits subject from body on the first newline.
 - **`draft_reply(account, name, company, customer_reply, history)`** — Drafts a
   reply grounded in the whole thread and the prospect's newest message.
+- **`draft_follow_up(account, name, company, original_body, unsubscribe_url)`**
+  — Drafts the single permitted follow-up grounded in the sent first touch.
 
 ## outreach-agent/sheets.py — Google Sheets as the lead DB
 
@@ -239,7 +245,9 @@ Column order used everywhere in the lead sheet:
 - **`check_for_replies(account)`** — For each Sent/Replied row: detect a new
   reply, skip if already reviewed (before drafting, to save LLM calls), draft a
   response, queue the review **first**, then mark the sheet "Replied". Rows are
-  isolated so one bad thread doesn't stop the rest. Returns
+  isolated so one bad thread doesn't stop the rest. Silent threads whose single
+  follow-up is due enter the same manual queue; reply, bounce, or opt-out
+  cancels them. Returns
   `{reviews, row_errors}`.
 - **`main()`** — CLI entry: `--once` for a single check, otherwise polls every
   5 minutes (standalone script mode).
@@ -256,6 +264,10 @@ Column order used everywhere in the lead sheet:
 - **`mark_sent(account_id, review_id, sent_body)`** — Marks a review sent, storing
   what was actually sent.
 - **`dismiss(account_id, review_id)`** — Marks a review dismissed.
+- **`add_follow_up(...)`** — Inserts the one manual follow-up review for an
+  outreach draft; a partial unique index prevents a second one.
+- **`follow_up_edit_metrics(account_id)`** — Cohort acceptance counts, including
+  approved drafts that stayed at least 80% similar to the model copy.
 
 ## outreach-agent/leads.py — lead sourcing
 

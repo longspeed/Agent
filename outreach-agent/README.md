@@ -67,6 +67,7 @@ create table public.accounts (
     -- Manual queues each draft for review. Auto sends only drafts made by the
     -- current confirmed Prepare action, after all normal sending safeguards.
     outreach_send_mode text not null default 'manual' check (outreach_send_mode in ('manual', 'auto')),
+    follow_up_delay_days integer not null default 3 check (follow_up_delay_days between 1 and 14),
     calendar_booking_link text,
     notify_email text,
     -- How many hard bounces the operator has reviewed and chosen to continue
@@ -114,6 +115,8 @@ create table public.reviews (
     -- sent copy would look like a labelled human-preference pair when it's
     -- really the model's own rewrite on both sides.
     rewritten boolean not null default false,
+    kind text not null default 'reply' check (kind in ('reply', 'follow_up')),
+    source_draft_id bigint,
     created_at timestamptz not null default now()
 );
 create index reviews_account_status_idx on public.reviews (account_id, status);
@@ -157,6 +160,13 @@ create table public.outreach_drafts (
     -- would look like the operator's voice when it's the model's own rewrite.
     rewritten boolean not null default false,
     status text not null default 'pending',  -- pending | sent | discarded
+    sent_at timestamptz,
+    thread_id text,
+    follow_up_due_at timestamptz,
+    follow_up_status text,
+    follow_up_cancel_reason text,
+    follow_up_sent_at timestamptz,
+    follow_up_replied_at timestamptz,
     created_at timestamptz not null default now()
 );
 create index outreach_drafts_account_status_idx on public.outreach_drafts (account_id, status);
@@ -215,6 +225,13 @@ update public.outreach_drafts set sent_at = created_at where status = 'sent' and
 create index if not exists outreach_drafts_sent_at_idx
     on public.outreach_drafts (account_id, status, sent_at);
 ```
+
+For the single manual follow-up loop, run the idempotent migration
+`migrations/20260813_add_follow_up_workflow.sql` before starting the updated
+worker. It adds the business-day delay, durable thread/due/cancellation state,
+and the unique review link that prevents a second follow-up for one outreach
+draft. Until it runs, the older reply watcher keeps working but scheduling is
+unavailable.
 
 For edit-diff capture on existing projects, apply the idempotent migration in
 `migrations/20260812_add_original_draft_columns.sql`. Draft creation writes both

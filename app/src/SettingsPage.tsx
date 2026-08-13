@@ -11,6 +11,7 @@ interface AccountSettings {
   notify_email: string | null
   google_sheet_id: string | null
   outreach_send_mode: 'manual' | 'auto' | null
+  follow_up_delay_days: number | null
 }
 
 interface MeResponse {
@@ -54,6 +55,7 @@ const EMPTY_FORM: AccountSettings = {
   notify_email: '',
   google_sheet_id: '',
   outreach_send_mode: 'manual',
+  follow_up_delay_days: 3,
 }
 
 function CheckIcon() {
@@ -118,6 +120,7 @@ export function SettingsPage() {
       notify_email: meRes.settings.notify_email || '',
       google_sheet_id: meRes.settings.google_sheet_id || '',
       outreach_send_mode: meRes.settings.outreach_send_mode || 'manual',
+      follow_up_delay_days: meRes.settings.follow_up_delay_days || 3,
     })
 
     // usage and plan don't depend on meRes -- fetch both concurrently
@@ -154,6 +157,7 @@ export function SettingsPage() {
       notify_email: form.notify_email?.trim() ?? '',
       google_sheet_id: form.google_sheet_id?.trim() ?? '',
       outreach_send_mode: form.outreach_send_mode || 'manual',
+      follow_up_delay_days: form.follow_up_delay_days || 3,
     }
     const res = await fetch('/api/settings', {
       method: 'PUT',
@@ -459,6 +463,24 @@ export function SettingsPage() {
                 </span>
               </label>
             </fieldset>
+
+            <label className="text-sm">
+              <span className="block mb-1.5 text-sand">Follow-up delay</span>
+              <span className="block text-xs text-mute mb-2">
+                If nobody replies, queue one follow-up for manual review after this many business days.
+              </span>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="1"
+                  max="14"
+                  value={form.follow_up_delay_days ?? 3}
+                  onChange={(e) => setForm((f) => ({ ...f, follow_up_delay_days: Number(e.target.value) }))}
+                  className="w-24 rounded-lg px-4 py-2.5 text-sm bg-floating border border-line focus:outline-none focus:border-accent"
+                />
+                <span className="text-xs text-sand">business days, one follow-up maximum</span>
+              </div>
+            </label>
 
             <label className="text-sm">
               <span className="block mb-1.5 text-sand">

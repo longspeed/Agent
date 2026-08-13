@@ -259,7 +259,11 @@ def send_prepared_draft(account, draft, subject=None, body=None, rewritten=False
     # Irreversible act done. Record it before anything else is attempted, and
     # retry it, because this is now the record that prevents a duplicate.
     _with_retries(
-        lambda: drafts_db.mark_sent(account["id"], draft["id"], subject, body),
+        lambda: drafts_db.mark_sent(
+            account["id"], draft["id"], subject, body,
+            thread_id=thread_id,
+            follow_up_delay_days=account.get("follow_up_delay_days") or 3,
+        ),
         f"Email was sent to {email}, but recording it in the draft queue failed",
     )
     # Separate, best-effort -- never part of the critical write above. See

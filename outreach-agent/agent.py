@@ -122,6 +122,13 @@ Style:
 Output only the email body, nothing else.
 """
 
+FOLLOW_UP_SYSTEM = """You write one short follow-up in an existing cold outreach thread.
+The prospect has not replied. Do not invent urgency, familiarity, new facts, or a reason they
+were silent. Add one useful sentence or restate the original value plainly, then make one
+small yes-or-no ask. Never say 'just following up', 'bumping this', 'circling back', or imply
+that they owe a response. Plain text only, no subject line, no markdown, no emoji. Sign off
+with only the sender's first name. Output only the email body."""
+
 
 class ProviderUnavailable(Exception):
     """One provider could not produce text. Never fatal on its own -- the caller
@@ -413,7 +420,7 @@ def _link_key(raw):
         .removeprefix("https://").removeprefix("http://").removeprefix("www.").rstrip("/")
 
 
-def _validate_reply(body, calendar_link=""):
+def _validate_reply(body, calendar_link="", extra_allowed_links=()):
     """Problems with a drafted reply; empty means it is safe to queue.
 
     The reply path had no mechanical gate at all before this: outreach got a
@@ -434,6 +441,7 @@ def _validate_reply(body, calendar_link=""):
     # The injection outcome that actually costs something: a link the prospect
     # planted, approved at a glance and sent under the sender's name.
     allowed = {_link_key(calendar_link)} if _link_key(calendar_link) else set()
+    allowed.update(_link_key(link) for link in extra_allowed_links if _link_key(link))
     foreign = [u for u in _URL.findall(stripped) if _link_key(u) not in allowed]
     if foreign:
         problems.append(
@@ -850,6 +858,46 @@ def draft_reply(account, name, company, customer_reply, history=()):
         "operator to fix rather than losing the reply."
     )
     return attempts[-1]["text"]
+
+
+def follow_up_prompt(account, name, company, original_body):
+    ctx = _sender_context(account)
+    return (
+        f"Sender's first name (sign with this): {ctx['sender_name']}\n"
+        f"What the sender offers and wants: {ctx['meeting_purpose'] or DEFAULT_MEETING_PURPOSE}\n"
+        f"Call-to-action link: {ctx['calendar_link'] or '(none set)'}\n"
+        f"Prospect: {name}" + (f" at {company}" if company else "")
+        + f"\n\nThe original email already in the thread:\n---\n{original_body}\n---"
+        + _custom_instructions_block(ctx["custom_instructions"])
+        + "\n\nDraft the one allowed follow-up."
+    )
+
+
+def draft_follow_up(account, name, company, original_body, unsubscribe_url=""):
+    ctx = _sender_context(account)
+    base_prompt = follow_up_prompt(account, name, company, original_body)
+    attempts = []
+    for _ in range(2):
+        prompt = base_prompt if not attempts else retry_prompt(
+            base_prompt, attempts[-1]["text"], attempts[-1]["problems"]
+        )
+        body = _chat(FOLLOW_UP_SYSTEM, prompt, usage.DRAFT_EMAIL)
+        if unsubscribe_url and unsubscribe_url not in body:
+            body = f"{body.rstrip()}\n\n{_opt_out_line(unsubscribe_url)}"
+        problems = _validate_reply(
+            body, ctx["calendar_link"], extra_allowed_links=(unsubscribe_url,)
+        )
+        if not problems:
+            return body
+        attempts.append({"text": body, "problems": problems})
+    return attempts[-1]["text"]
+
+
+def follow_up_problems(account, body, unsubscribe_url=""):
+    return _validate_reply(
+        body or "", _sender_context(account)["calendar_link"],
+        extra_allowed_links=(unsubscribe_url,),
+    )
 
 
 def rewrite_reply_prompt(account, name, company, customer_reply, draft_text, instruction):

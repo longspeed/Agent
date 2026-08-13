@@ -1,6 +1,8 @@
 """Review queue in Supabase, scoped per account. Every query filters on
 account_id — combined with RLS on the table, one tenant can never see
 another's reviews."""
+import difflib
+
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SECRET_KEY
@@ -131,6 +133,64 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply,
         "validator_problems": "\n".join(validator_problems) if validator_problems else None,
     }).execute()
     return result.data[0]["id"]
+
+
+def find_follow_up(account_id, source_draft_id):
+    result = (
+        _get_client().table(TABLE).select("*")
+        .eq("account_id", account_id).eq("source_draft_id", source_draft_id)
+        .eq("kind", "follow_up").limit(1).execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def add_follow_up(account_id, source_draft_id, row_index, name, email, thread_id,
+                  draft_reply, validator_problems=None):
+    existing = find_follow_up(account_id, source_draft_id)
+    if existing:
+        return existing["id"]
+    result = _get_client().table(TABLE).insert({
+        "account_id": account_id,
+        "source_draft_id": source_draft_id,
+        "kind": "follow_up",
+        "row_index": row_index,
+        "name": name,
+        "email": email,
+        "thread_id": thread_id,
+        "customer_reply": "",
+        "draft_reply": draft_reply,
+        "original_draft_reply": draft_reply or None,
+        "status": "pending",
+        "validator_problems": "\n".join(validator_problems) if validator_problems else None,
+    }).execute()
+    return result.data[0]["id"]
+
+
+def dismiss_follow_up_for_source(account_id, source_draft_id):
+    _get_client().table(TABLE).update({"status": "dismissed"}) \
+        .eq("account_id", account_id).eq("source_draft_id", source_draft_id) \
+        .eq("kind", "follow_up").eq("status", "pending").execute()
+
+
+def follow_up_edit_metrics(account_id):
+    result = (
+        _get_client().table(TABLE)
+        .select("status,draft_reply,original_draft_reply,rewritten")
+        .eq("account_id", account_id).eq("kind", "follow_up").execute()
+    )
+    sent = [row for row in result.data if row.get("status") == "sent"]
+    minimally_edited = 0
+    for row in sent:
+        original = (row.get("original_draft_reply") or "").strip()
+        approved = (row.get("draft_reply") or "").strip()
+        similarity = difflib.SequenceMatcher(None, original, approved).ratio() if original else 0
+        if not row.get("rewritten") and similarity >= 0.8:
+            minimally_edited += 1
+    return {
+        "drafted": len(result.data),
+        "approved": len(sent),
+        "minimally_edited": minimally_edited,
+    }
 
 
 def confirm_sender(account_id, review_id, draft_reply="", validator_problems=None):

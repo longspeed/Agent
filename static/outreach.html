@@ -87,7 +87,11 @@
     Checking daily-send safety…
   </section>
 
-  <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-12">
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-12">
+    <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--accent);">
+      <div class="text-2xl font-display mb-1" id="stat-follow-up-due" style="color:var(--accent);">â€”</div>
+      <div class="text-xs" style="color:var(--text-secondary);">Follow-up due</div>
+    </div>
     <div class="rounded-xl p-5 card-shadow" style="background:var(--bg-elevated); border:1px solid var(--border);">
       <div class="text-2xl font-display mb-1" id="stat-pending">—</div>
       <div class="text-xs" style="color:var(--text-secondary);">Pending</div>
@@ -152,7 +156,7 @@
   <section>
     <div class="flex items-center justify-between mb-4">
       <h2 class="font-display text-xl flex items-center gap-2.5" style="letter-spacing:-0.01em;">
-        Replies to review
+        Replies and follow-ups to review
         <span id="review-count-badge" class="badge" style="background:var(--accent-dim); color:var(--accent);">0</span>
       </h2>
       <button id="check-replies-btn" class="btn-ghost rounded-lg px-3.5 py-2 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">
@@ -321,11 +325,11 @@
       <span class="badge" style="background:var(--accent-dim); color:var(--accent);">Needs review</span>
     </div>
     <div class="mb-4">
-      <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Their reply</div>
+      <div class="rc-incoming-label text-xs font-medium mb-1.5" style="color:var(--text-muted);">Their reply</div>
       <div class="rc-customer-reply text-sm rounded-lg px-4 py-3 leading-relaxed whitespace-pre-wrap" style="background:var(--bg-floating); color:var(--text-secondary); border-left:2px solid var(--border-hover);"></div>
     </div>
     <div class="mb-4">
-      <div class="text-xs font-medium mb-1.5" style="color:var(--text-muted);">Your reply</div>
+      <div class="rc-draft-label text-xs font-medium mb-1.5" style="color:var(--text-muted);">Your reply</div>
       <textarea class="rc-draft w-full text-sm rounded-lg px-4 py-3 leading-relaxed resize-y focus-visible:outline-none focus:ring-2" rows="6" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);"></textarea>
       <div class="mt-2 flex items-center gap-2 flex-wrap">
         <button class="rc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make it shorter.">Shorter</button>
@@ -781,6 +785,22 @@
     const statusEl = tpl.querySelector('.rc-status');
     const draftWrapper = tpl.querySelector('.rc-draft').closest('.mb-4');
     const replyWrapper = tpl.querySelector('.rc-customer-reply').closest('.mb-4');
+    const isFollowUp = r.kind === 'follow_up';
+
+    if (isFollowUp) {
+      badgeEl.textContent = 'Follow-up due';
+      badgeEl.style.background = 'var(--accent-dim)';
+      badgeEl.style.color = 'var(--accent)';
+      replyWrapper.style.display = 'none';
+      tpl.querySelector('.rc-draft-label').textContent = 'Drafted follow-up';
+      sendBtn.textContent = 'Send follow-up';
+      const rewriteControls = tpl.querySelector('.rc-rewrite').parentElement;
+      rewriteControls.style.display = 'none';
+      draftWrapper.parentNode.insertBefore(
+        reviewNote('No reply arrived before the follow-up date. This is the only scheduled follow-up for this contact.'),
+        draftWrapper
+      );
+    }
 
     if (r.status === 'flagged') {
       badgeEl.textContent = 'Confirm sender';
@@ -824,7 +844,7 @@
         replyWrapper
       );
     } else {
-      wireRewrite(card, {
+      if (!isFollowUp) wireRewrite(card, {
         presetSel: '.rc-preset', instructionSel: '.rc-instruction', buttonSel: '.rc-rewrite', statusEl,
         endpoint: `/api/outreach/replies/${r.id}/rewrite`,
         buildPayload: () => ({ body: card.querySelector('.rc-draft').value }),
@@ -844,17 +864,20 @@
               rewritten: card.dataset.rewritten === 'true',
             }),
           });
-          if (!res.ok) throw new Error('Failed');
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || 'Failed to send');
+          }
           statusEl.textContent = 'Sent ✓';
           card.style.opacity = '0.5';
           sendBtn.textContent = 'Sent';
-          setTimeout(() => { card.remove(); updateReviewCount(); }, 900);
+          setTimeout(() => { card.remove(); updateReviewCount(); loadFollowUpStatus(); }, 900);
         } catch (e) {
           sendBtn.disabled = false;
           dismissBtn.disabled = false;
-          sendBtn.textContent = 'Send reply';
+          sendBtn.textContent = isFollowUp ? 'Send follow-up' : 'Send reply';
           statusEl.style.color = 'var(--accent)';
-          statusEl.textContent = 'Failed to send — try again';
+          statusEl.textContent = e.message || 'Failed to send';
         }
       });
     }
@@ -867,7 +890,10 @@
     }
 
     dismissBtn.addEventListener('click', async () => {
-      if (!confirm('Dismiss this review without sending a reply? Use this to clear a duplicate or a reply you\'ve already handled elsewhere.')) return;
+      const prompt = isFollowUp
+        ? 'Dismiss this follow-up? It will not be scheduled again for this contact.'
+        : 'Dismiss this review without sending a reply? Use this to clear a duplicate or a reply you\'ve already handled elsewhere.';
+      if (!confirm(prompt)) return;
       sendBtn.disabled = true;
       dismissBtn.disabled = true;
       dismissBtn.textContent = 'Dismissing…';
@@ -875,7 +901,7 @@
         const res = await fetch(`/api/outreach/replies/${r.id}/dismiss`, { method: 'POST' });
         if (!res.ok) throw new Error('Failed');
         card.style.opacity = '0.5';
-        setTimeout(() => { card.remove(); updateReviewCount(); }, 700);
+        setTimeout(() => { card.remove(); updateReviewCount(); loadFollowUpStatus(); }, 700);
       } catch (e) {
         sendBtn.disabled = false;
         dismissBtn.disabled = false;
@@ -906,14 +932,27 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
             </div>
             <p class="text-sm font-medium mb-1">All caught up</p>
-            <p class="text-xs" style="color:var(--text-muted);">Nothing needs review right now — replies will show up here.</p>
+            <p class="text-xs" style="color:var(--text-muted);">Nothing needs review right now. Replies and due follow-ups will appear here.</p>
           </div>`;
       } else {
         reviews.forEach(r => list.appendChild(renderReview(r)));
       }
       updateReviewCount();
+      await loadFollowUpStatus();
     } catch (e) {
       list.innerHTML = `<div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Couldn't load reviews.</div>`;
+    }
+  }
+
+  async function loadFollowUpStatus() {
+    try {
+      const status = await fetch('/api/outreach/follow-ups/status').then(r => {
+        if (!r.ok) throw new Error('Failed');
+        return r.json();
+      });
+      animateCount(document.getElementById('stat-follow-up-due'), status.due || 0);
+    } catch (e) {
+      document.getElementById('stat-follow-up-due').textContent = '-';
     }
   }
 

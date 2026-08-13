@@ -44,12 +44,17 @@ Deliverability controls are guardrails, not the product promise.
    High-volume agency users want it, but building it now changes the product
    category. Validate the single-inbox reply desk first.
 
-## Good next product experiments
+## Validation gate for the shipped v1
 
-- Concierge the reply loop for 3-5 Reddit prospects for two weeks and measure
-  minutes saved per reply plus willingness to pay $20/mo.
-- Add a follow-up queue: no reply yet, follow-up due, replied needs response,
-  positive reply, objection, not interested, out of office.
+- Ship the single-follow-up queue to 3-5 Reddit prospects. Keep it only if at
+  least 3 approve drafts with minimal editing, the follow-ups generate replies,
+  and those users would pay $19/mo.
+- Treat an empty or ignored queue as a failed test; do not answer it with more
+  sequence steps.
+- Keep A/B tests, multi-step sequences, and multi-inbox sending blocked until
+  the 3-of-5 gate passes.
+
+## Good next product experiments
 - Add a "Why no replies?" diagnostic panel after the reply loop is clear. It
   should support the loop, not become the main product.
 - Add a simple reply-rate stat once enough sends exist.

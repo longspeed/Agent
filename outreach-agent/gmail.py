@@ -52,7 +52,7 @@ def _header(headers, name):
     return ""
 
 
-def send_reply(account, thread_id, to, body):
+def send_reply(account, thread_id, to, body, unsubscribe_url=""):
     """Sends body as a reply within thread_id, threaded via In-Reply-To/References."""
     service = _get_service(account)
     thread = service.users().threads().get(userId="me", id=thread_id, format="metadata",
@@ -69,6 +69,9 @@ def send_reply(account, thread_id, to, body):
     message = MIMEText(body)
     message["to"] = to
     message["subject"] = subject
+    if unsubscribe_url:
+        message["List-Unsubscribe"] = f"<{unsubscribe_url}>"
+        message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     if message_id:
         message["In-Reply-To"] = message_id
         message["References"] = message_id

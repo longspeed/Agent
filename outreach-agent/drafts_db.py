@@ -6,6 +6,8 @@ and approves each one on the /outreach page, at which point it is actually sent.
 Nothing in this table has been emailed. Mirrors reviews_db.py (the reply-review
 queue) closely on purpose -- same per-account scoping, same RLS backing.
 """
+from datetime import datetime, timedelta, timezone
+
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SECRET_KEY
@@ -152,7 +154,18 @@ def get_draft(account_id, draft_id):
     return result.data[0] if result.data else None
 
 
-def mark_sent(account_id, draft_id, sent_subject, sent_body):
+def _follow_up_due(sent_at, delay_days):
+    """The same local-time-of-day after N business days, stored as UTC."""
+    due = sent_at
+    remaining = max(1, min(int(3 if delay_days is None else delay_days), 14))
+    while remaining:
+        due += timedelta(days=1)
+        if due.weekday() < 5:
+            remaining -= 1
+    return due
+
+
+def mark_sent(account_id, draft_id, sent_subject, sent_body, thread_id="", follow_up_delay_days=3):
     """Records the copy that actually went out (the operator may have edited it
     in the UI before approving), and moves the row out of the pending set.
 
@@ -166,14 +179,126 @@ def mark_sent(account_id, draft_id, sent_subject, sent_body):
     it used to be the ONLY record, which silently destroyed every labelled pair
     of (what the model wrote, what this person actually says). The diff between
     the two columns is the whole training signal, and it cannot be backfilled."""
-    from datetime import datetime, timezone
-
+    sent_at = datetime.now(timezone.utc)
     _get_client().table(TABLE).update({
         "status": "sent",
         "subject": sent_subject,
         "body": sent_body,
-        "sent_at": datetime.now(timezone.utc).isoformat(),
+        "sent_at": sent_at.isoformat(),
+        "thread_id": thread_id,
+        "follow_up_due_at": _follow_up_due(sent_at, follow_up_delay_days).isoformat(),
+        "follow_up_status": "waiting",
+        "follow_up_cancel_reason": None,
     }).eq("account_id", account_id).eq("id", draft_id).execute()
+
+
+ACTIVE_FOLLOW_UP_STATUSES = ("waiting", "queued", "sent")
+
+
+def list_active_follow_ups(account_id):
+    result = (
+        _get_client().table(TABLE).select("*")
+        .eq("account_id", account_id)
+        .in_("follow_up_status", list(ACTIVE_FOLLOW_UP_STATUSES))
+        .execute()
+    )
+    return result.data
+
+
+def is_follow_up_due(draft, now=None):
+    if draft.get("follow_up_status") != "waiting" or not draft.get("follow_up_due_at"):
+        return False
+    due = datetime.fromisoformat(draft["follow_up_due_at"].replace("Z", "+00:00"))
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    return due <= (now or datetime.now(timezone.utc))
+
+
+def follow_up_summary(account_id, now=None):
+    active = list_active_follow_ups(account_id)
+    due = sum(1 for d in active if d.get("follow_up_status") == "queued" or is_follow_up_due(d, now))
+    return {
+        "due": due,
+        "waiting": sum(1 for d in active if d.get("follow_up_status") == "waiting"),
+        "queued": sum(1 for d in active if d.get("follow_up_status") == "queued"),
+        "sent": sum(1 for d in active if d.get("follow_up_status") == "sent"),
+    }
+
+
+def follow_up_outcomes(account_id):
+    result = _get_client().table(TABLE).select(
+        "follow_up_status,follow_up_sent_at,follow_up_replied_at"
+    ).eq(
+        "account_id", account_id
+    ).execute()
+    statuses = [row.get("follow_up_status") for row in result.data if row.get("follow_up_status")]
+    return {
+        "scheduled": len(statuses),
+        "replied": statuses.count("replied"),
+        "replies_after_follow_up": sum(
+            1 for row in result.data
+            if row.get("follow_up_sent_at") and row.get("follow_up_replied_at")
+        ),
+        "cancelled": statuses.count("cancelled"),
+    }
+
+
+def _set_follow_up(account_id, draft_id, status, from_statuses=None, **fields):
+    payload = {"follow_up_status": status, **fields}
+    query = (
+        _get_client().table(TABLE).update(payload)
+        .eq("account_id", account_id).eq("id", draft_id)
+    )
+    allowed = tuple(from_statuses or ACTIVE_FOLLOW_UP_STATUSES)
+    if len(allowed) == 1:
+        query = query.eq("follow_up_status", allowed[0])
+    else:
+        query = query.in_("follow_up_status", list(allowed))
+    return query.execute()
+
+
+def mark_follow_up_queued(account_id, draft_id):
+    return _set_follow_up(account_id, draft_id, "queued", from_statuses=("waiting",))
+
+
+def claim_follow_up_send(account_id, draft_id):
+    """Atomically owns the one irreversible send; empty data means lost race."""
+    return _set_follow_up(
+        account_id, draft_id, "sending", from_statuses=("queued",)
+    )
+
+
+def release_follow_up_send(account_id, draft_id):
+    """Makes a failed Gmail attempt reviewable again without creating a step."""
+    return _set_follow_up(
+        account_id, draft_id, "queued", from_statuses=("sending",)
+    )
+
+
+def mark_follow_up_sent(account_id, draft_id):
+    return _set_follow_up(
+        account_id, draft_id, "sent", from_statuses=("sending",),
+        follow_up_sent_at=datetime.now(timezone.utc).isoformat()
+    )
+
+
+def mark_follow_up_replied(account_id, draft_id):
+    return _set_follow_up(
+        account_id, draft_id, "replied", follow_up_replied_at=datetime.now(timezone.utc).isoformat()
+    )
+
+
+def cancel_follow_up(account_id, draft_id, reason):
+    return _set_follow_up(account_id, draft_id, "cancelled", follow_up_cancel_reason=reason)
+
+
+def cancel_follow_ups_for_email(account_id, email, reason):
+    return (
+        _get_client().table(TABLE).update({
+            "follow_up_status": "cancelled", "follow_up_cancel_reason": reason,
+        }).eq("account_id", account_id).eq("email", email)
+        .in_("follow_up_status", list(ACTIVE_FOLLOW_UP_STATUSES)).execute()
+    )
 
 
 def mark_rewritten(account_id, draft_id):

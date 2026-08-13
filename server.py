@@ -368,6 +368,7 @@ class SettingsBody(BaseModel):
     notify_email: str | None = None
     google_sheet_id: str | None = None
     outreach_send_mode: Literal["manual", "auto"] | None = None
+    follow_up_delay_days: int | None = Field(default=None, ge=1, le=14)
 
 
 @app.put("/api/settings")
@@ -949,6 +950,16 @@ def list_replies(request: Request):
     return reviews
 
 
+@app.get("/api/outreach/follow-ups/status")
+def follow_up_status(request: Request):
+    account_id = request.state.account_id
+    return {
+        **drafts_db.follow_up_summary(account_id),
+        **drafts_db.follow_up_outcomes(account_id),
+        **reviews_db.follow_up_edit_metrics(account_id),
+    }
+
+
 @app.post("/api/outreach/campaigns/{row}/check-reply")
 def check_single_reply(request: Request, row: int):
     """Lightweight per-contact check: has this one person replied yet?
@@ -989,11 +1000,76 @@ def send_reply(request: Request, review_id: int, payload: SendReplyBody):
     # way, the address a reply is actually about to reach. Unlike
     # _guard_draft_send's outreach-send check, nothing gated this path before
     # today; an unsubscribed contact could still receive a reply.
+    is_follow_up = review.get("kind") == "follow_up"
+    source_draft = None
+    if is_follow_up:
+        source_draft = drafts_db.get_draft(account["id"], review.get("source_draft_id"))
+        if not source_draft or source_draft.get("follow_up_status") != "queued":
+            reviews_db.dismiss(account["id"], review_id)
+            raise HTTPException(status_code=409, detail="This follow-up was cancelled or handled elsewhere.")
+
     if suppressions_db.is_suppressed(account["id"], review["email"]):
+        if source_draft:
+            drafts_db.cancel_follow_up(account["id"], source_draft["id"], "opt_out")
+            reviews_db.dismiss(account["id"], review_id)
         raise HTTPException(status_code=409, detail=f"{review['email']} has opted out; this reply won't be sent.")
 
-    gmail.send_reply(account, review["thread_id"], review["email"], payload.body)
-    reviews_db.mark_sent(account["id"], review_id, payload.body)
+    body = payload.body
+    unsubscribe_url = ""
+    if source_draft:
+        thread = gmail.get_thread(account, review["thread_id"])
+        own_addresses, _ = gmail.get_own_addresses(account)
+        candidate = gmail.get_latest_reply_with_history(
+            account, review["thread_id"], review["email"], own_addresses, thread=thread
+        )
+        if candidate:
+            drafts_db.mark_follow_up_replied(account["id"], source_draft["id"])
+            reviews_db.dismiss(account["id"], review_id)
+            raise HTTPException(status_code=409, detail="This contact replied before the follow-up was sent. The follow-up was cancelled.")
+        bounce = gmail.find_bounce(account, review["thread_id"], review["email"], thread=thread)
+        if bounce:
+            bounces.record(account, review["row_index"], review["email"], bounce)
+            drafts_db.cancel_follow_up(account["id"], source_draft["id"], "bounce")
+            reviews_db.dismiss(account["id"], review_id)
+            raise HTTPException(status_code=409, detail="A delivery failure arrived before this follow-up. It was cancelled.")
+        unsubscribe_url = auth.unsubscribe_url(account["id"], review["email"])
+        if unsubscribe_url not in body:
+            body = f"{body.rstrip()}\n\n{agent._opt_out_line(unsubscribe_url)}"
+
+    if source_draft:
+        claim = drafts_db.claim_follow_up_send(account["id"], source_draft["id"])
+        if not getattr(claim, "data", None):
+            reviews_db.dismiss(account["id"], review_id)
+            raise HTTPException(status_code=409, detail="This follow-up is already being sent or was cancelled elsewhere.")
+        try:
+            # Repeat the authoritative opt-out check after winning the atomic
+            # claim. A second tab cannot send now; an opt-out that landed while
+            # Gmail was being rechecked still stops here.
+            if suppressions_db.is_suppressed(account["id"], review["email"]):
+                drafts_db.release_follow_up_send(account["id"], source_draft["id"])
+                drafts_db.cancel_follow_up(account["id"], source_draft["id"], "opt_out")
+                reviews_db.dismiss(account["id"], review_id)
+                raise HTTPException(status_code=409, detail=f"{review['email']} has opted out; this follow-up won't be sent.")
+            gmail.send_reply(
+                account, review["thread_id"], review["email"], body,
+                unsubscribe_url=unsubscribe_url,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            drafts_db.release_follow_up_send(account["id"], source_draft["id"])
+            raise
+    else:
+        gmail.send_reply(account, review["thread_id"], review["email"], body)
+    if source_draft:
+        # This is the durable duplicate-send fence after Gmail's irreversible
+        # action. Match first-touch sending: retry the authoritative state
+        # before touching the secondary review record.
+        send_outreach._with_retries(
+            lambda: drafts_db.mark_follow_up_sent(account["id"], source_draft["id"]),
+            f"Follow-up was sent to {review['email']}, but recording it failed",
+        )
+    reviews_db.mark_sent(account["id"], review_id, body)
     # Separate, best-effort -- never part of mark_sent's update. See
     # reviews_db.mark_rewritten for why this must never be able to make that
     # write (or this send) fail.
@@ -1016,6 +1092,8 @@ def rewrite_reply_draft(request: Request, review_id: int, payload: RewriteReplyB
     # answered_elsewhere (nothing to send).
     if not review or review["status"] not in reviews_db.SENDABLE_STATUSES:
         raise HTTPException(status_code=404, detail="Review not found or already handled")
+    if review.get("kind") == "follow_up":
+        raise HTTPException(status_code=409, detail="Edit the follow-up directly before sending.")
     if not payload.instruction.strip():
         raise HTTPException(status_code=400, detail="Tell the AI what to change.")
     if not ratelimit.check(f"rewrite-reply:{account['id']}:{review_id}", limit=10, window_seconds=3600):
@@ -1040,6 +1118,10 @@ def dismiss_reply(request: Request, review_id: int):
     if not review or review["status"] not in reviews_db.VISIBLE_STATUSES:
         raise HTTPException(status_code=404, detail="Review not found or already handled")
 
+    if review.get("kind") == "follow_up" and review.get("source_draft_id"):
+        drafts_db.cancel_follow_up(
+            account["id"], review["source_draft_id"], "dismissed_by_sender"
+        )
     reviews_db.dismiss(account["id"], review_id)
     return {"ok": True}
 
@@ -1192,6 +1274,13 @@ async def unsubscribe_apply(request: Request):
             status=400,
         )
     suppressions_db.add(account["id"], email, source="unsubscribe_link")
+    try:
+        drafts_db.cancel_follow_ups_for_email(account["id"], email, "opt_out")
+    except Exception as e:
+        # The suppression above is the irreversible user promise. Follow-up
+        # cleanup is defence in depth; never turn a successful opt-out into an
+        # error page because the additive schedule table is unavailable.
+        print(f"unsubscribe: follow-up cleanup failed for {email}: {e}")
     # Reflect it in the sheet too, best-effort -- the suppression above is the
     # authoritative stop, so a sheet hiccup must not turn into an error page for
     # someone who just opted out.
