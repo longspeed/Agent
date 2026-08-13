@@ -7,6 +7,7 @@ import sys
 import threading
 import uuid
 from pathlib import Path
+from typing import Literal
 from urllib.parse import parse_qs
 
 ROOT = Path(__file__).parent
@@ -366,6 +367,7 @@ class SettingsBody(BaseModel):
     calendar_booking_link: str | None = None
     notify_email: str | None = None
     google_sheet_id: str | None = None
+    outreach_send_mode: Literal["manual", "auto"] | None = None
 
 
 @app.put("/api/settings")
@@ -693,6 +695,7 @@ def _campaign_preview(account: dict) -> dict:
     bounce_stats = bounces.stats(account, rows)
     bounce_pause = bounces.pause_reason(account, rows, current=bounce_stats)
     return {
+        "send_mode": account.get("outreach_send_mode") or "manual",
         "bounces": bounce_stats,
         "eligible": len(readiness["eligible"]),
         "eligible_total": readiness["eligible_total"],
@@ -734,8 +737,8 @@ class PrepareCampaignBody(BaseModel):
 
 @app.post("/api/outreach/campaigns/prepare", status_code=202)
 def prepare_campaigns(request: Request, payload: PrepareCampaignBody):
-    """Generate + validate an email per eligible contact and queue them for
-    review. Nothing is emailed here; approval happens per-draft below."""
+    """Generate validated drafts. Manual accounts queue them for review; auto
+    accounts send only the drafts made by this batch."""
     account = _account(request)
     if not ratelimit.check(f"batch-prepare:{account['id']}", limit=5, window_seconds=3600):
         raise HTTPException(status_code=429, detail="Too many draft batches this hour. Try again later.")
@@ -765,7 +768,12 @@ def prepare_campaigns(request: Request, payload: PrepareCampaignBody):
 
     def run():
         try:
-            return send_outreach.prepare_drafts(account)
+            auto_send = (account.get("outreach_send_mode") or "manual") == "auto"
+            prepared = send_outreach.prepare_drafts(account, auto_send=auto_send)
+            if not auto_send or not prepared["draft_ids"]:
+                return prepared
+            sent = send_outreach.send_all_prepared(account, draft_ids=prepared["draft_ids"])
+            return {**prepared, "auto_sent": sent}
         finally:
             with _send_lock_guard:
                 _accounts_sending.discard(account["id"])
@@ -800,15 +808,30 @@ class SendDraftBody(BaseModel):
 
 def _guard_draft_send(account: dict, draft: dict):
     """Shared pre-send checks for a single approved draft. Both run at SEND
-    time, not draft time: the cap can be reached and an address can opt out
-    between preparing a batch and approving it."""
+    time, not draft time: the cap can be reached, the sheet can be edited to
+    "unverified", and an address can opt out between preparing a batch and
+    approving it."""
     if suppressions_db.is_suppressed(account["id"], draft["email"]):
         drafts_db.discard(account["id"], draft["id"])
         raise HTTPException(status_code=409, detail=f"{draft['email']} unsubscribed after this draft was prepared; it won't be sent.")
+    # One sheet read serving both checks below, not one each.
+    rows = sheets.get_all_rows(account)
+    if sheets.email_confidence(account, draft["email"], rows=rows).lower() == "unverified":
+        # Verified-leads gate re-applied at send time: a draft can be pending
+        # with "unverified" confidence (prepared before the gate was added, or
+        # the sheet was edited after drafting), and a guessed address must not
+        # go out until a human confirms it. The draft is retired so the block
+        # isn't permanent; the sheet row stays for the owner to verify.
+        drafts_db.discard(account["id"], draft["id"])
+        raise HTTPException(
+            status_code=409,
+            detail=f"{draft['email']} is still marked 'unverified' in the sheet; confirm the address and set EmailConfidence to 'verified' before sending.",
+        )
     readiness = sheets.campaign_readiness(
         account,
         sent_today=drafts_db.count_sent_last_24_hours(account["id"]),
         suppressed_emails=suppressions_db.list_suppressed_emails(account["id"]),
+        rows=rows,
     )
     if readiness["remaining_today"] <= 0:
         raise HTTPException(status_code=409, detail="Daily send limit reached. Try again after it resets.")
@@ -902,6 +925,7 @@ def send_all_drafts(request: Request):
         with _send_lock_guard:
             _accounts_sending.discard(account["id"])
         raise
+
 
 
 @app.post("/api/outreach/replies/check", status_code=202)

@@ -23,6 +23,7 @@ EDITABLE_SETTINGS = (
     "calendar_booking_link",
     "notify_email",
     "google_sheet_id",
+    "outreach_send_mode",
 )
 
 # Columns the code needs that a project created before them will not have, as
@@ -124,6 +125,14 @@ _MIGRATED_COLUMNS = (
         "way, since this write is deliberately separate from mark_sent",
         "alter table public.outreach_drafts add column if not exists "
         "rewritten boolean not null default false;",
+    ),
+    (
+        ACCOUNTS_TABLE,
+        "outreach_send_mode",
+        "the account cannot choose whether newly prepared outreach drafts wait for "
+        "review or are sent immediately",
+        "alter table public.accounts add column if not exists outreach_send_mode "
+        "text not null default 'manual' check (outreach_send_mode in ('manual', 'auto'));",
     ),
     (
         "reviews",

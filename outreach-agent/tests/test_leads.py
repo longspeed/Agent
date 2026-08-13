@@ -86,6 +86,27 @@ class FindLeadsTests(unittest.TestCase):
 
         self.assertEqual(result["added"], 0)
 
+    def test_guard_requires_whole_name_and_company_tokens_in_one_result(self):
+        results = [{
+            "url": "https://acme.example/about",
+            "title": "Jane Doe, CEO of Acme",
+            "content": "Jane Doe founded Acme.",
+        }]
+        candidates = [{"name": "An Doe", "company": "AI", "email_guess": "an@acme.example"}]
+        # "An" and "AI" only occur inside unrelated words, so they are not
+        # evidence that this person belongs to this company.
+        assert leads._guard_candidates(candidates, results) == []
+
+    def test_guard_accepts_a_missing_middle_initial_and_missing_url(self):
+        results = [{
+            "title": "Jane Doe, CEO of Acme",
+            "content": "Jane Doe founded Acme. jane@acme.example",
+        }]
+        candidates = [{"name": "Jane A. Doe", "company": "Acme", "email_guess": "jane@acme.example"}]
+        guarded = leads._guard_candidates(candidates, results)
+        self.assertEqual(len(guarded), 1)
+        self.assertEqual(guarded[0]["email_guess"], "jane@acme.example")
+
 
 if __name__ == "__main__":
     unittest.main()

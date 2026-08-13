@@ -64,6 +64,9 @@ create table public.accounts (
     -- Free-form sender preferences injected into the writing prompt (tone,
     -- length, things to always mention/avoid, language).
     custom_instructions text not null default '',
+    -- Manual queues each draft for review. Auto sends only drafts made by the
+    -- current confirmed Prepare action, after all normal sending safeguards.
+    outreach_send_mode text not null default 'manual' check (outreach_send_mode in ('manual', 'auto')),
     calendar_booking_link text,
     notify_email text,
     -- How many hard bounces the operator has reviewed and chosen to continue
@@ -186,6 +189,7 @@ Upgrading an existing project (the tables above are new as of 2026-07-24):
 ```sql
 alter table public.accounts add column if not exists sender_company text not null default '';
 alter table public.accounts add column if not exists custom_instructions text not null default '';
+alter table public.accounts add column if not exists outreach_send_mode text not null default 'manual' check (outreach_send_mode in ('manual', 'auto'));
 -- then run the two create table statements above, their indexes, and their
 -- `enable row level security` lines.
 ```
@@ -210,6 +214,17 @@ alter table public.outreach_drafts add column if not exists sent_at timestamptz;
 update public.outreach_drafts set sent_at = created_at where status = 'sent' and sent_at is null;
 create index if not exists outreach_drafts_sent_at_idx
     on public.outreach_drafts (account_id, status, sent_at);
+```
+
+For edit-diff capture on existing projects, apply the idempotent migration in
+`migrations/20260812_add_original_draft_columns.sql`. Draft creation writes both
+columns, so an upgraded app cannot prepare outreach until this migration has
+run:
+
+```sql
+alter table public.outreach_drafts add column if not exists original_subject text;
+alter table public.outreach_drafts add column if not exists original_body text;
+notify pgrst, 'reload schema';
 ```
 
 For plans and billing (new as of 2026-07-26). Until this runs, `check_schema()`

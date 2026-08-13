@@ -170,8 +170,10 @@ sheet yourself: fill in **Name**, **Email** and **Company**, and leave
 "approved, send this."
 
 Paste them in by hand, or import a CSV as described in step 3. The outreach
-agent does not care where the rows came from. Rows you added and rows the
-sourcing agent found are treated identically from here on.
+agent does not care where the rows came from. Rows you added have no
+confidence stamp, so blank Status makes them sendable immediately; rows the
+sourcing agent found arrive with `unverified` and stay blocked until you
+confirm them (step 6).
 
 > If you are pasting in a large list, fill the Status column first and clear it
 > as you approve. Every row you leave blank is queued to send.
@@ -186,8 +188,9 @@ The agent researches the web and appends what it finds to your sheet with:
 
 - **Status** set to `Needs verification`, so nothing can be emailed yet
 - **LeadReason** explaining why it thinks this person fits
-- **EmailConfidence** marked `verified` or `unverified`, telling you whether it
-  found the address stated outright or had to guess the pattern
+- **EmailConfidence** always set to `unverified` on new rows — the agent's
+  guess at the company's email pattern, not a checked address. Mark a row
+  `verified` yourself once you've confirmed it
 
 Searches are limited to 10 per hour.
 
@@ -202,11 +205,15 @@ Back on the **Leads** page you see everything waiting for review. For each one
 you get the name, company, the reason the agent picked them, and the email
 confidence.
 
-- **Approve** clears the Status, which puts the lead in the send queue.
+- **Approve** clears the Status, but a row the agent found is still blocked
+  while its `EmailConfidence` reads `unverified`. It only becomes sendable once
+  you confirm the address and set that cell to `verified`.
 - **Discard** marks it `Discarded`, and it is never emailed.
 
-Pay attention to `unverified` confidence. That means the address is a pattern
-guess, and sending to it risks a bounce.
+Sending to an `unverified` address is not just risky, it is impossible:
+Sendkeep refuses to draft or send anything still marked `unverified`, so it
+never goes out until you set `EmailConfidence` to `verified`. Confirm the
+addresses you want to reach; a bad guess that slips through costs a bounce.
 
 ---
 
@@ -262,10 +269,12 @@ important column to understand.
 | `Replied` | They answered. The reply is waiting for you in Outreach |
 | `Discarded` | Skipped. Never emailed |
 
-**A blank Status is the only thing that makes a row eligible to send.** If you
-paste in a list of 500 contacts with an empty Status column, all 500 are queued
-the moment you save. Add a status first, then clear it row by row as you
-approve.
+**Blank Status plus a sendable EmailConfidence is what makes a row eligible to
+send.** If you paste in a list of 500 contacts with an empty Status column, all
+500 are queued the moment you save. Add a status first, then clear it row by
+row as you approve. Rows you type or import have no confidence stamp, which is
+fine — only the `unverified` stamp (which the sourcing agent writes on
+everything it finds) blocks a row.
 
 ## Reference: who owns which column
 
@@ -274,7 +283,7 @@ approve.
 | Name, Email, Company | You |
 | Status | Both you and Sendkeep |
 | ThreadID, SentAt, EmailBody | Sendkeep, when it sends |
-| LeadReason, EmailConfidence | The lead sourcing agent |
+| LeadReason, EmailConfidence | The lead sourcing agent — plus you, when you confirm an address and set EmailConfidence to verified |
 
 ## Reference: limits
 

@@ -107,7 +107,7 @@ def _prepare_one(account, row_index, name, email, company, lead_reason):
     return {"row_index": row_index, "email": email, "draft_id": draft_id, "subject": subject}
 
 
-def prepare_drafts(account):
+def prepare_drafts(account, auto_send=False):
     """Generate a batch of drafts for every eligible contact and queue them for
     review. Eligible = approved (blank Status), has an email, not suppressed,
     within today's remaining send allowance."""
@@ -142,6 +142,7 @@ def prepare_drafts(account):
             "prepared": 0, "total": 0, "failed": [],
             "daily_limit": readiness["daily_limit"],
             "remaining_today": readiness["remaining_today"],
+            "draft_ids": [],
         }
 
     # Monthly plan quota, checked after the daily cap and on the same principle:
@@ -181,7 +182,10 @@ def prepare_drafts(account):
                 failed.append((email, str(e)))
                 print(f"Failed to draft for {email}: {e}")
 
-    summary = f"Prepared {len(prepared)} of {len(pending)} outreach drafts. Review and send them on the Outreach page."
+    if auto_send:
+        summary = f"Prepared {len(prepared)} of {len(pending)} outreach drafts. Newly prepared drafts are sending automatically."
+    else:
+        summary = f"Prepared {len(prepared)} of {len(pending)} outreach drafts. Review and send them on the Outreach page."
     if quota_trimmed:
         summary += (
             f"\n\n{quota_trimmed} more were left undrafted: that is all your plan "
@@ -189,7 +193,8 @@ def prepare_drafts(account):
         )
     if failed:
         summary += "\n\nCouldn't draft:\n" + "\n".join(f"- {email}: {err}" for email, err in failed)
-    notify(account, "Outreach drafts ready for review", summary)
+    subject = "Outreach drafts are sending automatically" if auto_send else "Outreach drafts ready for review"
+    notify(account, subject, summary)
     print(summary)
 
     return {
@@ -199,6 +204,7 @@ def prepare_drafts(account):
         "daily_limit": readiness["daily_limit"],
         "remaining_today": readiness["remaining_today"],
         "quota_trimmed": quota_trimmed,
+        "draft_ids": [draft["draft_id"] for draft in prepared],
     }
 
 
@@ -277,9 +283,10 @@ def send_prepared_draft(account, draft, subject=None, body=None, rewritten=False
     return {"thread_id": thread_id, "body": body, "sheet_error": sheet_error}
 
 
-def send_all_prepared(account):
+def send_all_prepared(account, draft_ids=None):
     """Send every pending draft, one at a time, human-paced. The suppression
-    list is re-checked before EACH send (someone can opt out mid-batch); the
+    list and EmailConfidence are re-checked before EACH send (someone can opt
+    out or a sourced address can be unverified mid-batch); the
     daily cap is read ONCE up front and decremented locally per send rather
     than re-fetching the whole sheet every iteration (that was N sheet reads
     for N drafts). Drips with a randomized gap so the batch doesn't leave in
@@ -289,6 +296,9 @@ def send_all_prepared(account):
     # the check belongs on the send, not just on the drafting.
     bounces.assert_sendable(account)
     drafts = drafts_db.list_pending_drafts(account["id"])
+    if draft_ids is not None:
+        selected_ids = set(draft_ids)
+        drafts = [draft for draft in drafts if draft["id"] in selected_ids]
     sent = []
     skipped = []
     failed = []
@@ -313,6 +323,14 @@ def send_all_prepared(account):
         if suppressions_db.is_suppressed(account["id"], email):
             drafts_db.discard(account["id"], draft["id"])
             skipped.append((email, "recipient unsubscribed"))
+            continue
+        if sheets.email_confidence(account, email, rows=rows).lower() == "unverified":
+            # A draft may have existed before the verification gate was added,
+            # or an operator may have changed the sheet after it was drafted.
+            # Retire it rather than leave a permanently blocked pending draft;
+            # the row remains for the operator to verify and prepare again.
+            drafts_db.discard(account["id"], draft["id"])
+            skipped.append((email, "address is still marked unverified in the sheet"))
             continue
         if draft["row_index"] in already_emailed:
             # The sheet says this row already went out while the draft queue still

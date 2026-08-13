@@ -2,7 +2,6 @@ import { useState } from 'react'
 import {
   Mail,
   Table,
-  Calendar,
   KeyRound,
   ChevronDown,
   ShieldCheck,
@@ -13,18 +12,18 @@ import {
 import { SectionEyebrow, PrimaryButton, GhostButton } from './primitives'
 
 const CHIPS = [
-  'Approve every send',
+  'Manual review by default',
+  'Auto mode is optional',
   'Opt-outs enforced',
   'Daily send caps',
-  'Full audit trail',
-  'Revoke access anytime',
+  'Auto-pause on bounces',
 ]
 
 const QUEUE_GUARANTEES = [
-  { label: 'Nothing sends without your click', color: 'text-grass' },
-  { label: 'Opt-outs are suppressed — permanently', color: 'text-steel' },
-  { label: 'A bounce spike pauses sending automatically', color: 'text-sand' },
-  { label: 'Every decision is logged to your account', color: 'text-gold' },
+  { label: 'Replies are queued instead of buried in Gmail', color: 'text-grass' },
+  { label: 'Drafted follow-ups stay grounded in the thread', color: 'text-steel' },
+  { label: 'Opt-outs are suppressed permanently', color: 'text-sand' },
+  { label: 'Every send goes out from your own Gmail', color: 'text-gold' },
 ]
 
 export function Trust() {
@@ -39,8 +38,9 @@ export function Trust() {
             You decide.
           </h2>
           <p className="mt-6 text-sand text-base leading-[1.6] max-w-md">
-            Every email and every reply passes through your review queue. Sendkeep never sends on
-            its own, never invents a contact, and never emails anyone who has opted out.
+            The default workflow keeps you in control: review first touches, handle replies from
+            one queue, and decide when auto-send is safe enough for a batch. The product is the
+            follow-up loop, not a promise that one inbox can behave like a cold-email platform.
           </p>
           <div className="mt-8 flex flex-wrap gap-2">
             {CHIPS.map((chip) => (
@@ -55,7 +55,7 @@ export function Trust() {
         </div>
         <div className="app-card rounded-2xl p-5">
           <p className="text-[11px] uppercase tracking-widest text-mute">
-            What the queue guarantees
+            What the reply queue gives you
           </p>
           <div className="mt-4 flex flex-col gap-3">
             {QUEUE_GUARANTEES.map((row) => (
@@ -80,7 +80,6 @@ export function Trust() {
 const INTEGRATIONS = [
   { icon: Mail, label: 'Gmail' },
   { icon: Table, label: 'Google Sheets' },
-  { icon: Calendar, label: 'Google Calendar' },
   { icon: KeyRound, label: 'Google OAuth' },
 ]
 
@@ -125,8 +124,8 @@ const SECURITY_CARDS = [
   },
   {
     icon: Gauge,
-    title: 'Send caps protect your domain',
-    body: 'Daily per-inbox limits keep sending at human volumes so your domain reputation stays intact.',
+    title: 'Risk reduction, not magic',
+    body: 'Caps, opt-outs, and bounce pauses reduce obvious damage. They do not replace dedicated sending domains or warmup for high-volume cold email.',
   },
 ]
 
@@ -170,16 +169,16 @@ export function Security() {
 
 const FAQ_ITEMS = [
   {
-    q: 'Will this get my domain blacklisted?',
-    a: 'Sendkeep is built to prevent exactly that. Sends go out from your own Gmail at human volumes, capped per inbox per day, and only to addresses you approved yourself. Opt-outs are permanently suppressed. No spray-and-pray: you approve every message before it leaves.',
+    q: 'Does Sendkeep protect my domain?',
+    a: 'It reduces obvious risk with human-volume caps, opt-out suppression, and bounce pauses. It is not multi-inbox infrastructure, warmup, or inbox placement testing. If you need high-volume cold email, use dedicated sending domains and an infrastructure tool.',
   },
   {
     q: 'Does it send anything without me?',
-    a: 'No. Every outreach email and every reply sits in your review queue until you press Send. There is no autopilot mode — the approval step is the product.',
+    a: 'Manual review is the default. You can switch first-touch outreach to auto-send mode once you trust your list and settings. Replies still land in the review queue before you send a response.',
   },
   {
     q: 'Where do the leads come from?',
-    a: 'You describe your ideal customer in a sentence. The lead agent searches the public web, qualifies matching companies and contacts, and writes them to your Google Sheet with a reason and a confidence score — for you to approve or reject.',
+    a: 'Most users should start with a list they already trust. The lead agent can search the public web and write small batches to your Google Sheet with a reason and confidence note for review.',
   },
   {
     q: 'What happens when someone replies?',
@@ -187,11 +186,11 @@ const FAQ_ITEMS = [
   },
   {
     q: 'Can I use my own Gmail?',
-    a: "Yes — that's the only way it works. You connect your Gmail with Google OAuth; emails send from your address and replies land in your inbox. Revoke access anytime from Google's security settings.",
+    a: "Yes. You connect Gmail with Google OAuth; emails send from your address and replies land in your inbox. Revoke access anytime from Google's security settings.",
   },
   {
     q: 'How do I cancel?',
-    a: 'Cancel from settings in one click — no calls, no forms. Disconnecting your Google account immediately stops all sending and reply-watching, and you can ask us to delete your data entirely.',
+    a: 'Cancel from settings in one click. No calls, no forms. Disconnecting your Google account immediately stops all sending and reply-watching, and you can ask us to delete your data entirely.',
   },
 ]
 
@@ -242,13 +241,12 @@ export function FinalCta() {
           }}
         />
         <h2 className="relative font-display text-4xl md:text-6xl font-medium tracking-tight leading-[1.05]">
-          Stop writing cold emails.
+          Stop losing cold replies.
           <br />
-          Start approving them.
+          Start working the queue.
         </h2>
         <p className="relative mt-6 text-sand max-w-md mx-auto text-sm leading-[1.6]">
-          Connect your Gmail, describe who you're after, and review the first batch in under ten
-          minutes.
+          Connect Gmail, send a small batch, and handle every reply from one review queue.
         </p>
         <div className="relative mt-10 flex flex-wrap items-center justify-center gap-4">
           <PrimaryButton href="/signup">Start free</PrimaryButton>

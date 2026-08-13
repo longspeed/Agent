@@ -1,9 +1,9 @@
 # Sendkeep
 
-Cold outreach you approve. Sendkeep finds leads, writes and queues your
-cold emails, and drafts replies when prospects write back — every send,
-first-touch or reply, waits for you to approve it. No autopilot mode; the
-approval step is the product.
+The reply queue for Gmail outbound. Sendkeep drafts first-touch emails, watches
+the threads, and drafts replies when prospects write back. Manual review is the
+default; auto-send can be enabled for first-touch outreach once the sender
+trusts the list and settings. Replies still stay in the review queue.
 
 Multi-tenant: one running instance serves any number of customers, each
 with their own login, their own connected Gmail/Sheets, and their own
@@ -138,7 +138,9 @@ with no code or config changes:
    a test user in Google Cloud Console → APIs & Services → OAuth consent
    screen.)
 3. **Fill in Settings**: their Google Sheet ID, sender name, calendar
-   booking link, meeting purpose, and notification email.
+   booking link, meeting purpose, notification email, and send mode. Manual
+   mode queues drafts for review; Auto mode sends only newly generated drafts
+   after the operator confirms Prepare.
 
 Everything they see and send is scoped to their account — reviews and usage
 rows carry an `account_id` in Supabase, background jobs are only visible to

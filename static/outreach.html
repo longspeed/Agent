@@ -39,6 +39,11 @@
   .spin{animation:spin 0.7s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
   .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;}
+  .diagnostic-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px;}
+  .diagnostic{border:1px solid var(--border);border-radius:10px;background:var(--bg-floating);padding:10px 12px;}
+  .diagnostic-label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:4px;}
+  .diagnostic-value{font-size:13px;color:var(--text);}
+  @media (min-width: 720px){.diagnostic-grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
   /* Native <dialog>: Esc-to-close, focus trapping and inert background come
      free, so none of that is reimplemented in JS below. */
   .modal{border:none;padding:0;background:transparent;color:var(--text);width:100%;max-width:min(600px, calc(100vw - 32px));}
@@ -448,6 +453,37 @@
   function setPrepareEnabled(enabled) {
     document.getElementById('send-batch-btn').disabled = !enabled;
   }
+  function pct(value) {
+    if (!Number.isFinite(value)) return '0%';
+    return `${Math.round(value * 100)}%`;
+  }
+  function renderCampaignDiagnostics(preview) {
+    const b = preview.bounces || {};
+    const autoSend = preview.send_mode === 'auto';
+    const bounceTone = b.paused || b.unsafe ? 'var(--rust)' : b.armed ? 'var(--green)' : 'var(--gold)';
+    const bounceText = b.armed
+      ? `${b.bounced || 0}/${b.sent || 0} hard bounces (${pct(b.rate || 0)})`
+      : `${b.sent || 0}/${b.min_sends_to_arm || 20} sends before bounce guard arms`;
+    return `
+      <div class="diagnostic-grid" aria-label="Outreach diagnostics">
+        <div class="diagnostic">
+          <span class="diagnostic-label">Send mode</span>
+          <span class="diagnostic-value">${autoSend ? 'Auto-send new drafts' : 'Manual review'}</span>
+        </div>
+        <div class="diagnostic">
+          <span class="diagnostic-label">Daily cap</span>
+          <span class="diagnostic-value">${preview.sent_today}/${preview.daily_limit} sent</span>
+        </div>
+        <div class="diagnostic">
+          <span class="diagnostic-label">Ready now</span>
+          <span class="diagnostic-value">${preview.eligible} eligible${preview.capped ? `, ${preview.capped} capped` : ''}</span>
+        </div>
+        <div class="diagnostic">
+          <span class="diagnostic-label">Bounce risk</span>
+          <span class="diagnostic-value" style="color:${bounceTone};">${bounceText}</span>
+        </div>
+      </div>`;
+  }
   async function loadCampaignSafety() {
     const el = document.getElementById('campaign-safety');
     try {
@@ -482,7 +518,7 @@
         const action = paused
           ? `<button type="button" id="ack-bounces" class="btn-ghost rounded-lg px-3 py-1.5 text-sm font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);">Acknowledge and keep sending</button>`
           : `<a href="/settings" style="color:var(--accent);">Go to Settings</a>`;
-        el.innerHTML = `${esc(blockers.join(' '))} ${action}`;
+        el.innerHTML = `<div>${esc(blockers.join(' '))} ${action}</div>${renderCampaignDiagnostics(campaignPreview)}`;
         const ackBtn = paused ? document.getElementById('ack-bounces') : null;
         if (ackBtn) {
           ackBtn.addEventListener('click', async () => {
@@ -517,12 +553,16 @@
         } else {
           el.textContent = `All ${campaignsCache.length} contact${campaignsCache.length === 1 ? '' : 's'} in your sheet already ${campaignsCache.length === 1 ? 'has' : 'have'} a Status — clear one, or run the Lead Agent to find more.`;
         }
+        el.innerHTML = `<div>${esc(el.textContent)}</div>${renderCampaignDiagnostics(campaignPreview)}`;
         return;
       }
       setPrepareEnabled(true);
       el.style.color = 'var(--text-secondary)';
-      el.textContent = `${campaignPreview.eligible} recipient${campaignPreview.eligible === 1 ? '' : 's'} can be drafted today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
+      const autoSend = campaignPreview.send_mode === 'auto';
+      document.querySelector('#send-batch-btn .btn-label').textContent = autoSend ? 'Prepare and send' : 'Prepare drafts';
+      el.textContent = `${campaignPreview.eligible} recipient${campaignPreview.eligible === 1 ? '' : 's'} can be ${autoSend ? 'prepared and sent' : 'drafted'} today · ${campaignPreview.sent_today}/${campaignPreview.daily_limit} sent in the last 24 hours` +
         (campaignPreview.capped ? ` · ${campaignPreview.capped} held by the daily cap` : '');
+      el.innerHTML = `<div>${esc(el.textContent)}</div>${renderCampaignDiagnostics(campaignPreview)}`;
     } catch (e) {
       el.style.color = 'var(--accent)';
       el.textContent = 'Could not load campaign safety.';
@@ -896,7 +936,11 @@
       resultEl.textContent = campaignBlockedReason || (campaignPreview?.blockers || []).join(' ') || 'No pending contacts are available to draft today.';
       return;
     }
-    if (!confirm(`Draft ${draftCount} outreach email${draftCount === 1 ? '' : 's'} for review? Nothing is sent yet — each draft lands below for you to read, edit and approve.`)) return;
+    const autoSend = campaignPreview?.send_mode === 'auto';
+    const confirmation = autoSend
+      ? `Prepare and automatically send ${draftCount} outreach email${draftCount === 1 ? '' : 's'}? These newly generated drafts will be sent from your Gmail without appearing for review first. Daily limits, opt-outs, verified-address checks, bounce pauses, and pacing still apply.`
+      : `Draft ${draftCount} outreach email${draftCount === 1 ? '' : 's'} for review? Nothing is sent yet - each draft lands below for you to read, edit and approve.`;
+    if (!confirm(confirmation)) return;
 
     setLoading(btn, true, 'Drafting…');
     resultEl.classList.add('hidden');
@@ -913,7 +957,9 @@
       resultEl.style.color = 'var(--green)';
       resultEl.textContent = data.total === 0
         ? 'No new contacts to draft — they may already be in the review queue below.'
-        : `Prepared ${data.prepared} of ${data.total} drafts. Review them below, then send.` + (data.failed?.length ? ` ${data.failed.length} couldn't be drafted.` : '');
+        : autoSend
+          ? `Prepared ${data.prepared} of ${data.total} drafts and sent ${data.auto_sent?.sent || 0}.` + (data.auto_sent?.skipped?.length ? ` ${data.auto_sent.skipped.length} skipped.` : '') + (data.auto_sent?.failed?.length ? ` ${data.auto_sent.failed.length} failed.` : '') + (data.failed?.length ? ` ${data.failed.length} couldn't be drafted.` : '')
+          : `Prepared ${data.prepared} of ${data.total} drafts. Review them below, then send.` + (data.failed?.length ? ` ${data.failed.length} couldn't be drafted.` : '');
       await Promise.all([loadDrafts(), loadCampaignSafety()]);
     } catch (e) {
       resultEl.classList.remove('hidden');

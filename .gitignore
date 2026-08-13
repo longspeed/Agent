@@ -33,6 +33,9 @@ CLIProxyAPI/
 # app run logs (same category as server.log above)
 agent-hub.log
 agent-hub-run.log
+agent-hub-run.err.log
+smoke-uvicorn.*.log
+uvicorn-*.log
 
 # throwaway QA screenshots from the e2e pass (same as landing/shots, site/shots)
 e2e-shots/

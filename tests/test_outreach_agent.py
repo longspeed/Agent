@@ -1552,6 +1552,21 @@ def test_header_validation_accepts_expected():
     assert len(rows) == 1 and rows[0][0] == 2
 
 
+def test_full_nine_column_header_survives_the_write_gate():
+    """Regression: the email-only schema must remain A:I, end to end."""
+    with patched(sheets, "_get_service", lambda account: fake_sheets_service([list(sheets.EXPECTED_HEADER)])):
+        sheets.require_full_header(ACCOUNT)
+
+
+def test_short_sheet_rows_are_padded_to_the_email_schema():
+    """Older sheets may omit trailing Sendkeep-owned columns."""
+    values = [list(sheets.EXPECTED_HEADER), ["Jane", "jane@example.com", "Acme"]]
+    with patched(sheets, "_get_service", lambda account: fake_sheets_service(values)):
+        _, row = sheets.get_all_rows(ACCOUNT)[0]
+    assert len(row) == len(sheets.EXPECTED_HEADER)
+    assert row[sheets.COL_EMAIL_CONFIDENCE] == ""
+
+
 def test_header_validation_case_and_space_insensitive():
     header = [" name ", "EMAIL", "Company", "Status", "ThreadID", "SentAt", "EmailBody", "LeadReason", "EmailConfidence"]
     with patched(sheets, "_get_service", lambda account: fake_sheets_service([header])):
@@ -1768,6 +1783,18 @@ def test_campaign_readiness_excludes_suppressed():
     emails = [row[sheets.COL_EMAIL] for _, row in r["eligible"]]
     assert emails == ["keep@x.com"], "opted-out address (case-insensitive) must drop out"
     assert r["eligible_total"] == 1
+
+
+def test_campaign_readiness_blocks_sourced_unverified_addresses_until_confirmed():
+    row = _row(email="sourced@example.com")
+    row[sheets.COL_EMAIL_CONFIDENCE] = "unverified"
+    rows = [(2, row)]
+    blocked = sheets.campaign_readiness(ACCOUNT, sent_today=0, rows=rows)
+    assert blocked["eligible"] == []
+
+    row[sheets.COL_EMAIL_CONFIDENCE] = "verified"
+    confirmed = sheets.campaign_readiness(ACCOUNT, sent_today=0, rows=rows)
+    assert [candidate[sheets.COL_EMAIL] for _, candidate in confirmed["eligible"]] == ["sourced@example.com"]
 
 
 def test_row_update_cells_column_letters_match_col_constants():
@@ -2227,6 +2254,7 @@ def test_prepare_drafts_queues_without_sending_or_writing():
 
     assert calls.get("header_gate"), "prepare must gate on the full header"
     assert result["prepared"] == 1 and result["total"] == 2
+    assert result["draft_ids"] == [1]
     assert result["failed"] == [{"email": "f@x.com", "error": "LLM exploded"}]
     assert calls["sends"] == 0, "prepare must NOT send any email"
     assert calls["updates"] == 0, "prepare must NOT write the sheet"
@@ -2235,6 +2263,25 @@ def test_prepare_drafts_queues_without_sending_or_writing():
     a = calls["drafts"][0]
     assert a[1] == 2 and a[3] == "j@x.com" and a[5] == "Subject line"
     assert "Prepared 1 of 2" in calls["notify"][1]
+
+
+def test_auto_send_preparation_notification_does_not_claim_manual_review():
+    rows = [(2, _row())]
+    calls = {}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
+        stack.enter_context(patched(send_outreach.bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(drafts_db, "count_sent_last_24_hours", lambda aid: 0))
+        stack.enter_context(patched(sheets, "campaign_readiness", lambda account, **kw: _readiness(rows)))
+        stack.enter_context(patched(sheets, "get_all_rows", lambda account: []))
+        stack.enter_context(patched(drafts_db, "has_pending_for_row", lambda aid, idx: False))
+        stack.enter_context(patched(drafts_db, "add_draft", lambda *args: 7))
+        stack.enter_context(patched(agent, "generate_outreach_email", lambda *args, **kwargs: ("Subject", "Body")))
+        stack.enter_context(patched(send_outreach, "notify", lambda account, subject, body: calls.update(subject=subject, body=body)))
+        send_outreach.prepare_drafts(ACCOUNT, auto_send=True)
+    assert calls["subject"] == "Outreach drafts are sending automatically"
+    assert "sending automatically" in calls["body"]
 
 
 def test_prepare_drafts_skips_rows_already_in_queue():
@@ -2264,7 +2311,7 @@ def test_prepare_drafts_nothing_eligible():
         stack.enter_context(patched(sheets, "campaign_readiness", lambda account, sent_today=0, suppressed_emails=None: _readiness([])))
         stack.enter_context(patched(sheets, "get_all_rows", lambda account: []))  # no send history yet -> bounce guard is a no-op
         result = send_outreach.prepare_drafts(ACCOUNT)
-    assert result == {"prepared": 0, "total": 0, "failed": [], "daily_limit": 25, "remaining_today": 25}
+    assert result == {"prepared": 0, "total": 0, "failed": [], "daily_limit": 25, "remaining_today": 25, "draft_ids": []}
 
 
 # ----------------------------------------------- send_outreach: send (phase 2)
@@ -2458,6 +2505,37 @@ def test_send_all_prepared_skips_suppressed_and_respects_cap():
     assert readiness_calls["n"] == 1, "campaign_readiness must be read once, not per draft"
 
 
+def test_send_all_retires_a_draft_that_became_unverified_after_preparation():
+    drafts = [
+        {"id": 1, "row_index": 2, "email": "stale@x.com", "subject": "S", "body": "b"},
+        {"id": 2, "row_index": 3, "email": "verified@x.com", "subject": "S", "body": "b"},
+    ]
+    stale = _row(email="stale@x.com")
+    stale[sheets.COL_EMAIL_CONFIDENCE] = "unverified"
+    rows = [(2, stale), (3, _row(email="verified@x.com"))]
+    with contextlib.ExitStack() as stack:
+        log = _sendall_env(stack, drafts, rows, {})
+        result = send_outreach.send_all_prepared(ACCOUNT)
+    assert log["sent"] == ["verified@x.com"]
+    assert log["discarded"] == [1]
+    assert {item["reason"] for item in result["skipped"]} == {"address is still marked unverified in the sheet"}
+
+
+def test_send_all_prepared_can_limit_a_batch_to_new_drafts():
+    """Auto mode must not turn an older, manually queued draft into an
+    automatic send just because a fresh batch was prepared."""
+    drafts = [
+        {"id": 1, "row_index": 2, "email": "older@x.com", "subject": "S", "body": "b"},
+        {"id": 2, "row_index": 3, "email": "new@x.com", "subject": "S", "body": "b"},
+    ]
+    rows = [(2, _row(status="", email="older@x.com")), (3, _row(status="", email="new@x.com"))]
+    with contextlib.ExitStack() as stack:
+        log = _sendall_env(stack, drafts, rows, {})
+        result = send_outreach.send_all_prepared(ACCOUNT, draft_ids=[2])
+    assert log["sent"] == ["new@x.com"]
+    assert result["sent"] == 1
+
+
 def _sendall_env(stack, drafts, rows, outcomes, sent_today=0):
     """send_all_prepared with everything external faked. outcomes maps an email
     to the exception send_prepared_draft should raise for it, or to a
@@ -2634,7 +2712,7 @@ def test_server_prepare_lock_lifecycle():
             raise AssertionError("expected 409 while a batch is in flight")
         except server.HTTPException as e:
             assert e.status_code == 409
-        with patched(server.send_outreach, "prepare_drafts", lambda a: {"prepared": 0}):
+        with patched(server.send_outreach, "prepare_drafts", lambda a, **k: {"prepared": 0, "draft_ids": []}):
             captured["fn"]()
         assert account["id"] not in server._accounts_sending, "lock must release after the job runs"
 
@@ -2647,6 +2725,36 @@ def test_server_prepare_lock_lifecycle():
         except RuntimeError:
             pass
         assert account["id"] not in server._accounts_sending, "lock must release when spawn fails"
+
+
+def test_server_auto_mode_sends_only_drafts_created_by_this_prepare():
+    import server
+    from types import SimpleNamespace
+
+    account = dict(ACCOUNT, outreach_send_mode="auto")
+    req = SimpleNamespace(state=SimpleNamespace(account_id=account["id"]))
+    body = server.PrepareCampaignBody(confirmed=True)
+    captured = {}
+    sent_ids = []
+    server._accounts_sending.discard(account["id"])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: account))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server, "_campaign_preview", lambda a: {"eligible": 1, "blockers": []}))
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: captured.update(fn=fn) or "job-1"))
+        stack.enter_context(patched(
+            server.send_outreach, "prepare_drafts",
+            lambda a, auto_send=False: {"prepared": 1, "total": 1, "draft_ids": [42], "auto_mode_seen": auto_send},
+        ))
+        stack.enter_context(patched(
+            server.send_outreach, "send_all_prepared",
+            lambda a, draft_ids=None: sent_ids.extend(draft_ids or []) or {"sent": 1, "skipped": [], "failed": []},
+        ))
+        server.prepare_campaigns(req, body)
+        result = captured["fn"]()
+    assert sent_ids == [42]
+    assert result["auto_mode_seen"] is True
+    assert result["auto_sent"]["sent"] == 1
 
 
 def test_server_prepare_blocked_by_settings():
@@ -2935,12 +3043,33 @@ def test_send_draft_409_when_cap_reached():
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 0}))
         try:
             server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
             raise AssertionError("expected 409")
         except server.HTTPException as e:
             assert e.status_code == 409
+
+
+def test_send_draft_retires_a_source_guess_that_is_still_unverified():
+    import server
+    row = _row(email=_PENDING_DRAFT["email"])
+    row[sheets.COL_EMAIL_CONFIDENCE] = "unverified"
+    discarded = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, row)]))
+        stack.enter_context(patched(server.drafts_db, "discard", lambda aid, did: discarded.append(did)))
+        try:
+            server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
+            raise AssertionError("expected source-verification gate")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+            assert "unverified" in e.detail
+    assert discarded == [7]
 
 
 def test_send_draft_happy_path_marks_edited_copy():
@@ -2952,6 +3081,7 @@ def test_send_draft_happy_path_marks_edited_copy():
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
 
         def fake_send(a, d, subject=None, body=None, rewritten=False):
@@ -2984,6 +3114,7 @@ def test_send_draft_returns_200_with_a_warning_when_only_the_sheet_failed():
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, e: False))
         stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
         stack.enter_context(patched(server.send_outreach, "send_prepared_draft",
             lambda a, d, subject=None, body=None, rewritten=False: {
@@ -3010,6 +3141,7 @@ def test_send_draft_calls_mark_rewritten_when_payload_says_so():
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
         stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
         stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
@@ -3030,6 +3162,7 @@ def test_send_draft_does_not_call_mark_rewritten_by_default():
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
+        stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
         stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
         stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))

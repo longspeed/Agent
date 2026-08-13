@@ -114,7 +114,9 @@ Column order used everywhere in the lead sheet:
 - **`list_leads(request)`** `GET /api/leads` — Leads awaiting review (status
   "Ready for review" / "Needs verification").
 - **`approve_lead(request, row)`** `POST /api/leads/{row}/approve` — Clears the
-  status so the lead becomes sendable.
+  status. A sourced lead is still blocked from sending while its
+  EmailConfidence reads "unverified"; the owner must confirm the address and
+  set that cell to "verified" (see the verified-leads gate in sheets.py).
 - **`discard_lead(request, row)`** `POST /api/leads/{row}/discard` — Marks a lead
   "Discarded".
 

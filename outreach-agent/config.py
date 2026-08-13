@@ -254,10 +254,13 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
 
 # Name, Email, Company, Status, ThreadID, SentAt, EmailBody, LeadReason, EmailConfidence (first tab).
-# EmailConfidence is informational only (a leftover verification state) --
-# there is no verification gate: any approved row with an email can send.
-# The sheet owner is trusted to only approve addresses they're comfortable
-# emailing (verification via NeverBounce was removed 2026-07-18, see TODOS.md).
+# EmailConfidence is a hard gate: rows the lead sourcing agent stamps
+# "unverified" are never drafted and never sent until a human confirms the
+# address and sets the cell to "verified" (clearing it is the owner-entered
+# case -- a row the owner typed or imported themselves is their own contact).
+# See sheets.campaign_readiness and the send-time re-checks in server.py /
+# send_outreach.py. NeverBounce-style automated verification was removed
+# 2026-07-18 (see TODOS.md); confirmation is manual by design.
 SHEET_RANGE = "A:I"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",

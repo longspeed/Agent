@@ -10,6 +10,7 @@ interface AccountSettings {
   calendar_booking_link: string | null
   notify_email: string | null
   google_sheet_id: string | null
+  outreach_send_mode: 'manual' | 'auto' | null
 }
 
 interface MeResponse {
@@ -52,6 +53,7 @@ const EMPTY_FORM: AccountSettings = {
   calendar_booking_link: '',
   notify_email: '',
   google_sheet_id: '',
+  outreach_send_mode: 'manual',
 }
 
 function CheckIcon() {
@@ -115,6 +117,7 @@ export function SettingsPage() {
       calendar_booking_link: meRes.settings.calendar_booking_link || '',
       notify_email: meRes.settings.notify_email || '',
       google_sheet_id: meRes.settings.google_sheet_id || '',
+      outreach_send_mode: meRes.settings.outreach_send_mode || 'manual',
     })
 
     // usage and plan don't depend on meRes -- fetch both concurrently
@@ -150,6 +153,7 @@ export function SettingsPage() {
       calendar_booking_link: form.calendar_booking_link?.trim() ?? '',
       notify_email: form.notify_email?.trim() ?? '',
       google_sheet_id: form.google_sheet_id?.trim() ?? '',
+      outreach_send_mode: form.outreach_send_mode || 'manual',
     }
     const res = await fetch('/api/settings', {
       method: 'PUT',
@@ -423,6 +427,38 @@ export function SettingsPage() {
                 className="w-full rounded-lg px-4 py-2.5 text-sm bg-floating border border-line focus:outline-none focus:border-accent"
               />
             </label>
+
+            <fieldset className="rounded-xl border border-line bg-floating p-4 text-sm">
+              <legend className="px-1 text-sand">Outreach send mode</legend>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="radio"
+                  name="outreach_send_mode"
+                  value="manual"
+                  checked={(form.outreach_send_mode || 'manual') === 'manual'}
+                  onChange={() => setForm((f) => ({ ...f, outreach_send_mode: 'manual' }))}
+                  className="mt-1 accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium text-cream">Manual review</span>
+                  <span className="mt-1 block text-xs text-sand">Drafts wait on the Outreach page until you edit and send each one.</span>
+                </span>
+              </label>
+              <label className="mt-4 flex cursor-pointer items-start gap-3 border-t border-line pt-4">
+                <input
+                  type="radio"
+                  name="outreach_send_mode"
+                  value="auto"
+                  checked={form.outreach_send_mode === 'auto'}
+                  onChange={() => setForm((f) => ({ ...f, outreach_send_mode: 'auto' }))}
+                  className="mt-1 accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium text-cream">Auto-send new drafts</span>
+                  <span className="mt-1 block text-xs text-sand">After you press Prepare and confirm the batch, only its newly generated drafts send automatically. Daily limits, opt-outs, address verification, bounce pauses, and spacing still apply.</span>
+                </span>
+              </label>
+            </fieldset>
 
             <label className="text-sm">
               <span className="block mb-1.5 text-sand">

@@ -387,8 +387,9 @@ export function GettingStartedPage() {
               </p>
               <p>
                 Paste them in by hand, or import a CSV as described in step 3. The outreach agent
-                does not care where the rows came from. Rows you added and rows the sourcing agent
-                found are treated identically from here on.
+                does not care where the rows came from. Rows you added have no confidence stamp, so
+                blank Status makes them sendable immediately; rows the sourcing agent found arrive
+                with <Code>unverified</Code> and stay blocked until you confirm them (step 6).
               </p>
               <Callout tone="warn">
                 If you are pasting in a large list, fill the Status column first and clear it as you
@@ -432,8 +433,10 @@ export function GettingStartedPage() {
               </p>
               <ul className="space-y-1.5 pl-4 list-disc marker:text-mute">
                 <li>
-                  <strong className="text-cream">Approve</strong> clears the Status, which puts the
-                  lead in the send queue.
+                  <strong className="text-cream">Approve</strong> clears the Status, but a row the
+                  agent found is still blocked while its <Code>EmailConfidence</Code> reads{' '}
+                  <Code>unverified</Code>. It only becomes sendable once you confirm the address and
+                  set that cell to <Code>verified</Code>.
                 </li>
                 <li>
                   <strong className="text-cream">Discard</strong> marks it <Code>Discarded</Code>, and
@@ -442,8 +445,10 @@ export function GettingStartedPage() {
               </ul>
               <Callout tone="warn">
                 Every sourced address arrives <Code>unverified</Code> — it is the lead agent's best
-                guess at the company's email pattern, not a checked address. Confirm the ones that
-                matter before you approve them; sending to a bad guess risks a bounce.
+                guess at the company's email pattern, not a checked address. Sendkeep refuses to
+                draft or send anything still marked <Code>unverified</Code>: it never goes out until
+                you set <Code>EmailConfidence</Code> to <Code>verified</Code>. Confirm the addresses
+                you want to reach; a bad guess that slips through costs a bounce.
               </Callout>
             </Section>
 
@@ -497,10 +502,12 @@ export function GettingStartedPage() {
                 ]}
               />
               <Callout tone="warn">
-                <strong className="text-cream">A blank Status is the only thing that makes a row
-                eligible to send.</strong> If you paste in a list of 500 contacts with an empty Status
-                column, all 500 are queued the moment you save. Add a status first, then clear it row
-                by row as you approve.
+                <strong className="text-cream">Blank Status plus a sendable EmailConfidence is what
+                makes a row eligible to send.</strong> If you paste in a list of 500 contacts with an
+                empty Status column, all 500 are queued the moment you save. Add a status first, then
+                clear it row by row as you approve. Rows you type or import have no confidence stamp,
+                which is fine — only the <Code>unverified</Code> stamp (which the sourcing agent
+                writes on everything it finds) blocks a row.
               </Callout>
             </Section>
 
@@ -511,7 +518,7 @@ export function GettingStartedPage() {
                   ['Name, Email, Company', 'You'],
                   ['Status', 'Both you and Sendkeep'],
                   ['ThreadID, SentAt, EmailBody', 'Sendkeep, when it sends'],
-                  ['LeadReason, EmailConfidence', 'The lead sourcing agent'],
+                  ['LeadReason, EmailConfidence', 'The lead sourcing agent — plus you, when you confirm an address and set EmailConfidence to verified'],
                 ]}
               />
             </Section>

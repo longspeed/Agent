@@ -123,9 +123,9 @@ export function Hero() {
           transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
           className="font-display text-4xl md:text-7xl font-medium tracking-tight leading-[0.95]"
         >
-          <span className="block">An AI that writes your outreach.</span>
+          <span className="block">The reply queue for Gmail outbound.</span>
           <span className="animate-shiny block mt-2 pb-2" style={shinyStyle}>
-            You just approve it.
+            Follow up without losing the thread.
           </span>
         </motion.h1>
         <motion.p
@@ -134,8 +134,8 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
           className="mt-8 text-sand max-w-lg text-base leading-[1.6]"
         >
-          Sendkeep finds your leads, drafts every message, and writes every reply from your own
-          Gmail — the AI does the work, you keep the yes.
+          Sendkeep drafts first touches, watches the Gmail threads, and prepares follow-ups so
+          warm replies do not disappear inside your inbox.
         </motion.p>
         <motion.div
           initial={reduced ? false : { y: 12 }}
@@ -147,7 +147,7 @@ export function Hero() {
           <GhostButton href="#how-it-works">See how it works</GhostButton>
         </motion.div>
         <p className="mt-6 text-xs text-sand">
-          Connects to your Gmail · No credit card · Approve every send
+          Connects to Gmail · No credit card · Manual review by default
         </p>
       </div>
     </section>
@@ -157,23 +157,23 @@ export function Hero() {
 const STEPS = [
   {
     icon: Search,
-    title: 'Find leads',
-    body: 'Describe your ICP in a sentence. Sendkeep sources matching companies and contacts.',
+    title: 'Start with leads',
+    body: 'Bring a list you trust, or let Sendkeep source a small batch for review.',
   },
   {
     icon: ShieldCheck,
-    title: 'Screen the list',
-    body: 'Duplicates are dropped and anyone who has opted out is blocked from sending. You see every address before it goes.',
+    title: 'Draft the first touch',
+    body: 'Each email uses your goal, your tone, and the contact context in your sheet.',
   },
   {
     icon: PenLine,
-    title: 'Approve the batch',
-    body: 'Review each drafted email. Send limits protect your domain reputation automatically.',
+    title: 'Send at human volume',
+    body: 'Use manual review or auto mode, with caps, opt-outs, and bounce pauses as guardrails.',
   },
   {
     icon: MessageSquareReply,
-    title: 'Handle replies',
-    body: 'When someone responds, Sendkeep drafts your reply and queues it for review.',
+    title: 'Work the replies',
+    body: 'Replies land in a queue with drafted responses, so follow-up becomes the main workflow.',
   },
 ]
 

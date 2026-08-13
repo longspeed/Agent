@@ -47,7 +47,7 @@ def _validate_header(values):
             "The connected sheet is empty. Row 1 must be this header: "
             + ", ".join(EXPECTED_HEADER)
         )
-    found = [cell.strip().lower() for cell in values[0][:9]]
+    found = [cell.strip().lower() for cell in values[0][:len(EXPECTED_HEADER)]]
     while found and not found[-1]:
         found.pop()
     expected = [name.lower() for name in EXPECTED_HEADER]
@@ -56,7 +56,7 @@ def _validate_header(values):
             "The sheet's header row doesn't match what Sendkeep expects. "
             f"Row 1 must start with: {', '.join(EXPECTED_HEADER[:2])} (full header: "
             f"{', '.join(EXPECTED_HEADER)}) — found: "
-            f"{', '.join(cell for cell in values[0][:9] if cell.strip()) or '(blank)'}"
+            f"{', '.join(cell for cell in values[0][:len(EXPECTED_HEADER)] if cell.strip()) or '(blank)'}"
         )
 
 
@@ -73,9 +73,16 @@ def get_all_rows(account):
     _validate_header(values)
     rows = []
     for i, row in enumerate(values[1:], start=2):  # skip header row, sheet rows are 1-based
-        padded = row + [""] * (9 - len(row))
+        padded = row + [""] * (len(EXPECTED_HEADER) - len(row))
         rows.append((i, padded))
     return rows
+
+
+def cell(row, col):
+    """Safe column read: a row read off a real sheet can be shorter than
+    EXPECTED_HEADER. Positional reads of missing cells must come back as empty
+    strings, never IndexError."""
+    return row[col] if col < len(row) else ""
 
 
 def get_pending_rows(account):
@@ -122,9 +129,15 @@ def sent_in_last_24_hours(rows):
 def campaign_readiness(account, sent_today, suppressed_emails=None, rows=None):
     """Return the current sendable rows and the conservative daily allowance.
 
-    Sendable means: approved (blank Status), has an email address, and not on
-    the opt-out list. There's no verification gate -- the sheet owner is trusted
-    to only approve leads they're comfortable emailing.
+    Sendable means: approved (blank Status), has an email address, not on the
+    opt-out list, and not machine-stamped "unverified" in EmailConfidence.
+    That last gate is the verified-leads requirement: the lead sourcing agent
+    writes every guessed address with EmailConfidence="unverified", and a
+    guessed address must not go out until a human confirms it (and edits the
+    cell to "verified" -- or clears it, which is the owner-entered case: a row
+    the owner typed or imported themselves has a blank cell, and the owner is
+    the verifier for their own contacts). Blank and "verified" are sendable;
+    "unverified" is the load-bearing machine-guess stamp.
 
     sent_today is how many emails this account has genuinely sent in the trailing
     24 hours, supplied by the caller from the send log
@@ -149,6 +162,7 @@ def campaign_readiness(account, sent_today, suppressed_emails=None, rows=None):
         if not row[COL_STATUS].strip()
         and row[COL_EMAIL].strip()
         and row[COL_EMAIL].strip().lower() not in suppressed
+        and cell(row, COL_EMAIL_CONFIDENCE).strip().lower() != "unverified"
     ]
     # Per-plan, read off the account row already in hand. plans.daily_send_limit_for
     # makes no database call, so this module keeps the no-database property the
@@ -172,6 +186,25 @@ def campaign_readiness(account, sent_today, suppressed_emails=None, rows=None):
 # because three things depend on agreeing about it: the bounce-rate denominator,
 # the reply-check scope, and the send path's guard against emailing a row twice.
 SENT_STATUSES = ("Sent", "Replied", "Bounced", "Delayed")
+
+
+def email_confidence(account, email, rows=None):
+    """The EmailConfidence cell for a specific address, or "" if not found.
+
+    Used by the send path as a second, send-time application of the verified
+    gate: readiness blocks unverified rows from ever being drafted, but a draft
+    can exist (prepared before the gate was added) or the sheet can be edited
+    after drafting. No draft for an address that currently reads "unverified"
+    is allowed out, regardless of when it was created.
+
+    rows is accepted so a caller that already read the sheet doesn't read it twice.
+    """
+    wanted = (email or "").strip().lower()
+    rows = rows if rows is not None else get_all_rows(account)
+    for _, row in rows:
+        if row[COL_EMAIL].strip().lower() == wanted:
+            return cell(row, COL_EMAIL_CONFIDENCE).strip()
+    return ""
 
 
 def already_emailed_rows(rows):

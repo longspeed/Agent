@@ -527,6 +527,34 @@ done on the now-deleted module; kept for history, not actionable.
 **Priority:** Done.
 **Depends on:** Nothing.
 
+### Verified-leads gate restored as a hard gate — done 2026-08-10
+**What:** `sheets.campaign_readiness` now excludes any row whose
+`EmailConfidence` reads `unverified` (case-insensitive), so a machine-guessed
+address is never drafted and never counted toward a batch. The send paths
+re-check the *live* cell at send time — `send_all_prepared` retires a pending
+draft whose address now reads "unverified" (`send_outreach.py`), and
+`_guard_draft_send` refuses the single-draft send with a 409 (`server.py`) —
+because a draft can exist from before the gate or the sheet can be edited
+after drafting. `sheets.email_confidence()` is the shared send-time lookup.
+Blank confidence (rows the owner typed or imported themselves) and "verified"
+both send; only the "unverified" machine-guess stamp blocks. Copy that
+described the column as informational was corrected wherever it lived:
+`config.py`, `sheet_template.py`, `FUNCTIONS.md`, `app/src/GettingStartedPage.tsx`
+(rebuilt), and `docs/getting-started.md`.
+**Why:** The entry above claimed the fail-closed gate was "unchanged" — but
+`is_verified()` and the eligibility filter had quietly rotted away, and
+`config.py` described EmailConfidence as "informational only... any approved
+row with an email can send." A 2026-08-10 roast review (reshape: keep the
+verified-leads requirement as a hard gate instead of a suggestion) caught
+guessed, unverified addresses going out as designed behavior. This restores
+the gate the docs claimed existed.
+**Context:** New leads still land as `"unverified"` (`leads.py`) and must be
+confirmed by a human before they can be emailed; there is no automated
+verification to lean on anymore.
+**Effort:** S (CC + gstack)
+**Priority:** Done.
+**Depends on:** Nothing.
+
 ### Log email_verification failures / surface NeverBounce credit exhaustion — done 2026-07-17
 **What:** `email_verification.py` has no logging. Two independent /autoplan
 outside-voice reviews (CEO phase + Eng phase, 2026-07-17) converged
