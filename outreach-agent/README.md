@@ -229,8 +229,9 @@ create index if not exists outreach_drafts_sent_at_idx
 For the single manual follow-up loop, run the idempotent migration
 `migrations/20260813_add_follow_up_workflow.sql` before starting the updated
 worker. It adds the business-day delay, durable thread/due/cancellation state,
-and the unique review link that prevents a second follow-up for one outreach
-draft. Until it runs, the older reply watcher keeps working but scheduling is
+the manual/auto first-touch mode when an older project still lacks it, and the
+unique review link that prevents a second follow-up for one outreach draft.
+Until it runs, the older reply watcher keeps working but scheduling is
 unavailable.
 
 For edit-diff capture on existing projects, apply the idempotent migration in

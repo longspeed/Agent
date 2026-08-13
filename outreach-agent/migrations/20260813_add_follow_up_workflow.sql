@@ -1,5 +1,7 @@
 -- One manually-approved follow-up per sent outreach thread.
 alter table public.accounts
+    add column if not exists outreach_send_mode text not null default 'manual'
+        check (outreach_send_mode in ('manual', 'auto')),
     add column if not exists follow_up_delay_days integer not null default 3
     check (follow_up_delay_days between 1 and 14);
 
