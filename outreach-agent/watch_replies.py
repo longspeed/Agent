@@ -40,19 +40,15 @@ def check_for_replies(account):
     Rows are isolated: one row failing (deleted Gmail thread, transient API
     error) must not block the rows after it, or a single stale ThreadID would
     silently stop reply detection for the rest of the sheet on every run."""
-    sent_rows = sheets.get_reply_check_rows(account)
-    if not sent_rows:
-        print("No sent rows awaiting replies.")
-        return {"reviews": [], "row_errors": [], "bounces": []}
-    # This run writes "Replied" statuses -- same full-header consent gate as
-    # the send path (see sheets.require_full_header).
-    sheets.require_full_header(account)
+    new_reviews = []
+    row_errors = []
+    new_bounces = []
 
-    # Once per account per cycle, not per row -- it's a Gmail profile call
-    # (plus a Send-As listing call) reused by every row below. See
-    # gmail.get_own_addresses for what `degraded` means and why it has to
-    # travel onto every review created while it's true.
-    own_addresses, degraded = gmail.get_own_addresses(account)
+    try:
+        sent_rows = sheets.get_reply_check_rows(account)
+    except Exception as e:
+        sent_rows = []
+        row_errors.append(f"Google Sheet unavailable; using durable follow-up state only ({e})")
     try:
         active_follow_ups = {
             draft.get("thread_id"): draft
@@ -66,9 +62,50 @@ def check_for_replies(account):
         active_follow_ups = {}
         print(f"Follow-up scheduling unavailable this cycle: {e}")
 
-    new_reviews = []
-    row_errors = []
-    new_bounces = []
+    if not sent_rows and not active_follow_ups:
+        print("No sent rows or active follow-ups awaiting replies.")
+        return {"reviews": [], "row_errors": row_errors, "bounces": []}
+
+    # Only sheet-backed work writes a sheet status, so only that path needs the
+    # positional-header consent gate. A durable database schedule must keep
+    # working when its sheet row was deleted or the earlier best-effort sheet
+    # update failed.
+    if sent_rows:
+        try:
+            sheets.require_full_header(account)
+        except Exception as e:
+            row_errors.append(
+                f"Google Sheet header is unsafe to write; using durable follow-up state only ({e})"
+            )
+            sent_rows = []
+
+    # Once per account per cycle, not per row -- it's a Gmail profile call
+    # (plus a Send-As listing call) reused by every row below.
+    own_addresses, degraded = gmail.get_own_addresses(account)
+
+    # Sheets are a user-visible mirror, not the scheduler. Start with every
+    # sheet row so ordinary reply detection is unchanged, then append active
+    # database schedules whose thread is absent from the sheet. Synthetic rows
+    # carry the same nine positional fields to keep the mature per-row logic
+    # below shared; failed sheet writes remain best-effort row errors.
+    work_items = []
+    sheet_threads = set()
+    for row_index, row in sent_rows:
+        thread_id = row[sheets.COL_THREAD_ID].strip()
+        if thread_id:
+            sheet_threads.add(thread_id)
+        work_items.append((row_index, row, active_follow_ups.get(thread_id)))
+    for thread_id, follow_up in active_follow_ups.items():
+        if thread_id in sheet_threads:
+            continue
+        row = [""] * len(sheets.EXPECTED_HEADER)
+        row[sheets.COL_NAME] = follow_up.get("name") or ""
+        row[sheets.COL_EMAIL] = follow_up.get("email") or ""
+        row[sheets.COL_COMPANY] = follow_up.get("company") or ""
+        row[sheets.COL_STATUS] = "Sent"
+        row[sheets.COL_THREAD_ID] = thread_id
+        row[sheets.COL_EMAIL_BODY] = follow_up.get("body") or ""
+        work_items.append((follow_up.get("row_index"), row, follow_up))
 
     def cancel_follow_up(follow_up, reason, *, replied=False):
         """Best-effort cleanup that can never hide an incoming reply.
@@ -81,24 +118,32 @@ def check_for_replies(account):
             return
         try:
             if replied:
-                drafts_db.mark_follow_up_replied(account["id"], follow_up["id"])
+                transitioned = drafts_db.mark_follow_up_replied(
+                    account["id"], follow_up["id"]
+                )
             else:
-                drafts_db.cancel_follow_up(account["id"], follow_up["id"], reason)
+                transitioned = drafts_db.cancel_follow_up(
+                    account["id"], follow_up["id"], reason
+                )
+            if transitioned is False:
+                row_errors.append(
+                    f"{follow_up.get('email', 'contact')}: follow-up state changed "
+                    "while cancellation was being recorded; its current owner will finish it."
+                )
+                return
             reviews_db.dismiss_follow_up_for_source(account["id"], follow_up["id"])
         except Exception as e:
             row_errors.append(
                 f"{follow_up.get('email', 'contact')}: could not record follow-up "
                 f"cancellation ({e}); the send-time guard will check it again."
             )
-    for row_index, row in sent_rows:
+    for row_index, row, follow_up in work_items:
         thread_id = row[sheets.COL_THREAD_ID].strip()
         if not thread_id:
             continue
 
         name = row[sheets.COL_NAME].strip()
         email = row[sheets.COL_EMAIL].strip()
-        follow_up = active_follow_ups.get(thread_id)
-
         try:
             # One read for both checks below. They ask different questions of the
             # same messages, and Gmail charges per fetch.
@@ -131,7 +176,11 @@ def check_for_replies(account):
                         continue
                     unsubscribe_url = auth.unsubscribe_url(account["id"], email)
                     try:
-                        plans.check(account, usage.UNIT_DRAFT_EMAIL)
+                        # Follow-ups are deliberately unmetered during the
+                        # validation cohort. They are not first-touch outreach
+                        # drafts, and the pricing decision has not been made;
+                        # do not gate them against UNIT_DRAFT_EMAIL without a
+                        # corresponding customer-facing contract.
                         draft = agent.draft_follow_up(
                             account, name, row[sheets.COL_COMPANY].strip(),
                             follow_up.get("body") or row[sheets.COL_EMAIL_BODY].strip(),
@@ -151,12 +200,28 @@ def check_for_replies(account):
                         ),
                     )
                     try:
-                        drafts_db.mark_follow_up_queued(account["id"], follow_up["id"])
+                        transitioned = drafts_db.mark_follow_up_queued(
+                            account["id"], follow_up["id"]
+                        )
                     except Exception:
-                        # Leave the source in waiting so the next watcher cycle
-                        # can retry instead of exposing an unsendable orphan.
-                        reviews_db.dismiss_follow_up_for_source(account["id"], follow_up["id"])
-                        raise
+                        # The update may have committed even if its response was
+                        # lost. Inspect the authoritative row before hiding the
+                        # review; otherwise a queued source plus dismissed card
+                        # is permanently invisible.
+                        current = drafts_db.get_draft(account["id"], follow_up["id"])
+                        if not current or current.get("follow_up_status") != "queued":
+                            reviews_db.dismiss_follow_up_for_source(
+                                account["id"], follow_up["id"]
+                            )
+                            raise
+                        transitioned = True
+                    if not transitioned:
+                        current = drafts_db.get_draft(account["id"], follow_up["id"])
+                        if not current or current.get("follow_up_status") != "queued":
+                            reviews_db.dismiss_follow_up_for_source(
+                                account["id"], follow_up["id"]
+                            )
+                            continue
                     new_reviews.append(reviews_db.get_review(account["id"], review_id))
                     print(f"Follow-up due for {name or email}; queued for manual review.")
                 continue

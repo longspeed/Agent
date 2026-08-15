@@ -1867,6 +1867,7 @@ def _watch_env(calls, reply_map, existing_reviews=None, bounce_map=None):
             lambda account_id, t, mid, reply=None: existing.get((t, mid))),
         (sheets, "require_full_header", lambda account: calls.setdefault("header_gate", []).append(True)),
         (sheets, "get_reply_check_rows", lambda account: calls["rows"]),
+        (drafts_db, "list_active_follow_ups", lambda account_id: []),
         (sheets, "update_row", lambda account, idx, **kw: calls.setdefault("update_row", []).append((idx, kw))),
         (gmail, "get_thread", fake_get_thread),
         (gmail, "get_own_addresses", lambda account: ({"me@me.com"}, False)),
@@ -2535,6 +2536,49 @@ def test_send_all_prepared_can_limit_a_batch_to_new_drafts():
         result = send_outreach.send_all_prepared(ACCOUNT, draft_ids=[2])
     assert log["sent"] == ["new@x.com"]
     assert result["sent"] == 1
+
+
+def test_auto_mode_holds_send_time_validator_failures_for_manual_review():
+    """The unattended boundary validates the durable copy, not just whatever
+    the generator produced earlier. A bad/stale row stays pending and Gmail is
+    never called, so an operator can repair it instead of losing the draft."""
+    draft = {
+        "id": 1, "row_index": 2, "email": "held@x.com",
+        "subject": "Broken", "body": "truncated",
+    }
+    account = dict(ACCOUNT, outreach_send_mode="auto")
+    rows = [(2, _row(status="", email="held@x.com"))]
+    with contextlib.ExitStack() as stack:
+        log = _sendall_env(stack, [draft], rows, {})
+        stack.enter_context(patched(
+            agent, "outreach_problems",
+            lambda *a, **k: ["Body is truncated.", "Unsubscribe line is missing."],
+        ))
+        result = send_outreach.send_all_prepared(account)
+    assert log["sent"] == []
+    assert log["discarded"] == [], "held drafts remain available for manual repair"
+    assert result["sent"] == 0
+    assert result["needs_review"] == [{
+        "email": "held@x.com",
+        "problems": ["Body is truncated.", "Unsubscribe line is missing."],
+    }]
+
+
+def test_manual_batch_does_not_turn_advisory_copy_rules_into_a_send_blocker():
+    """Manual approval remains authoritative: a human may intentionally edit
+    copy outside the model's house style. The hard validator is for unattended
+    delivery only."""
+    draft = {"id": 1, "row_index": 2, "email": "manual@x.com", "subject": "S", "body": "b"}
+    rows = [(2, _row(status="", email="manual@x.com"))]
+    with contextlib.ExitStack() as stack:
+        log = _sendall_env(stack, [draft], rows, {})
+        stack.enter_context(patched(
+            agent, "outreach_problems",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("manual mode must not invoke the auto gate")),
+        ))
+        result = send_outreach.send_all_prepared(dict(ACCOUNT, outreach_send_mode="manual"))
+    assert log["sent"] == ["manual@x.com"]
+    assert result["needs_review"] == []
 
 
 def _sendall_env(stack, drafts, rows, outcomes, sent_today=0):
@@ -5908,6 +5952,52 @@ def test_follow_up_due_uses_business_days_and_never_zero_days():
     )
 
 
+class _PagedFollowUps:
+    def __init__(self, rows):
+        self.rows = rows
+        self.ranges = []
+        self._account_id = None
+        self._statuses = None
+        self._range = None
+
+    def table(self, name): return self
+    def select(self, columns): return self
+    def eq(self, column, value):
+        if column == "account_id": self._account_id = value
+        return self
+    def in_(self, column, values):
+        if column == "follow_up_status": self._statuses = set(values)
+        return self
+    def order(self, column): return self
+    def range(self, start, end):
+        self._range = (start, end)
+        self.ranges.append(self._range)
+        return self
+    def execute(self):
+        matched = [
+            row for row in self.rows
+            if row.get("account_id") == self._account_id
+            and row.get("follow_up_status") in self._statuses
+        ]
+        start, end = self._range
+        return type("R", (), {"data": matched[start:end + 1]})()
+
+
+def test_active_follow_ups_are_paginated_without_dropping_the_tail():
+    fake = _PagedFollowUps([
+        {"id": 1, "account_id": "a1", "follow_up_status": "waiting"},
+        {"id": 2, "account_id": "a1", "follow_up_status": "queued"},
+        {"id": 3, "account_id": "a1", "follow_up_status": "sent"},
+        {"id": 4, "account_id": "a1", "follow_up_status": "cancelled"},
+        {"id": 5, "account_id": "other", "follow_up_status": "waiting"},
+    ])
+    with patched(drafts_db, "_get_client", lambda: fake), \
+         patched(drafts_db, "FOLLOW_UP_PAGE_SIZE", 2):
+        rows = drafts_db.list_active_follow_ups("a1")
+    assert [row["id"] for row in rows] == [1, 2, 3]
+    assert fake.ranges == [(0, 1), (2, 3), (3, 4)]
+
+
 def test_due_follow_up_enters_manual_review_once_without_sending():
     calls = {"rows": [(2, _row(status="Sent", thread="t1", name="John",
                                   email="john@x.com", body="original"))]}
@@ -5921,7 +6011,7 @@ def test_due_follow_up_enters_manual_review_once_without_sending():
             stack.enter_context(patched(*target))
         stack.enter_context(patched(drafts_db, "list_active_follow_ups", lambda aid: [source]))
         stack.enter_context(patched(drafts_db, "mark_follow_up_queued",
-                                    lambda aid, did: calls.setdefault("queued", []).append(did)))
+                                    lambda aid, did: calls.setdefault("queued", []).append(did) or True))
         stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
         stack.enter_context(patched(agent, "draft_follow_up", lambda *a, **k: "Useful reminder\n\nUnsubscribe: https://x.test/u"))
@@ -5944,11 +6034,15 @@ def test_follow_up_send_rechecks_thread_and_cancels_on_last_second_reply():
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
         stack.enter_context(patched(server.drafts_db, "get_draft",
                                     lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
+        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: True))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
         stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
         stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: {"text": "yes"}))
-        stack.enter_context(patched(server.drafts_db, "mark_follow_up_replied", lambda aid, did: calls.append("cancel")))
+        stack.enter_context(patched(
+            server.drafts_db, "mark_claimed_follow_up_replied",
+            lambda aid, did: calls.append("cancel") or True,
+        ))
         stack.enter_context(patched(server.reviews_db, "dismiss", lambda aid, rid: calls.append("dismiss")))
         stack.enter_context(patched(server.gmail, "send_reply",
                                     lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not send"))))
@@ -5965,21 +6059,18 @@ def test_approved_follow_up_sends_once_with_opt_out_and_records_source_first():
     review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
     order = []
     sent = {}
-    class Claimed:
-        data = [{"id": 44}]
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
         stack.enter_context(patched(server.drafts_db, "get_draft",
                                     lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
+        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: True))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
         stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
         stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: None))
         stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
         stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
-        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: Claimed()))
-        stack.enter_context(patched(server.drafts_db, "release_follow_up_send", lambda aid, did: None))
         stack.enter_context(patched(server.gmail, "send_reply",
                                     lambda a, tid, to, body, unsubscribe_url="": sent.update(body=body, header=unsubscribe_url)))
         stack.enter_context(patched(server.drafts_db, "mark_follow_up_sent", lambda aid, did: order.append("source")))
@@ -5994,20 +6085,18 @@ def test_approved_follow_up_sends_once_with_opt_out_and_records_source_first():
 def test_follow_up_atomic_claim_prevents_a_second_tab_from_sending():
     import server
     review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
-    class LostClaim:
-        data = []
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
         stack.enter_context(patched(server.drafts_db, "get_draft",
                                     lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
+        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: False))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
         stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
         stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: None))
         stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
         stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
-        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: LostClaim()))
         stack.enter_context(patched(server.reviews_db, "dismiss", lambda *a: None))
         stack.enter_context(patched(server.gmail, "send_reply",
                                     lambda *a, **k: (_ for _ in ()).throw(AssertionError("lost claim must not send"))))
@@ -6016,6 +6105,368 @@ def test_follow_up_atomic_claim_prevents_a_second_tab_from_sending():
             raise AssertionError("expected 409")
         except server.HTTPException as e:
             assert e.status_code == 409
+
+
+def test_lost_claim_does_not_dismiss_a_sending_follow_up():
+    """The loser of the claim race must not dismiss the review when the winner
+    is mid-send. If the winner's Gmail attempt then fails, the source stays in
+    `sending` (delivery uncertain) and the dismissed card would leave the
+    follow-up invisible with no reset path. The loser surfaces the in-flight
+    state instead and lets the winner's own outcome decide."""
+    import server
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    dismissed = []
+    reads = {"n": 0}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
+        def draft_status(aid, did):
+            reads["n"] += 1
+            # First read: queued (so we pass the initial check and attempt the
+            # claim). Re-read after the failed claim: sending (winner mid-send).
+            return {"id": 44, "follow_up_status": "sending" if reads["n"] > 1 else "queued"}
+        stack.enter_context(patched(server.drafts_db, "get_draft", draft_status))
+        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: False))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.reviews_db, "dismiss",
+                                    lambda aid, rid: dismissed.append(rid)))
+        try:
+            server.send_reply(_srv_req(), 90, server.SendReplyBody(body="reminder"))
+            raise AssertionError("expected 409")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+            assert "another window" in e.detail
+    assert dismissed == [], "an in-flight send must not be hidden behind a dismissed review"
+
+
+def test_blank_reply_body_is_rejected_422_before_any_send():
+    import server
+    review = dict(_PENDING_REVIEW, id=90)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
+        stack.enter_context(patched(server.gmail, "send_reply",
+                                    lambda *a, **k: (_ for _ in ()).throw(AssertionError("blank body must not reach Gmail"))))
+        for body in ("", "   ", "\n\t "):
+            try:
+                server.send_reply(_srv_req(), 90, server.SendReplyBody(body=body))
+                raise AssertionError(f"blank body {body!r} must be rejected")
+            except server.HTTPException as e:
+                assert e.status_code == 422
+
+
+def test_blank_follow_up_body_is_rejected_422_after_status_check():
+    import server
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
+        stack.enter_context(patched(server.drafts_db, "get_draft",
+                                    lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
+        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: True))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: None))
+        stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
+        stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
+        stack.enter_context(patched(server.gmail, "send_reply",
+                                    lambda *a, **k: (_ for _ in ()).throw(AssertionError("blank follow-up must not reach Gmail"))))
+        try:
+            server.send_reply(_srv_req(), 90, server.SendReplyBody(body="   "))
+            raise AssertionError("expected 422")
+        except server.HTTPException as e:
+            assert e.status_code == 422
+
+
+def test_follow_up_gmail_failure_is_delivery_uncertain_not_resendable():
+    """A Gmail exception after the claim must NOT release the source back to
+    queued -- the message may have left. It stays `sending` (uncertain) and
+    the operator gets told to check Gmail, never that it can be resent."""
+    import server
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    calls = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
+        stack.enter_context(patched(server.drafts_db, "get_draft",
+                                    lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
+        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: True))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: None))
+        stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
+        stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
+        stack.enter_context(patched(server.drafts_db, "release_follow_up_send",
+                                    lambda aid, did: calls.append("released")))
+        stack.enter_context(patched(server.drafts_db, "mark_follow_up_sent",
+                                    lambda aid, did: calls.append("marked_sent")))
+        stack.enter_context(patched(server.reviews_db, "mark_sent",
+                                    lambda aid, rid, body: calls.append("review_sent")))
+        stack.enter_context(patched(server.gmail, "send_reply",
+                                    lambda *a, **k: (_ for _ in ()).throw(OSError("connection reset"))))
+        try:
+            server.send_reply(_srv_req(), 90, server.SendReplyBody(body="reminder"))
+            raise AssertionError("expected 502")
+        except server.HTTPException as e:
+            assert e.status_code == 502
+    assert "released" not in calls, "a possibly-sent follow-up must not become resendable"
+    assert calls == [], "no sent/review write may happen when Gmail failed"
+
+
+def test_follow_up_preflight_failure_releases_claim_because_send_never_started():
+    """A failed Gmail thread read is not an ambiguous send. The claim must go
+    back to queued so a transient read outage does not freeze the follow-up."""
+    import server
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    calls = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
+        stack.enter_context(patched(server.drafts_db, "get_draft",
+                                    lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
+        stack.enter_context(patched(server.drafts_db, "claim_follow_up_send", lambda aid, did: True))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.gmail, "get_thread",
+                                    lambda *a: (_ for _ in ()).throw(OSError("read timeout"))))
+        stack.enter_context(patched(server.drafts_db, "release_follow_up_send",
+                                    lambda aid, did: calls.append("released") or True))
+        stack.enter_context(patched(server.gmail, "send_reply",
+                                    lambda *a, **k: (_ for _ in ()).throw(AssertionError("preflight failed"))))
+        try:
+            server.send_reply(_srv_req(), 90, server.SendReplyBody(body="reminder"))
+            raise AssertionError("expected 502")
+        except server.HTTPException as e:
+            assert e.status_code == 502
+            assert "nothing was sent" in e.detail
+    assert calls == ["released"]
+
+
+def test_sending_row_send_attempt_surfaces_uncertain_not_dismissed():
+    """A stranded `sending` row (claim won, Gmail outcome unknown) must not be
+    silently dismissed as cancelled -- the operator needs to check Gmail."""
+    import server
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    dismissed = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
+        stack.enter_context(patched(server.drafts_db, "get_draft",
+                                    lambda aid, did: {"id": 44, "follow_up_status": "sending"}))
+        stack.enter_context(patched(server.reviews_db, "dismiss",
+                                    lambda aid, rid: dismissed.append(rid)))
+        try:
+            server.send_reply(_srv_req(), 90, server.SendReplyBody(body="reminder"))
+            raise AssertionError("expected 409")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+            assert "uncertain" in e.detail
+    assert dismissed == [], "an uncertain send must not be dismissed as handled"
+
+
+def test_uncertain_follow_up_can_be_reconciled_as_sent_source_first():
+    import server
+    source = {"id": 44, "follow_up_status": "sending"}
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44,
+                  draft_reply="the exact attempted body")
+    order = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: source))
+        stack.enter_context(patched(server.reviews_db, "find_follow_up", lambda aid, did: review))
+        stack.enter_context(patched(server.drafts_db, "mark_follow_up_sent",
+                                    lambda aid, did: order.append("source") or True))
+        stack.enter_context(patched(server.reviews_db, "mark_sent",
+                                    lambda aid, rid, body: order.append(("review", body))))
+        result = server.reconcile_follow_up(
+            _srv_req(), 44, server.ReconcileFollowUpBody(outcome="sent")
+        )
+    assert result == {"ok": True, "status": "sent"}
+    assert order == ["source", ("review", "the exact attempted body")]
+
+
+def test_reconcile_sent_is_idempotent_when_only_review_cleanup_failed():
+    """The source may already be the durable `sent` fence when the secondary
+    review update failed. Repeating the sent decision finishes cleanup without
+    reopening Gmail or attempting the source transition again."""
+    import server
+    source = {"id": 44, "follow_up_status": "sent"}
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44,
+                  draft_reply="attempted body")
+    closed = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: source))
+        stack.enter_context(patched(server.reviews_db, "find_follow_up", lambda aid, did: review))
+        stack.enter_context(patched(
+            server.drafts_db, "mark_follow_up_sent",
+            lambda *a: (_ for _ in ()).throw(AssertionError("sent source must not transition twice")),
+        ))
+        stack.enter_context(patched(server.reviews_db, "mark_sent",
+                                    lambda aid, rid, body: closed.append((rid, body))))
+        result = server.reconcile_follow_up(
+            _srv_req(), 44, server.ReconcileFollowUpBody(outcome="sent")
+        )
+    assert result == {"ok": True, "status": "sent"}
+    assert closed == [(90, "attempted body")]
+
+
+def test_uncertain_follow_up_can_return_to_queue_only_after_explicit_retry_choice():
+    import server
+    source = {"id": 44, "follow_up_status": "sending"}
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    released = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: source))
+        stack.enter_context(patched(server.reviews_db, "find_follow_up", lambda aid, did: review))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.drafts_db, "release_follow_up_send",
+                                    lambda aid, did: released.append(did) or True))
+        result = server.reconcile_follow_up(
+            _srv_req(), 44, server.ReconcileFollowUpBody(outcome="retry")
+        )
+    assert result == {"ok": True, "status": "queued"}
+    assert released == [44]
+
+
+def test_uncertain_follow_up_retry_cancels_if_contact_opted_out():
+    import server
+    source = {"id": 44, "follow_up_status": "sending"}
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    calls = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: source))
+        stack.enter_context(patched(server.reviews_db, "find_follow_up", lambda aid, did: review))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: True))
+        stack.enter_context(patched(server.drafts_db, "cancel_claimed_follow_up",
+                                    lambda aid, did, why: calls.append(("cancel", why)) or True))
+        stack.enter_context(patched(server.reviews_db, "dismiss",
+                                    lambda aid, rid: calls.append(("dismiss", rid))))
+        stack.enter_context(patched(server.drafts_db, "release_follow_up_send",
+                                    lambda *a: (_ for _ in ()).throw(AssertionError("opted-out mail must not be re-queued"))))
+        try:
+            server.reconcile_follow_up(
+                _srv_req(), 44, server.ReconcileFollowUpBody(outcome="retry")
+            )
+            raise AssertionError("expected 409")
+        except server.HTTPException as e:
+            assert e.status_code == 409 and "opted out" in e.detail
+    assert calls == [("cancel", "opt_out"), ("dismiss", 90)]
+
+
+def test_follow_up_cannot_be_dismissed_after_another_request_claims_send():
+    import server
+    review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
+    dismissed = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
+        stack.enter_context(patched(server.drafts_db, "cancel_follow_up", lambda *a: False))
+        stack.enter_context(patched(server.reviews_db, "dismiss",
+                                    lambda aid, rid: dismissed.append(rid)))
+        try:
+            server.dismiss_reply(_srv_req(), 90)
+            raise AssertionError("expected 409")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+    assert dismissed == []
+
+
+def test_dismissed_follow_up_review_is_reactivated_on_retry():
+    """The partial unique index forbids a second review per source, so a retry
+    after a transient queue failure must resurrect the dismissed review, not
+    leave the source queued with nothing visible to approve."""
+    fake = _ReviewsTable(rows=[
+        {"id": 91, "account_id": "acct-1", "source_draft_id": 44, "kind": "follow_up",
+         "status": "dismissed", "draft_reply": "", "original_draft_reply": None},
+    ])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        rid = reviews_db.add_follow_up(
+            "acct-1", 44, 2, "John", "john@x.com", "t1", "Reminder",
+            validator_problems=None,
+        )
+    assert rid == 91, "the unique index means one review per source -- reuse the dismissed one"
+    row = fake.rows[0]
+    assert row["status"] == "pending"
+    assert row["draft_reply"] == "Reminder"
+    assert len(fake.rows) == 1, "must reactivate, not insert a second row"
+
+
+def test_pending_follow_up_review_is_reused_not_duplicated():
+    fake = _ReviewsTable(rows=[
+        {"id": 91, "account_id": "acct-1", "source_draft_id": 44, "kind": "follow_up",
+         "status": "pending", "draft_reply": "old", "original_draft_reply": "old"},
+    ])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        rid = reviews_db.add_follow_up("acct-1", 44, 2, "John", "john@x.com", "t1", "new")
+    assert rid == 91
+    assert fake.rows[0]["status"] == "pending"
+    assert fake.rows[0]["draft_reply"] == "old", "an already-pending review must not be overwritten"
+
+
+def test_due_follow_up_is_found_even_when_the_sheet_row_is_missing():
+    """The database is the durable scheduler. Deleting the mirrored Sheet row
+    must not silently strand a due follow-up."""
+    calls = {"rows": []}
+    source = {
+        "id": 44, "row_index": 2, "thread_id": "t1", "name": "John",
+        "email": "john@x.com", "company": "Acme", "body": "original",
+        "follow_up_status": "waiting",
+        "follow_up_due_at": "2026-08-01T00:00:00+00:00",
+    }
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t1": None}):
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(drafts_db, "list_active_follow_ups", lambda aid: [source]))
+        stack.enter_context(patched(drafts_db, "mark_follow_up_queued", lambda aid, did: True))
+        stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
+        stack.enter_context(patched(agent, "draft_follow_up", lambda *a, **k: "Useful reminder"))
+        stack.enter_context(patched(agent, "follow_up_problems", lambda *a, **k: []))
+        stack.enter_context(patched(
+            reviews_db, "add_follow_up",
+            lambda aid, did, *a, **k: calls.setdefault("follow_up", []).append(did) or 91,
+        ))
+        result = watch_replies.check_for_replies(ACCOUNT)
+    assert calls["follow_up"] == [44]
+    assert calls["thread_reads"] == ["t1"]
+    assert result["reviews"] == [{"id": 91, "status": "pending"}]
+    assert "header_gate" not in calls, "a missing optional mirror must not invoke its write gate"
+
+
+def test_zero_row_queue_transition_hides_the_unsendable_review():
+    """A conditional update that matched no source row is a lost race, not a
+    successful queue. The review must not be exposed unless the source is
+    already queued by the competing worker."""
+    calls = {"rows": [(2, _row(status="Sent", thread="t1", email="john@x.com"))]}
+    source = {
+        "id": 44, "thread_id": "t1", "email": "john@x.com", "body": "original",
+        "follow_up_status": "waiting", "follow_up_due_at": "2026-08-01T00:00:00+00:00",
+    }
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t1": None}):
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(drafts_db, "list_active_follow_ups", lambda aid: [source]))
+        stack.enter_context(patched(drafts_db, "mark_follow_up_queued", lambda aid, did: False))
+        stack.enter_context(patched(
+            drafts_db, "get_draft",
+            lambda aid, did: {"id": did, "follow_up_status": "cancelled"},
+        ))
+        stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
+        stack.enter_context(patched(agent, "draft_follow_up", lambda *a, **k: "Useful reminder"))
+        stack.enter_context(patched(agent, "follow_up_problems", lambda *a, **k: []))
+        stack.enter_context(patched(reviews_db, "add_follow_up", lambda *a, **k: 91))
+        stack.enter_context(patched(
+            reviews_db, "dismiss_follow_up_for_source",
+            lambda aid, did: calls.setdefault("dismissed", []).append(did),
+        ))
+        result = watch_replies.check_for_replies(ACCOUNT)
+    assert calls["dismissed"] == [44]
+    assert result["reviews"] == []
 
 
 # ---------------------------------------------------------------------- runner

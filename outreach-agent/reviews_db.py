@@ -148,6 +148,29 @@ def add_follow_up(account_id, source_draft_id, row_index, name, email, thread_id
                   draft_reply, validator_problems=None):
     existing = find_follow_up(account_id, source_draft_id)
     if existing:
+        if existing["status"] == "dismissed":
+            # The one scheduled follow-up per source is enforced by the partial
+            # unique index reviews_one_follow_up_idx, so a dismissed review can
+            # never be replaced with a fresh insert -- it must be resurrected.
+            # Leaving it dismissed is the stranded-review bug: the source goes
+            # queued, the review stays invisible, and the operator never sees
+            # the follow-up. Reactivating with the current draft is safe because
+            # a dismissed review has not been sent.
+            result = _get_client().table(TABLE).update({
+                "status": "pending",
+                "row_index": row_index,
+                "name": name,
+                "email": email,
+                "thread_id": thread_id,
+                "draft_reply": draft_reply,
+                "original_draft_reply": draft_reply or None,
+                "validator_problems": "\n".join(validator_problems) if validator_problems else None,
+            }).eq("account_id", account_id).eq("id", existing["id"]) \
+                .eq("status", "dismissed").execute()
+            if not result.data:
+                current = find_follow_up(account_id, source_draft_id)
+                if not current or current.get("status") != "pending":
+                    raise RuntimeError("Follow-up review changed while it was being reactivated")
         return existing["id"]
     result = _get_client().table(TABLE).insert({
         "account_id": account_id,

@@ -329,7 +329,7 @@
       <div class="rc-customer-reply text-sm rounded-lg px-4 py-3 leading-relaxed whitespace-pre-wrap" style="background:var(--bg-floating); color:var(--text-secondary); border-left:2px solid var(--border-hover);"></div>
     </div>
     <div class="mb-4">
-      <div class="rc-draft-label text-xs font-medium mb-1.5" style="color:var(--text-muted);">Your reply</div>
+      <label class="rc-draft-label text-xs font-medium mb-1.5 block" style="color:var(--text-muted);">Your reply</label>
       <textarea class="rc-draft w-full text-sm rounded-lg px-4 py-3 leading-relaxed resize-y focus-visible:outline-none focus:ring-2" rows="6" style="background:var(--bg-floating); color:var(--text); border:1px solid var(--border); --tw-ring-color:var(--accent);"></textarea>
       <div class="mt-2 flex items-center gap-2 flex-wrap">
         <button class="rc-preset btn-ghost rounded-lg px-3 py-1.5 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-instruction="Make it shorter.">Shorter</button>
@@ -774,6 +774,10 @@
     const tpl = document.getElementById('review-card-template').content.cloneNode(true);
     const card = tpl.querySelector('.review-card');
     card.dataset.id = r.id;
+    const draftEl = tpl.querySelector('.rc-draft');
+    const draftId = `review-draft-${r.id}`;
+    draftEl.id = draftId;
+    tpl.querySelector('.rc-draft-label').htmlFor = draftId;
     tpl.querySelector('.rc-name').textContent = r.name || 'Unknown';
     tpl.querySelector('.rc-email').textContent = r.email || '';
     tpl.querySelector('.rc-customer-reply').textContent = r.customer_reply || '';
@@ -786,6 +790,8 @@
     const draftWrapper = tpl.querySelector('.rc-draft').closest('.mb-4');
     const replyWrapper = tpl.querySelector('.rc-customer-reply').closest('.mb-4');
     const isFollowUp = r.kind === 'follow_up';
+    const isUncertainFollowUp = isFollowUp && ['sending', 'sent'].includes(r.follow_up_status);
+    const uncertainCanRetry = isUncertainFollowUp && r.follow_up_status === 'sending';
 
     if (isFollowUp) {
       badgeEl.textContent = 'Follow-up due';
@@ -802,6 +808,34 @@
       );
     }
 
+    if (isUncertainFollowUp) {
+      badgeEl.textContent = 'Send uncertain';
+      badgeEl.style.background = 'var(--gold-dim)';
+      badgeEl.style.color = 'var(--gold)';
+      sendBtn.textContent = 'I found it in Gmail';
+      dismissBtn.textContent = 'Not sent — retry';
+      if (!uncertainCanRetry) dismissBtn.style.display = 'none';
+      draftEl.readOnly = true;
+      draftWrapper.parentNode.insertBefore(
+        reviewNote(
+          uncertainCanRetry
+            ? 'Gmail did not confirm the last send. Open the Gmail thread first, then record what actually happened. This prevents duplicate follow-ups.'
+            : 'The send is already recorded, but closing this review previously failed. Confirm the message in Gmail to finish cleanup; it cannot be sent again.',
+          'var(--gold)'
+        ),
+        draftWrapper
+      );
+    }
+
+    const validatorProblems = (r.validator_problems || '')
+      .split('\n').map((problem) => problem.trim()).filter(Boolean);
+    if (validatorProblems.length) {
+      draftWrapper.parentNode.insertBefore(
+        reviewNote(`Check before sending: ${validatorProblems.join(' ')}`, 'var(--accent)'),
+        draftWrapper
+      );
+    }
+
     if (r.status === 'flagged') {
       badgeEl.textContent = 'Confirm sender';
       badgeEl.style.background = 'var(--gold-dim)';
@@ -813,6 +847,9 @@
       );
       sendBtn.textContent = "Confirm it's them";
       sendBtn.addEventListener('click', async () => {
+        // No blank-body guard here: a flagged review has no draft yet (the
+        // draft is generated only after confirmation, and the textarea is
+        // hidden). Checking the empty draft would make confirmation impossible.
         sendBtn.disabled = true;
         dismissBtn.disabled = true;
         sendBtn.textContent = 'Confirming…';
@@ -843,13 +880,52 @@
         reviewNote('You already replied to this from Gmail — nothing to send.'),
         replyWrapper
       );
+    } else if (isUncertainFollowUp) {
+      const reconcile = async (outcome) => {
+        sendBtn.disabled = true;
+        dismissBtn.disabled = true;
+        statusEl.style.color = 'var(--text-muted)';
+        statusEl.textContent = 'Recording your decision…';
+        try {
+          const res = await fetch(`/api/outreach/follow-ups/${r.source_draft_id}/reconcile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outcome }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || 'Could not reconcile this follow-up');
+          }
+          await loadReviews();
+        } catch (e) {
+          sendBtn.disabled = false;
+          dismissBtn.disabled = false;
+          statusEl.style.color = 'var(--accent)';
+          statusEl.textContent = e.message || 'Could not reconcile this follow-up';
+        }
+      };
+      sendBtn.addEventListener('click', () => {
+        if (confirm('Confirm that this follow-up is visible in the Gmail thread? This records it as sent and removes it from the queue.')) reconcile('sent');
+      });
+      if (uncertainCanRetry) dismissBtn.addEventListener('click', () => {
+          if (confirm('Confirm that you checked the Gmail thread and the follow-up is not there? It will return to the review queue and can be sent again.')) reconcile('retry');
+        });
     } else {
       if (!isFollowUp) wireRewrite(card, {
         presetSel: '.rc-preset', instructionSel: '.rc-instruction', buttonSel: '.rc-rewrite', statusEl,
         endpoint: `/api/outreach/replies/${r.id}/rewrite`,
         buildPayload: () => ({ body: card.querySelector('.rc-draft').value }),
-        onResult: (result) => { card.querySelector('.rc-draft').value = result.body; },
+        onResult: (result) => {
+          card.querySelector('.rc-draft').value = result.body;
+          syncSendAvailability();
+        },
       });
+
+      const syncSendAvailability = () => {
+        sendBtn.disabled = !card.querySelector('.rc-draft').value.trim();
+      };
+      card.querySelector('.rc-draft').addEventListener('input', syncSendAvailability);
+      syncSendAvailability();
 
       sendBtn.addEventListener('click', async () => {
         sendBtn.disabled = true;
@@ -889,7 +965,7 @@
       );
     }
 
-    dismissBtn.addEventListener('click', async () => {
+    if (!isUncertainFollowUp) dismissBtn.addEventListener('click', async () => {
       const prompt = isFollowUp
         ? 'Dismiss this follow-up? It will not be scheduled again for this contact.'
         : 'Dismiss this review without sending a reply? Use this to clear a duplicate or a reply you\'ve already handled elsewhere.';

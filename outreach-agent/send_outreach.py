@@ -296,6 +296,11 @@ def send_all_prepared(account, draft_ids=None):
     for N drafts). Drips with a randomized gap so the batch doesn't leave in
     one burst. Sheet edits/deletions are tolerated per-draft: one bad row must
     not stop the rest."""
+    # Derive the safety policy from the durable account setting here, at the
+    # only batch-send implementation. Callers cannot opt out accidentally by
+    # forgetting a flag or explicitly passing the wrong one.
+    unattended = (account.get("outreach_send_mode") or "manual") == "auto"
+
     # Drafts prepared before the rate crossed the line must not go out either --
     # the check belongs on the send, not just on the drafting.
     bounces.assert_sendable(account)
@@ -306,6 +311,7 @@ def send_all_prepared(account, draft_ids=None):
     sent = []
     skipped = []
     failed = []
+    needs_review = []
     sheet_warnings = []
 
     # One sheet read for the whole batch, serving both the cap and the
@@ -344,6 +350,18 @@ def send_all_prepared(account, draft_ids=None):
             drafts_db.discard(account["id"], draft["id"])
             skipped.append((email, "already marked Sent in the sheet"))
             continue
+        if unattended:
+            # Auto mode has no human between this durable row and Gmail. Apply
+            # the validator to the exact copy about to leave, not merely the
+            # model output that originally created the row. A rejected draft
+            # stays pending so the operator can repair and send it manually.
+            unsubscribe_url = auth.unsubscribe_url(account["id"], email)
+            problems = agent.outreach_problems(
+                account, draft.get("subject"), draft.get("body"), unsubscribe_url
+            )
+            if problems:
+                needs_review.append({"email": email, "problems": problems})
+                continue
         try:
             result = send_prepared_draft(account, draft)
             # Counted against the cap on the strength of the send, not of the
@@ -367,6 +385,11 @@ def send_all_prepared(account, draft_ids=None):
         summary += "\n\nSkipped:\n" + "\n".join(f"- {email}: {why}" for email, why in skipped)
     if failed:
         summary += "\n\nFailed:\n" + "\n".join(f"- {email}: {err}" for email, err in failed)
+    if needs_review:
+        summary += "\n\nHeld for manual review:\n" + "\n".join(
+            f"- {item['email']}: {'; '.join(item['problems'])}"
+            for item in needs_review
+        )
     if sheet_warnings:
         # Kept apart from `failed` on purpose: these were delivered. Filing them
         # as failures is what invited an operator to send them again.
@@ -379,6 +402,7 @@ def send_all_prepared(account, draft_ids=None):
         "sent": len(sent),
         "skipped": [{"email": e, "reason": r} for e, r in skipped],
         "failed": [{"email": e, "error": err} for e, err in failed],
+        "needs_review": needs_review,
         "sheet_warnings": sheet_warnings,
     }
 

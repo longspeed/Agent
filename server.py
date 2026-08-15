@@ -947,6 +947,9 @@ def list_replies(request: Request):
     reviews = reviews_db.list_pending_reviews(request.state.account_id)
     for r in reviews:
         r["lane"] = reviews_db.lane(r)
+        if r.get("kind") == "follow_up" and r.get("source_draft_id"):
+            source = drafts_db.get_draft(request.state.account_id, r["source_draft_id"])
+            r["follow_up_status"] = source.get("follow_up_status") if source else "missing"
     return reviews
 
 
@@ -979,8 +982,60 @@ def check_single_reply(request: Request, row: int):
 
 
 class SendReplyBody(BaseModel):
-    body: str
+    body: str = Field(max_length=20_000)
     rewritten: bool = False
+
+
+class ReconcileFollowUpBody(BaseModel):
+    outcome: Literal["sent", "retry"]
+
+
+@app.post("/api/outreach/follow-ups/{draft_id}/reconcile")
+def reconcile_follow_up(request: Request, draft_id: int, payload: ReconcileFollowUpBody):
+    """Resolve a Gmail send whose response was ambiguous.
+
+    Gmail and Postgres cannot share a transaction. After a send-time timeout we
+    fence the source in `sending` to prevent duplicates, then require the owner
+    to inspect the Gmail thread and choose the observed outcome. Both choices
+    are compare-and-set transitions from `sending`, so a stale tab cannot undo
+    a concurrent resolution.
+    """
+    account = _account(request)
+    source = drafts_db.get_draft(account["id"], draft_id)
+    review = reviews_db.find_follow_up(account["id"], draft_id)
+    if not source or not review or review.get("status") != "pending":
+        raise HTTPException(status_code=404, detail="Uncertain follow-up not found.")
+    source_status = source.get("follow_up_status")
+
+    if payload.outcome == "retry":
+        if source_status != "sending":
+            raise HTTPException(status_code=409, detail="This follow-up can no longer be returned to the queue.")
+        if suppressions_db.is_suppressed(account["id"], review["email"]):
+            if drafts_db.cancel_claimed_follow_up(account["id"], draft_id, "opt_out"):
+                reviews_db.dismiss(account["id"], review["id"])
+            raise HTTPException(
+                status_code=409,
+                detail=f"{review['email']} has opted out; the follow-up was cancelled instead of re-queued.",
+            )
+        if not drafts_db.release_follow_up_send(account["id"], draft_id):
+            raise HTTPException(status_code=409, detail="This follow-up was resolved in another window.")
+        return {"ok": True, "status": "queued"}
+
+    if source_status == "sending":
+        if not drafts_db.mark_follow_up_sent(account["id"], draft_id):
+            raise HTTPException(status_code=409, detail="This follow-up was resolved in another window.")
+    elif source_status != "sent":
+        raise HTTPException(status_code=409, detail="This follow-up is no longer awaiting reconciliation.")
+    # Source first is the duplicate-send fence. If the secondary review write
+    # fails, retries cannot resend because the source is already `sent`. The
+    # endpoint also accepts sent+pending so the operator can finish this
+    # secondary write after a transient database failure without lying about
+    # Gmail or reopening delivery.
+    send_outreach._with_retries(
+        lambda: reviews_db.mark_sent(account["id"], review["id"], review.get("draft_reply") or ""),
+        f"Follow-up {draft_id} was reconciled as sent, but closing its review failed",
+    )
+    return {"ok": True, "status": "sent"}
 
 
 @app.post("/api/outreach/replies/{review_id}/send")
@@ -1005,8 +1060,20 @@ def send_reply(request: Request, review_id: int, payload: SendReplyBody):
     if is_follow_up:
         source_draft = drafts_db.get_draft(account["id"], review.get("source_draft_id"))
         if not source_draft or source_draft.get("follow_up_status") != "queued":
+            if source_draft and source_draft.get("follow_up_status") == "sending":
+                # A send claim that never finalized. The outcome is unknown --
+                # never resend, and never silently treat it as gone.
+                raise HTTPException(
+                    status_code=409,
+                    detail="This follow-up's send outcome is uncertain — check the "
+                           "thread in Gmail. It will not be sent again automatically.",
+                )
             reviews_db.dismiss(account["id"], review_id)
             raise HTTPException(status_code=409, detail="This follow-up was cancelled or handled elsewhere.")
+
+    body = payload.body
+    if not (body or "").strip():
+        raise HTTPException(status_code=422, detail="The message body cannot be blank.")
 
     if suppressions_db.is_suppressed(account["id"], review["email"]):
         if source_draft:
@@ -1014,62 +1081,110 @@ def send_reply(request: Request, review_id: int, payload: SendReplyBody):
             reviews_db.dismiss(account["id"], review_id)
         raise HTTPException(status_code=409, detail=f"{review['email']} has opted out; this reply won't be sent.")
 
-    body = payload.body
-    unsubscribe_url = ""
     if source_draft:
-        thread = gmail.get_thread(account, review["thread_id"])
-        own_addresses, _ = gmail.get_own_addresses(account)
-        candidate = gmail.get_latest_reply_with_history(
-            account, review["thread_id"], review["email"], own_addresses, thread=thread
-        )
-        if candidate:
-            drafts_db.mark_follow_up_replied(account["id"], source_draft["id"])
-            reviews_db.dismiss(account["id"], review_id)
-            raise HTTPException(status_code=409, detail="This contact replied before the follow-up was sent. The follow-up was cancelled.")
-        bounce = gmail.find_bounce(account, review["thread_id"], review["email"], thread=thread)
-        if bounce:
-            bounces.record(account, review["row_index"], review["email"], bounce)
-            drafts_db.cancel_follow_up(account["id"], source_draft["id"], "bounce")
-            reviews_db.dismiss(account["id"], review_id)
-            raise HTTPException(status_code=409, detail="A delivery failure arrived before this follow-up. It was cancelled.")
-        unsubscribe_url = auth.unsubscribe_url(account["id"], review["email"])
-        if unsubscribe_url not in body:
-            body = f"{body.rstrip()}\n\n{agent._opt_out_line(unsubscribe_url)}"
-
-    if source_draft:
-        claim = drafts_db.claim_follow_up_send(account["id"], source_draft["id"])
-        if not getattr(claim, "data", None):
+        # Claim FIRST, then recheck. Claiming is the atomic ownership hand-off
+        # (queued -> sending), so no second tab can dispatch while this request
+        # performs its final Gmail and suppression checks. A reply can always
+        # arrive after the last Gmail read and an opt-out can arrive after the
+        # last database read; that is the unavoidable already-dispatching
+        # boundary, not a guarantee we can make across two external systems.
+        if not drafts_db.claim_follow_up_send(account["id"], source_draft["id"]):
+            current = drafts_db.get_draft(account["id"], source_draft["id"])
+            if current and current.get("follow_up_status") == "sending":
+                # A concurrent tab won the claim. The send is in flight or
+                # stranded uncertain. The winner owns the outcome -- success
+                # marks the review sent, failure leaves it pending with the
+                # uncertain message. Dismissing here hides a possibly-sent
+                # follow-up behind a dismissed card that nothing else looks at.
+                raise HTTPException(
+                    status_code=409,
+                    detail="This follow-up is being sent in another window — wait for it to finish.",
+                )
             reviews_db.dismiss(account["id"], review_id)
             raise HTTPException(status_code=409, detail="This follow-up is already being sent or was cancelled elsewhere.")
         try:
-            # Repeat the authoritative opt-out check after winning the atomic
-            # claim. A second tab cannot send now; an opt-out that landed while
-            # Gmail was being rechecked still stops here.
+            thread = gmail.get_thread(account, review["thread_id"])
+            own_addresses, _ = gmail.get_own_addresses(account)
+            candidate = gmail.get_latest_reply_with_history(
+                account, review["thread_id"], review["email"], own_addresses, thread=thread
+            )
+            if candidate:
+                if drafts_db.mark_claimed_follow_up_replied(
+                    account["id"], source_draft["id"]
+                ):
+                    reviews_db.dismiss(account["id"], review_id)
+                raise HTTPException(status_code=409, detail="This contact replied before the follow-up was sent. The follow-up was cancelled.")
+            bounce = gmail.find_bounce(account, review["thread_id"], review["email"], thread=thread)
+            if bounce:
+                bounces.record(account, review["row_index"], review["email"], bounce)
+                if drafts_db.cancel_claimed_follow_up(
+                    account["id"], source_draft["id"], "bounce"
+                ):
+                    reviews_db.dismiss(account["id"], review_id)
+                raise HTTPException(status_code=409, detail="A delivery failure arrived before this follow-up. It was cancelled.")
+            # This is the final authoritative suppression read, intentionally
+            # after the slower Gmail preflight so the check-to-dispatch window
+            # is as small as this architecture can make it.
             if suppressions_db.is_suppressed(account["id"], review["email"]):
-                drafts_db.release_follow_up_send(account["id"], source_draft["id"])
-                drafts_db.cancel_follow_up(account["id"], source_draft["id"], "opt_out")
-                reviews_db.dismiss(account["id"], review_id)
+                cancelled = drafts_db.cancel_claimed_follow_up(
+                    account["id"], source_draft["id"], "opt_out"
+                )
+                if cancelled:
+                    reviews_db.dismiss(account["id"], review_id)
                 raise HTTPException(status_code=409, detail=f"{review['email']} has opted out; this follow-up won't be sent.")
+            unsubscribe_url = auth.unsubscribe_url(account["id"], review["email"])
+            if unsubscribe_url not in body:
+                body = f"{body.rstrip()}\n\n{agent._opt_out_line(unsubscribe_url)}"
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Nothing irreversible happened: every operation above is a read or
+            # a cancellation. Return ownership to the queue so a Gmail read
+            # outage does not become a permanent delivery-uncertain row.
+            drafts_db.release_follow_up_send(account["id"], source_draft["id"])
+            print(f"Follow-up preflight failed for review {review_id}: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail="The final reply check failed; nothing was sent. Try again.",
+            ) from e
+
+        try:
             gmail.send_reply(
                 account, review["thread_id"], review["email"], body,
                 unsubscribe_url=unsubscribe_url,
             )
-        except HTTPException:
-            raise
         except Exception:
-            drafts_db.release_follow_up_send(account["id"], source_draft["id"])
-            raise
+            # Gmail failed. The message may or may not have left -- a timeout
+            # after Gmail accepted it is indistinguishable from a refusal. Do
+            # NOT release the claim back to queued: that would put a possibly-
+            # sent follow-up back on the Send button and produce a duplicate.
+            # Leaving it in `sending` is the "delivery uncertain" state.
+            raise HTTPException(
+                status_code=502,
+                detail="The follow-up's send is uncertain — the message may or may "
+                       "not have been sent. Check the thread in Gmail; it will "
+                       "not be sent again automatically.",
+            )
     else:
         gmail.send_reply(account, review["thread_id"], review["email"], body)
     if source_draft:
         # This is the durable duplicate-send fence after Gmail's irreversible
         # action. Match first-touch sending: retry the authoritative state
         # before touching the secondary review record.
+        def record_follow_up_sent():
+            result = drafts_db.mark_follow_up_sent(account["id"], source_draft["id"])
+            if result is False:
+                raise RuntimeError("the source row was no longer in sending state")
+            return result
+
         send_outreach._with_retries(
-            lambda: drafts_db.mark_follow_up_sent(account["id"], source_draft["id"]),
+            record_follow_up_sent,
             f"Follow-up was sent to {review['email']}, but recording it failed",
         )
-    reviews_db.mark_sent(account["id"], review_id, body)
+    send_outreach._with_retries(
+        lambda: reviews_db.mark_sent(account["id"], review_id, body),
+        f"Reply was sent to {review['email']}, but closing its review failed",
+    )
     # Separate, best-effort -- never part of mark_sent's update. See
     # reviews_db.mark_rewritten for why this must never be able to make that
     # write (or this send) fail.
@@ -1119,9 +1234,14 @@ def dismiss_reply(request: Request, review_id: int):
         raise HTTPException(status_code=404, detail="Review not found or already handled")
 
     if review.get("kind") == "follow_up" and review.get("source_draft_id"):
-        drafts_db.cancel_follow_up(
+        cancelled = drafts_db.cancel_follow_up(
             account["id"], review["source_draft_id"], "dismissed_by_sender"
         )
+        if cancelled is False:
+            raise HTTPException(
+                status_code=409,
+                detail="This follow-up is already being sent or was handled elsewhere.",
+            )
     reviews_db.dismiss(account["id"], review_id)
     return {"ok": True}
 

@@ -537,6 +537,22 @@ def _validate_outreach(subject, body, calendar_link, unsubscribe_url=""):
     return problems
 
 
+def outreach_problems(account, subject, body, unsubscribe_url=""):
+    """Return every unresolved blocker on the exact outreach copy to send.
+
+    Generation already runs the same validator, but unattended delivery needs
+    its own send-time gate. A queued draft is durable state: it can predate a
+    validator change or be altered outside the generator. Auto mode therefore
+    validates the stored subject/body again immediately before Gmail.
+    """
+    return _validate_outreach(
+        subject or "",
+        body or "",
+        _sender_context(account)["calendar_link"],
+        unsubscribe_url,
+    )
+
+
 def _opt_out_line(unsubscribe_url):
     """Appended in code, never generated. A one-click opt-out is a legal
     obligation in most of the jurisdictions this app is used from, and a link

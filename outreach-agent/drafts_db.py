@@ -193,16 +193,33 @@ def mark_sent(account_id, draft_id, sent_subject, sent_body, thread_id="", follo
 
 
 ACTIVE_FOLLOW_UP_STATUSES = ("waiting", "queued", "sent")
+FOLLOW_UP_PAGE_SIZE = 500
 
 
 def list_active_follow_ups(account_id):
-    result = (
-        _get_client().table(TABLE).select("*")
-        .eq("account_id", account_id)
-        .in_("follow_up_status", list(ACTIVE_FOLLOW_UP_STATUSES))
-        .execute()
-    )
-    return result.data
+    """Returns every active schedule, not just PostgREST's first response page.
+
+    Team accounts can exceed the API's configured row cap in a month. Silently
+    dropping the tail here strands follow-ups, so advance by the number of rows
+    actually returned rather than assuming the server honored our page size.
+    """
+    rows = []
+    start = 0
+    while True:
+        result = (
+            _get_client().table(TABLE).select("*")
+            .eq("account_id", account_id)
+            .in_("follow_up_status", list(ACTIVE_FOLLOW_UP_STATUSES))
+            .order("id")
+            .range(start, start + FOLLOW_UP_PAGE_SIZE - 1)
+            .execute()
+        )
+        page = result.data or []
+        if not page:
+            break
+        rows.extend(page)
+        start += len(page)
+    return rows
 
 
 def is_follow_up_due(draft, now=None):
@@ -244,6 +261,14 @@ def follow_up_outcomes(account_id):
 
 
 def _set_follow_up(account_id, draft_id, status, from_statuses=None, **fields):
+    """Transitions one follow-up row, returning True only if a row actually
+    matched the from-status guard.
+
+    The bool return is load-bearing, not cosmetic: a zero-row transition means
+    the guard fired -- the row left the expected state between read and write
+    (a racing watcher queued it, an opt-out cancelled it). Callers that treat
+    a no-op as success are how "it changed" becomes "it didn't, but we
+    proceeded as if it had" (see the plan-quota gate change)."""
     payload = {"follow_up_status": status, **fields}
     query = (
         _get_client().table(TABLE).update(payload)
@@ -254,7 +279,8 @@ def _set_follow_up(account_id, draft_id, status, from_statuses=None, **fields):
         query = query.eq("follow_up_status", allowed[0])
     else:
         query = query.in_("follow_up_status", list(allowed))
-    return query.execute()
+    result = query.execute()
+    return bool(result.data)
 
 
 def mark_follow_up_queued(account_id, draft_id):
@@ -262,7 +288,7 @@ def mark_follow_up_queued(account_id, draft_id):
 
 
 def claim_follow_up_send(account_id, draft_id):
-    """Atomically owns the one irreversible send; empty data means lost race."""
+    """Atomically owns the one irreversible send; False means lost race."""
     return _set_follow_up(
         account_id, draft_id, "sending", from_statuses=("queued",)
     )
@@ -284,12 +310,29 @@ def mark_follow_up_sent(account_id, draft_id):
 
 def mark_follow_up_replied(account_id, draft_id):
     return _set_follow_up(
-        account_id, draft_id, "replied", follow_up_replied_at=datetime.now(timezone.utc).isoformat()
+        account_id, draft_id, "replied",
+        follow_up_replied_at=datetime.now(timezone.utc).isoformat()
+    )
+
+
+def mark_claimed_follow_up_replied(account_id, draft_id):
+    """Owner-only cancellation during the final pre-send Gmail recheck."""
+    return _set_follow_up(
+        account_id, draft_id, "replied", from_statuses=("sending",),
+        follow_up_replied_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
 def cancel_follow_up(account_id, draft_id, reason):
     return _set_follow_up(account_id, draft_id, "cancelled", follow_up_cancel_reason=reason)
+
+
+def cancel_claimed_follow_up(account_id, draft_id, reason):
+    """Owner-only cancellation while a send claim is running preflight checks."""
+    return _set_follow_up(
+        account_id, draft_id, "cancelled", from_statuses=("sending",),
+        follow_up_cancel_reason=reason,
+    )
 
 
 def cancel_follow_ups_for_email(account_id, email, reason):
