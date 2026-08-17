@@ -727,10 +727,11 @@
           <td class="px-5 py-3.5" style="color:var(--text-secondary);">${esc(c.company) || '—'}</td>
           <td class="px-5 py-3.5">${badge(c.status)}</td>
           <td class="px-5 py-3.5" style="color:var(--text-muted);">${esc(fmtDate(c.sentAt))}</td>
-          <td class="px-5 py-3.5">${c.status === 'Sent' ? `
+          <td class="px-5 py-3.5">${c.status === 'Sent' && c.hasThread ? `
             <button class="check-reply-btn btn-ghost rounded-md px-2.5 py-1 text-xs font-medium ease-spring transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2" style="--tw-ring-color:var(--border-hover);" data-row="${c.row}">Check</button>
             <span class="check-reply-result text-xs ml-1"></span>
-          ` : c.status === 'Replied' ? '<span style="color:var(--green);">Replied ✓</span>' : '<span style="color:var(--text-muted);">—</span>'}</td>
+          ` : c.status === 'Sent' ? '<span style="color:var(--text-muted);" title="This recovered send has no Gmail thread ID">Unavailable</span>'
+            : c.status === 'Replied' ? '<span style="color:var(--green);">Replied ✓</span>' : '<span style="color:var(--text-muted);">—</span>'}</td>
         </tr>
       `).join('');
     } catch (e) {

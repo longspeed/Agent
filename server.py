@@ -692,6 +692,9 @@ def list_campaigns(request: Request):
             "status": row[sheets.COL_STATUS] or "Pending",
             "sentAt": row[sheets.COL_SENT_AT],
             "verification": row[sheets.COL_EMAIL_CONFIDENCE] or "unverified",
+            # The browser needs to know whether per-campaign reply checking is
+            # available, but must not receive the provider's thread identifier.
+            "hasThread": bool(row[sheets.COL_THREAD_ID].strip()),
         }
         for row_index, row in rows
         if row[sheets.COL_EMAIL].strip()
