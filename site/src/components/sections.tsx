@@ -320,11 +320,6 @@ export function Footer() {
                 support@sendkeep.app
               </a>
             </li>
-            <li className="leading-[1.6]">
-              [Your registered business
-              <br />
-              address goes here]
-            </li>
           </ul>
         </div>
       </div>
@@ -333,7 +328,7 @@ export function Footer() {
           <span>© {new Date().getFullYear()} Sendkeep. All rights reserved.</span>
           <span className="flex items-center gap-1.5">
             <ShieldCheck size={13} className="text-grass" aria-hidden="true" />
-            Human-approved sending. You control every send — opt-outs are suppressed for good.
+            Manual review or confirmed auto batches. Opt-outs stay suppressed.
           </span>
         </div>
       </div>
