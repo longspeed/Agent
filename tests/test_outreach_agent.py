@@ -2436,6 +2436,36 @@ def test_the_send_log_check_is_cached_after_it_passes():
     assert len(calls) == 1, calls
 
 
+def test_a_send_refuses_when_any_authoritative_send_column_is_missing():
+    """Regression: production had sent_at but lacked follow_up_cancel_reason.
+
+    The old probe selected only sent_at, so it passed, Gmail accepted the
+    message, and mark_sent then failed on the wider update. The preflight must
+    exercise every column written by mark_sent before Gmail can be called.
+    """
+    sent = []
+
+    class _PartiallyMigrated:
+        def table(self, name): return self
+        def select(self, columns):
+            if "follow_up_cancel_reason" in columns:
+                raise RuntimeError("column outreach_drafts.follow_up_cancel_reason does not exist")
+            return self
+        def limit(self, n): return self
+        def execute(self): return type("R", (), {"data": []})()
+
+    with patched(drafts_db, "_send_log_verified", False), \
+         patched(drafts_db, "_get_client", lambda: _PartiallyMigrated()), \
+         patched(gmail, "send_email", lambda *a, **k: sent.append(a) or "t"):
+        try:
+            send_outreach.send_prepared_draft(ACCOUNT, dict(_DRAFT_TO_SEND))
+            assert False, "must refuse before sending"
+        except RuntimeError as e:
+            assert "follow-up workflow" in str(e)
+            assert "20260813_add_follow_up_workflow.sql" in str(e)
+    assert sent == [], "no email may leave when mark_sent cannot complete"
+
+
 def test_the_send_is_recorded_in_the_queue_before_the_sheet_is_touched():
     """The order is the invariant. The Gmail send is irreversible, so the record
     that prevents a second one has to be the very next write -- and it has to be

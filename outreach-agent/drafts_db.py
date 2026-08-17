@@ -26,6 +26,21 @@ def _get_client():
 
 _send_log_verified = False
 
+# Every column written by mark_sent's authoritative, post-Gmail update. The
+# preflight must probe the whole write shape: checking only sent_at allowed a
+# partially migrated database to accept the Gmail send and then reject the
+# durable duplicate-send fence on a newer follow-up column.
+_AUTHORITATIVE_SEND_COLUMNS = (
+    "status",
+    "subject",
+    "body",
+    "sent_at",
+    "thread_id",
+    "follow_up_due_at",
+    "follow_up_status",
+    "follow_up_cancel_reason",
+)
+
 
 # Outreach drafts are generated from the sender's own settings and a row in the
 # sheet they own. No third-party text reaches the prompt, so a fast approval
@@ -63,12 +78,12 @@ def lane(draft):
 def require_send_log():
     """Refuses to let a send start if the send log cannot record it.
 
-    mark_sent writes sent_at, and mark_sent is the durable record that stops a
-    sent email being sent again. On a database missing that column the write fails
-    -- after Gmail has already accepted the message -- which is precisely the
-    unbounded re-send loop send_prepared_draft was restructured to prevent. So
-    this is checked BEFORE the irreversible act, in the same spirit as
-    sheets.require_full_header: if we cannot record it, we do not do it.
+    mark_sent is the durable record that stops a sent email being sent again.
+    Probe every column in that update, not just sent_at: a partially migrated
+    database can have sent_at while lacking the follow-up columns, and would
+    otherwise fail only after Gmail has accepted the message. This is checked
+    BEFORE the irreversible act, in the same spirit as sheets.require_full_header:
+    if we cannot record the complete authoritative update, we do not send.
 
     Deliberately not a fallback that drops sent_at and carries on. That would
     trade duplicate sends for an uncounted daily cap, and the cap is the
@@ -79,13 +94,18 @@ def require_send_log():
     if _send_log_verified:
         return
     try:
-        _get_client().table(TABLE).select("sent_at").limit(1).execute()
+        _get_client().table(TABLE).select(
+            ",".join(_AUTHORITATIVE_SEND_COLUMNS)
+        ).limit(1).execute()
     except Exception as e:
         raise RuntimeError(
-            "Sending is blocked: outreach_drafts.sent_at is missing, so a send "
-            "could not be recorded and the same email would go out again on the "
-            "next batch. Run: alter table public.outreach_drafts add column if "
-            f"not exists sent_at timestamptz; ({e})"
+            "Sending is blocked: outreach_drafts.sent_at is missing or the "
+            "follow-up workflow is incomplete, so the authoritative send record "
+            "cannot be guaranteed. Apply outreach-agent/migrations/"
+            "20260812_add_original_draft_columns.sql and "
+            "20260813_add_follow_up_workflow.sql before sending. Run at minimum: "
+            "alter table public.outreach_drafts add column if not exists sent_at "
+            f"timestamptz; ({e})"
         ) from e
     _send_log_verified = True
 
