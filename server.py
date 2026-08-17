@@ -149,12 +149,24 @@ async def require_auth(request: Request, call_next):
         if request.url.path == "/":
             # Logged-out visitors see the marketing landing page; the app
             # home (agents) stays behind auth.
-            return FileResponse(STATIC_DIR / "landing" / "index.html")
+            response = FileResponse(STATIC_DIR / "landing" / "index.html")
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Vary"] = "Cookie"
+            return response
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        return RedirectResponse(f"/login?next={request.url.path}")
+        response = RedirectResponse(f"/login?next={request.url.path}", status_code=303)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
     request.state.account_id = account_id
-    return await call_next(request)
+    response = await call_next(request)
+    if request.url.path == "/":
+        # The same URL serves public marketing when logged out and the agent
+        # dashboard when logged in. Shared proxies and browser caches must not
+        # reuse one representation for the other.
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Vary"] = "Cookie"
+    return response
 
 
 @app.exception_handler(404)
@@ -331,7 +343,10 @@ def google_login_callback(request: Request, state: str = "", code: str = "", err
     )
     onboarded = bool(account.get("google_token")) and bool((account.get("google_sheet_id") or "").strip())
     safe_next = _safe_next(request.cookies.get(NEXT_COOKIE_NAME, ""))
-    target = safe_next or ("/" if onboarded else "/settings")
+    # Use an unambiguous app URL after onboarding. `/` has two representations
+    # (marketing when logged out, dashboard when logged in), so returning there
+    # makes stale intermediary caches look like a failed login.
+    target = safe_next or ("/outreach" if onboarded else "/settings")
     response = _set_session_cookie(RedirectResponse(target), account["id"])
     response.delete_cookie(NEXT_COOKIE_NAME)
     return response
