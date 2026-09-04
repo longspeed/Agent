@@ -2,7 +2,16 @@ import { NoiseHeroFilter } from './components/primitives'
 import { BackgroundGlow, GuideLines, Navbar, Hero, HowItWorks } from './components/hero'
 import { ProductMockup } from './components/mockup'
 import { Pricing } from './components/pricing'
-import { Trust, Integrations, Security, Faq, FinalCta, Footer } from './components/sections'
+import {
+  Trust,
+  ProofLoop,
+  Integrations,
+  AgencyWedge,
+  Security,
+  Faq,
+  FinalCta,
+  Footer,
+} from './components/sections'
 
 export default function App() {
   return (
@@ -16,7 +25,9 @@ export default function App() {
         <HowItWorks />
         <ProductMockup />
         <Trust />
+        <ProofLoop />
         <Integrations />
+        <AgencyWedge />
         <Pricing />
         <Security />
         <Faq />

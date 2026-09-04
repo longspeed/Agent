@@ -1,5 +1,9 @@
 # Validation Week Checklist
 
+> This older Sheet-first checklist is retained for historical context. Use the
+> current Gmail-first pilot runbook in [docs/pilot-validation.md](docs/pilot-validation.md)
+> for all new validation work.
+
 Operational runbook for the demand-validation Assignment (design doc
 2026-07-16: get 1-3 real people to sign up and send 5+ real outreach emails,
 watched, this week). Product decisions live in TODOS.md; this file is the

@@ -2,19 +2,19 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-bg: #0f0e0c;
-  --color-elevated: #17150f;
-  --color-floating: #1e1b14;
-  --color-line: #2a2620;
-  --color-line-hover: #3a342a;
+  --color-bg: #0c1410;
+  --color-elevated: #121c17;
+  --color-floating: #18241d;
+  --color-line: #28372e;
+  --color-line-hover: #3a4b40;
   --color-cream: #f5f1e8;
-  --color-sand: #a69c8a;
-  --color-mute: #726b5a;
-  --color-accent: #e8622c;
-  --color-accent-hover: #f4753e;
-  --color-gold: #d8a93b;
-  --color-grass: #4c9a6a;
-  --color-steel: #4c86a8;
+  --color-sand: #b6ad9d;
+  --color-mute: #8c948a;
+  --color-accent: #c2491d;
+  --color-accent-hover: #a93e17;
+  --color-gold: #8c6b24;
+  --color-grass: #397152;
+  --color-steel: #527184;
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-display: 'Fraunces', Georgia, serif;
 }
@@ -26,20 +26,20 @@ body {
 }
 
 body {
-  background: #0f0e0c;
+  background: #0c1410;
   color: #f5f1e8;
 }
 
 ::selection {
-  background: rgba(232, 98, 44, 0.3);
+  background: rgba(194, 73, 29, 0.3);
 }
 
 /* ---- app-style primary button (orange gradient sweep, from login.html) ---- */
 .btn-primary {
-  background: linear-gradient(115deg, #e8622c 35%, #f4753e 50%, #e8622c 65%);
+  background: linear-gradient(115deg, #c2491d 35%, #a93e17 50%, #c2491d 65%);
   background-size: 250% 100%;
   background-position: 100% 0;
-  color: #0f0e0c;
+  color: #ffffff;
   transition:
     background-position 650ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.2s;
@@ -75,21 +75,21 @@ body {
   .animate-shiny {
     animation: none !important;
     background-image: none !important;
-    color: #e8622c !important;
-    -webkit-text-fill-color: #e8622c !important;
+    color: #c2491d !important;
+    -webkit-text-fill-color: #c2491d !important;
     filter: none !important;
   }
 }
 
 /* ---- app-style card (bg-elevated + warm border, matches the product UI) ---- */
 .app-card {
-  background: #17150f;
-  border: 1px solid #2a2620;
+  background: #121c17;
+  border: 1px solid #28372e;
   transition: border-color 0.3s;
 }
 
 .app-card:hover {
-  border-color: #3a342a;
+  border-color: #3a4b40;
 }
 
 /* ---- pricing section ---- */
@@ -118,7 +118,7 @@ body {
 }
 
 .ab-watermark-line2 {
-  background-image: linear-gradient(to right, #3d2313 0%, #a3441d 25%, #f4a361 65%, #e8622c 100%);
+  background-image: linear-gradient(to right, #6f2a14 0%, #a93e17 38%, #c85a2d 70%, #c2491d 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -126,9 +126,9 @@ body {
 }
 
 .ab-card {
-  background: linear-gradient(135deg, rgba(23, 21, 15, 0.9), rgba(15, 14, 12, 0.6));
+  background: linear-gradient(135deg, rgba(18, 28, 23, 0.9), rgba(12, 20, 16, 0.6));
   backdrop-filter: blur(14px) brightness(0.95);
-  border: 1px solid #2a2620;
+  border: 1px solid #28372e;
   border-radius: 44px;
   padding: 50px 24px;
   min-height: 580px;
@@ -152,20 +152,20 @@ body {
 }
 
 .ab-card:hover {
-  background: #17150f;
-  border-color: rgba(232, 98, 44, 0.7);
+  background: #121c17;
+  border-color: rgba(194, 73, 29, 0.7);
   transform: translateY(-12px) scale(1.01);
 }
 
 .ab-card-featured {
-  background: linear-gradient(135deg, rgba(30, 27, 20, 0.95), rgba(23, 21, 15, 0.7));
-  border-color: #3a342a;
+  background: linear-gradient(135deg, rgba(24, 36, 29, 0.95), rgba(18, 28, 23, 0.7));
+  border-color: #3a4b40;
 }
 
 .ab-tier-small {
   font-size: 1.1rem;
   font-weight: 400;
-  color: #a69c8a;
+  color: #b6ad9d;
 }
 
 .ab-tier-large {
@@ -179,7 +179,7 @@ body {
 
 .ab-desc {
   font-size: 0.88rem;
-  color: #a69c8a;
+  color: #b6ad9d;
   min-height: 3.2em;
   margin: 16px 0 40px;
   line-height: 1.5;
@@ -205,8 +205,8 @@ body {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: rgba(232, 98, 44, 0.12);
-  color: #e8622c;
+  background: rgba(194, 73, 29, 0.12);
+  color: #c2491d;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -214,10 +214,10 @@ body {
 }
 
 .ab-btn {
-  background: linear-gradient(115deg, #e8622c 35%, #f4753e 50%, #e8622c 65%);
+  background: linear-gradient(115deg, #c2491d 35%, #a93e17 50%, #c2491d 65%);
   background-size: 250% 100%;
   background-position: 100% 0;
-  color: #0f0e0c;
+  color: #ffffff;
   padding: 10px 32px;
   border-radius: 100px;
   font-weight: 600;
@@ -235,11 +235,11 @@ body {
 .ab-btn:hover {
   background-position: 0 0;
   transform: scale(1.02);
-  box-shadow: 0 8px 24px rgba(232, 98, 44, 0.25);
+  box-shadow: 0 8px 24px rgba(194, 73, 29, 0.25);
 }
 
 .ab-btn:focus-visible {
-  outline: 2px solid #e8622c;
+  outline: 2px solid #c2491d;
   outline-offset: 2px;
 }
 
@@ -271,8 +271,8 @@ body {
   width: 52px;
   height: 28px;
   border-radius: 100px;
-  background: #1e1b14;
-  border: 1px solid #2a2620;
+  background: #18241d;
+  border: 1px solid #28372e;
   position: relative;
   cursor: pointer;
   transition: background-color 0.3s, border-color 0.3s;
@@ -280,11 +280,11 @@ body {
 }
 
 .ab-toggle:hover {
-  border-color: #3a342a;
+  border-color: #3a4b40;
 }
 
 .ab-toggle:focus-visible {
-  outline: 2px solid #e8622c;
+  outline: 2px solid #c2491d;
   outline-offset: 2px;
 }
 
@@ -295,17 +295,17 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #a69c8a;
+  background: #b6ad9d;
   transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.3s;
 }
 
 .ab-toggle.active {
-  background: rgba(232, 98, 44, 0.25);
-  border-color: rgba(232, 98, 44, 0.5);
+  background: rgba(194, 73, 29, 0.25);
+  border-color: rgba(194, 73, 29, 0.5);
 }
 
 .ab-toggle.active .ab-toggle-knob {
-  background: #e8622c;
+  background: #c2491d;
   transform: translateX(24px);
 }
 
@@ -317,32 +317,33 @@ body {
 
   .ab-watermark-line2 {
     background: none;
-    -webkit-text-fill-color: #e8622c;
-    color: #e8622c;
+    -webkit-text-fill-color: #c2491d;
+    color: #c2491d;
   }
 
   .ab-grid {
-    display: flex;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
     width: 100%;
-    padding: 0 20px;
+    padding: 0;
     gap: 16px;
-    scrollbar-width: none;
   }
 
   .ab-grid > * {
-    flex: 0 0 320px;
-    scroll-snap-align: center;
-  }
-
-  .ab-grid::-webkit-scrollbar {
-    display: none;
+    min-width: 0;
   }
 
   .ab-toggle-wrap {
     justify-content: center;
     padding-right: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .ab-grid {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 420px;
   }
 }
 

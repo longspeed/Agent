@@ -1,0 +1,59 @@
+{
+  "date": "2026-08-24",
+  "url": "http://localhost:8000",
+  "healthScore": 72,
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "title": "Authenticated campaign preview returns 500",
+      "severity": "high",
+      "category": "functional"
+    },
+    {
+      "id": "ISSUE-002",
+      "title": "Public Getting Started downloads return 401",
+      "severity": "medium",
+      "category": "links"
+    },
+    {
+      "id": "ISSUE-003",
+      "title": "Login page loses styling when CDN assets fail",
+      "severity": "medium",
+      "category": "visual"
+    },
+    {
+      "id": "ISSUE-004",
+      "title": "Logged-out tab deep links lose the selected tab",
+      "severity": "medium",
+      "category": "functional"
+    },
+    {
+      "id": "ISSUE-005",
+      "title": "Marketing workflow buttons are dead controls",
+      "severity": "low",
+      "category": "ux"
+    },
+    {
+      "id": "ISSUE-006",
+      "title": "See your promises primary CTA routes to signup",
+      "severity": "medium",
+      "category": "ux"
+    },
+    {
+      "id": "ISSUE-007",
+      "title": "Tablet pricing card is clipped",
+      "severity": "medium",
+      "category": "visual"
+    }
+  ],
+  "categoryScores": {
+    "console": 40,
+    "links": 70,
+    "visual": 84,
+    "functional": 66,
+    "ux": 68,
+    "performance": 100,
+    "content": 94,
+    "accessibility": 92
+  }
+}

@@ -3,6 +3,7 @@ is logged in (not just "authenticated")."""
 import base64
 import hashlib
 import hmac
+import secrets
 import time
 
 from urllib.parse import quote
@@ -39,23 +40,62 @@ def verify_session_token(token: str | None) -> str | None:
     return account_id
 
 
+# --- Incremental Google grant state -----------------------------------------
+
+def create_google_grant_state(account_id: str, capability: str, ttl_seconds: int = 600) -> str:
+    """Signed OAuth state binding a capability grant to one account."""
+    expires_at = str(int(time.time()) + ttl_seconds)
+    payload = f"google-grant:{account_id}:{capability}:{expires_at}"
+    encoded = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return f"{encoded}.{_sign(payload)}"
+
+
+def verify_google_grant_state(token: str | None) -> tuple[str, str] | None:
+    if not token or token.count(".") != 1:
+        return None
+    encoded, signature = token.split(".", 1)
+    try:
+        payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not hmac.compare_digest(signature, _sign(payload)):
+        return None
+    parts = payload.split(":")
+    if len(parts) != 4 or parts[0] != "google-grant" or not parts[3].isdigit():
+        return None
+    if int(parts[3]) <= int(time.time()):
+        return None
+    return parts[1], parts[2]
+
+
 # --- Pre-login OAuth state ----------------------------------------------------
 # CSRF nonce for the "Sign in with Google" flow, used before an account_id
-# exists. Format: "<expires_at>.<hmac>" — one dot, so it can never be
-# mistaken for (or forged from) a session token, which always has two.
+# exists. The random nonce makes two starts in the same second independent.
 
 def create_oauth_state(ttl_seconds: int = 600) -> str:
-    expires_at = str(int(time.time()) + ttl_seconds)
-    return f"{expires_at}.{_sign(expires_at)}"
+    payload = f"oauth:{int(time.time()) + ttl_seconds}:{secrets.token_urlsafe(24)}"
+    encoded = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return f"{encoded}.{_sign(payload)}"
 
 
 def verify_oauth_state(token: str | None) -> bool:
     if not token or token.count(".") != 1:
         return False
-    expires_at, _, signature = token.partition(".")
-    if not expires_at.isdigit() or not hmac.compare_digest(signature, _sign(expires_at)):
+    encoded, _, signature = token.partition(".")
+    try:
+        payload = base64.urlsafe_b64decode(
+            encoded + "=" * (-len(encoded) % 4)
+        ).decode()
+    except (ValueError, UnicodeDecodeError):
         return False
-    return int(expires_at) > int(time.time())
+    parts = payload.split(":", 2)
+    if (
+        len(parts) != 3 or parts[0] != "oauth" or not parts[1].isdigit()
+        or not parts[2]
+        or not hmac.compare_digest(signature, _sign(payload))
+    ):
+        return False
+    return int(parts[1]) > int(time.time())
 
 
 # --- Unsubscribe tokens -------------------------------------------------------

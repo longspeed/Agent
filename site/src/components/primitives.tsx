@@ -15,7 +15,7 @@ export function useMediaQuery(query: string): boolean {
 
 export const usePrefersReducedMotion = () => useMediaQuery('(prefers-reduced-motion: reduce)')
 
-/* Orange app mark with the paper-plane glyph — same as the product's nav logo */
+/* Orange app mark with the paper-plane glyph, same as the product's nav logo */
 export function LogoMark({ className = 'w-8 h-8' }: { className?: string }) {
   return (
     <span
@@ -25,7 +25,7 @@ export function LogoMark({ className = 'w-8 h-8' }: { className?: string }) {
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
         <path
           d="M4 12L20 4L14 20L11 13L4 12Z"
-          stroke="#0F0E0C"
+          stroke="#FFFFFF"
           strokeWidth="2"
           strokeLinejoin="round"
         />

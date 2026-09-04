@@ -1,0 +1,72 @@
+{
+  "target": "http://127.0.0.1:8000/demo",
+  "generated_at": "2026-09-03T13:25:11.660Z",
+  "results": [
+    {
+      "name": "Health endpoint reports safe local mode",
+      "status": "FAIL",
+      "detail": "{\"status\":404,\"headers\":{\"content-length\":\"22\",\"content-type\":\"application/json\",\"date\":\"Thu, 03 Sep 2026 13:25:07 GMT\",\"server\":\"uvicorn\"},\"body\":{\"detail\":\"Not Found\"}}"
+    },
+    {
+      "name": "Demo page loads with seeded queue",
+      "status": "FAIL",
+      "detail": "status=404 cards=1"
+    },
+    {
+      "name": "Initial summary metrics are correct",
+      "status": "FAIL",
+      "detail": "[]"
+    },
+    {
+      "name": "Mark reviewed updates queue and summary",
+      "status": "FAIL",
+      "detail": "No element found for selector: .review"
+    },
+    {
+      "name": "Protected send is rejected and does not send",
+      "status": "FAIL",
+      "detail": "No element found for selector: #send"
+    },
+    {
+      "name": "Reset restores seed data",
+      "status": "FAIL",
+      "detail": "No element found for selector: #reset"
+    },
+    {
+      "name": "Invalid queue item returns 404",
+      "status": "FAIL",
+      "detail": "{\"status\":401,\"headers\":{\"content-length\":\"25\",\"content-type\":\"application/json\",\"date\":\"Thu, 03 Sep 2026 13:25:09 GMT\",\"server\":\"uvicorn\"},\"body\":{\"detail\":\"Unauthorized\"}}"
+    },
+    {
+      "name": "Plan endpoint returns local limits",
+      "status": "FAIL",
+      "detail": "{\"status\":401,\"headers\":{\"content-length\":\"25\",\"content-type\":\"application/json\",\"date\":\"Thu, 03 Sep 2026 13:25:09 GMT\",\"server\":\"uvicorn\"},\"body\":{\"detail\":\"Unauthorized\"}}"
+    },
+    {
+      "name": "Safe sheet template downloads work",
+      "status": "PASS",
+      "detail": "CSV and XLSX downloads returned non-empty attachments"
+    },
+    {
+      "name": "Mobile layout renders without horizontal overflow",
+      "status": "PASS",
+      "detail": "{\"scrollWidth\":390,\"clientWidth\":390}"
+    },
+    {
+      "name": "/login redirects safely to demo",
+      "status": "FAIL",
+      "detail": "status=200 location=null"
+    },
+    {
+      "name": "/signup redirects safely to demo",
+      "status": "FAIL",
+      "detail": "status=307 location=/auth/google/login"
+    }
+  ],
+  "passed": 2,
+  "failed": 10,
+  "console_errors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ]
+}

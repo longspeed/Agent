@@ -12,7 +12,7 @@ import csv
 import zipfile
 from io import BytesIO, StringIO
 
-from sheets import EXPECTED_HEADER
+from lead_schema import EXPECTED_HEADER
 
 FILENAME = "agent-hub-lead-sheet-template.xlsx"
 MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
-import { Menu, X, Search, ShieldCheck, PenLine, MessageSquareReply } from 'lucide-react'
+import { Menu, X, Search, ShieldCheck, PenLine, CalendarCheck } from 'lucide-react'
 import {
   LogoMark,
   PrimaryButton,
@@ -29,7 +29,7 @@ export function BackgroundGlow() {
       aria-hidden="true"
       style={{
         background:
-          'radial-gradient(ellipse 800px 500px at 15% -10%, rgba(232,98,44,0.10), transparent), radial-gradient(ellipse 600px 400px at 90% 10%, rgba(76,134,168,0.08), transparent)',
+          'radial-gradient(ellipse 800px 500px at 15% -10%, rgba(194,73,29,0.12), transparent), radial-gradient(ellipse 600px 400px at 90% 10%, rgba(82,113,132,0.08), transparent)',
       }}
     />
   )
@@ -65,7 +65,7 @@ export function Navbar() {
         </nav>
         <div className="hidden md:flex items-center gap-3">
           <GhostButton href="/login">Sign in</GhostButton>
-          <PrimaryButton href="/signup">Start free</PrimaryButton>
+          <PrimaryButton href="/signup">Connect Gmail</PrimaryButton>
         </div>
         <button
           type="button"
@@ -91,7 +91,7 @@ export function Navbar() {
           ))}
           <div className="flex gap-3 pt-3 mt-2 border-t border-line">
             <GhostButton href="/login">Sign in</GhostButton>
-            <PrimaryButton href="/signup">Start free</PrimaryButton>
+            <PrimaryButton href="/signup">Connect Gmail</PrimaryButton>
           </div>
         </div>
       )}
@@ -102,7 +102,7 @@ export function Navbar() {
 /* Warm shine: accent -> gold -> accent, every stop stays legible on #0F0E0C */
 const shinyStyle: React.CSSProperties = {
   backgroundImage:
-    'linear-gradient(to right, #E8622C 0%, #D8A93B 25%, #F8E3B0 50%, #D8A93B 75%, #E8622C 100%)',
+    'linear-gradient(to right, #C2491D 0%, #A93E17 45%, #C2491D 100%)',
   backgroundSize: '200% auto',
   WebkitBackgroundClip: 'text',
   backgroundClip: 'text',
@@ -116,16 +116,16 @@ export function Hero() {
   return (
     <section className="relative z-10 pt-16 md:pt-28 pb-20 text-center">
       <div className="max-w-6xl mx-auto px-6 flex flex-col items-center">
-        {/* LCP text: opacity 1 on first paint — transform-only entrance */}
+        {/* LCP text: opacity 1 on first paint, transform-only entrance */}
         <motion.h1
           initial={reduced ? false : { y: 20 }}
           animate={{ y: 0 }}
           transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
           className="font-display text-4xl md:text-7xl font-medium tracking-tight leading-[0.95]"
         >
-          <span className="block">The reply queue for Gmail outbound.</span>
+          <span className="block">Recover the revenue</span>
           <span className="animate-shiny block mt-2 pb-2" style={shinyStyle}>
-            Follow up without losing the thread.
+            silence is losing.
           </span>
         </motion.h1>
         <motion.p
@@ -134,8 +134,10 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
           className="mt-8 text-sand max-w-lg text-base leading-[1.6]"
         >
-          Sendkeep drafts first touches, watches the Gmail threads, and prepares follow-ups so
-          warm replies do not disappear inside your inbox.
+          Sendkeep is the revenue leak detector for people sending 15-50 emails a day from Gmail. It reads
+          the Sent threads you already started, turns promised actions into accountable pipeline,
+          and keeps one safe follow-up visible. Reply in Gmail or Gemini; Sendkeep keeps the
+          commitment accountable.
         </motion.p>
         <motion.div
           initial={reduced ? false : { y: 12 }}
@@ -143,11 +145,11 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.18, ease: [0.22, 1, 0.36, 1] }}
           className="mt-10 flex flex-wrap items-center justify-center gap-4"
         >
-          <PrimaryButton href="/signup">Start free</PrimaryButton>
+          <PrimaryButton href="/signup">Connect Gmail</PrimaryButton>
           <GhostButton href="#how-it-works">See how it works</GhostButton>
         </motion.div>
         <p className="mt-6 text-xs text-sand">
-          Connects to Gmail · No credit card · Manual review by default
+          Gmail Sent · One reminder per contact · No reply queue
         </p>
       </div>
     </section>
@@ -157,23 +159,23 @@ export function Hero() {
 const STEPS = [
   {
     icon: Search,
-    title: 'Start with leads',
-    body: 'Bring a list you trust, or let Sendkeep source a small batch for review.',
+    title: 'Connect Gmail',
+    body: 'Connect the Gmail mailbox where your real conversations already happen. Sendkeep reads a bounded Sent window; Gmail remains the place where you write and reply.',
   },
   {
     icon: ShieldCheck,
-    title: 'Draft the first touch',
-    body: 'Each email uses your goal, your tone, and the contact context in your sheet.',
+    title: 'Remember what you promised',
+    body: 'Sendkeep watches a bounded window of Gmail Sent threads, even when another tool sent them, and preserves the evidence behind each promise.',
+  },
+  {
+    icon: CalendarCheck,
+    title: 'See one next action',
+    body: 'Confirm a promise or get one disciplined follow-up reminder. No sequences, no warmup, no second reply inbox.',
   },
   {
     icon: PenLine,
-    title: 'Send at human volume',
-    body: 'Use manual review or auto mode, with caps, opt-outs, and bounce pauses as guardrails.',
-  },
-  {
-    icon: MessageSquareReply,
-    title: 'Work the replies',
-    body: 'Replies land in a queue with drafted responses, so follow-up becomes the main workflow.',
+    title: 'Reply where you work',
+    body: 'Open the original Gmail thread, send when you are ready, and let Sendkeep record the outcome.',
   },
 ]
 

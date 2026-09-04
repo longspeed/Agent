@@ -1,0 +1,10 @@
+import puppeteer from 'puppeteer';
+const browser = await puppeteer.launch({headless: true});
+const page = await browser.newPage();
+const responses = [];
+page.on('response', r => { if (r.status() >= 400) responses.push({url: r.url(), status: r.status(), method: r.request().method()}); });
+await page.goto('http://127.0.0.1:8000/demo', {waitUntil: 'networkidle0'});
+await page.click('#send');
+await new Promise(resolve => setTimeout(resolve, 300));
+console.log(JSON.stringify(responses, null, 2));
+await browser.close();

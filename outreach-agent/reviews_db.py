@@ -2,12 +2,19 @@
 account_id — combined with RLS on the table, one tenant can never see
 another's reviews."""
 import difflib
+from datetime import datetime, timedelta, timezone
 
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SECRET_KEY
 
 TABLE = "reviews"
+
+# Rolling-deploy compatibility only. Sheet data begins on row 2, so zero can
+# never address a real contact. New/migrated schemas store NULL; an old schema
+# that still has reviews.row_index NOT NULL gets this reserved value until the
+# nullable-row migration converts it back to NULL.
+LEGACY_NO_SHEET_ROW = 0
 
 _client = None
 
@@ -79,7 +86,29 @@ def find_review_id(account_id, thread_id, gmail_message_id, customer_reply=None)
 
 def add_review(account_id, row_index, name, email, thread_id, customer_reply,
                draft_reply, gmail_message_id=None, status="pending",
-               degraded_classification=False, validator_problems=None):
+               degraded_classification=False, validator_problems=None,
+               return_created=False, create_alert=True):
+    client = _get_client()
+    if create_alert and hasattr(client, "rpc"):
+        # Real deployments use the atomic transition. Tiny table-only fakes in
+        # unit tests intentionally exercise the legacy insert behavior below.
+        result = client.rpc("queue_reply_review_with_alert", {
+            "p_account_id": account_id,
+            "p_row_index": row_index,
+            "p_name": name,
+            "p_email": email,
+            "p_thread_id": thread_id,
+            "p_customer_reply": customer_reply,
+            "p_draft_reply": draft_reply,
+            "p_gmail_message_id": gmail_message_id,
+            "p_status": status,
+            "p_degraded_classification": degraded_classification,
+            "p_validator_problems": "\n".join(validator_problems) if validator_problems else None,
+        }).execute()
+        payload = result.data or {}
+        review_id = payload.get("id") if isinstance(payload, dict) else None
+        created = bool(payload.get("created")) if isinstance(payload, dict) else False
+        return (review_id, created) if return_created else review_id
     # Two layers, deliberately. This check-then-insert closes the realistic
     # overlapping-job case (the auto-poll firing while a previous check is still
     # in flight, both reads catching the same message before either write lands)
@@ -94,45 +123,118 @@ def add_review(account_id, row_index, name, email, thread_id, customer_reply,
     # the background worker safe to run concurrently. Both call this.
     existing_id = find_review_id(account_id, thread_id, gmail_message_id, customer_reply)
     if existing_id is not None:
-        return existing_id
+        return (existing_id, False) if return_created else existing_id
 
-    result = _get_client().table(TABLE).insert({
-        "account_id": account_id,
-        "row_index": row_index,
-        "name": name,
-        "email": email,
-        "thread_id": thread_id,
-        "customer_reply": customer_reply,
-        "draft_reply": draft_reply,
-        # Frozen copy of what the model wrote. draft_reply is mutable --
-        # mark_sent replaces it with whatever the operator actually sent -- so
-        # without this the edit pair is destroyed at send time and cannot be
-        # reconstructed. Written once, never updated.
-        #
-        # None, not "", when there is no draft (drafting failed, or -- for a
-        # flagged review -- was never attempted): Phase 6's edit-diff learning
-        # reads this column against what the operator actually sent, and ("",
-        # "the operator's entire hand-written reply") reads as "the model's
-        # output should be replaced wholesale" rather than "the model wrote
-        # nothing, this pair teaches nothing."
-        "original_draft_reply": draft_reply or None,
-        "gmail_message_id": gmail_message_id,
-        "status": status,
-        "degraded_classification": degraded_classification,
-        # What the validator still objected to when this was queued. draft_reply
-        # returns its last attempt even when validation fails, so a queued reply
-        # can carry real problems -- and before this column the operator had no
-        # way to know which draft that was. Stored newline-joined rather than
-        # JSON because the only consumer is a human reading it.
-        #
-        # Explicitly NOT a lane input. The lane is decided by provenance in
-        # lane() above, so an empty list here never promotes a reply into the
-        # fast path. If it did, the fence's blind spots would silently widen the
-        # low-attention surface -- which is the failure mode this whole split
-        # exists to remove.
-        "validator_problems": "\n".join(validator_problems) if validator_problems else None,
-    }).execute()
-    return result.data[0]["id"]
+    payload = {
+            "account_id": account_id,
+            "row_index": row_index,
+            "name": name,
+            "email": email,
+            "thread_id": thread_id,
+            "customer_reply": customer_reply,
+            "draft_reply": draft_reply,
+            # Frozen copy of what the model wrote. draft_reply is mutable --
+            # mark_sent replaces it with whatever the operator actually sent -- so
+            # without this the edit pair is destroyed at send time and cannot be
+            # reconstructed. Written once, never updated.
+            #
+            # None, not "", when there is no draft (drafting failed, or -- for a
+            # flagged review -- was never attempted): Phase 6's edit-diff learning
+            # reads this column against what the operator actually sent, and ("",
+            # "the operator's entire hand-written reply") reads as "the model's
+            # output should be replaced wholesale" rather than "the model wrote
+            # nothing, this pair teaches nothing."
+            "original_draft_reply": draft_reply or None,
+            "gmail_message_id": gmail_message_id,
+            "status": status,
+            "degraded_classification": degraded_classification,
+            # What the validator still objected to when this was queued. draft_reply
+            # returns its last attempt even when validation fails, so a queued reply
+            # can carry real problems -- and before this column the operator had no
+            # way to know which draft that was. Stored newline-joined rather than
+            # JSON because the only consumer is a human reading it.
+            #
+            # Explicitly NOT a lane input. The lane is decided by provenance in
+            # lane() above, so an empty list here never promotes a reply into the
+            # fast path. If it did, the fence's blind spots would silently widen the
+            # low-attention surface -- which is the failure mode this whole split
+            # exists to remove.
+            "validator_problems": "\n".join(validator_problems) if validator_problems else None,
+    }
+
+    try:
+        result = _get_client().table(TABLE).insert(payload).execute()
+        review_id = result.data[0]["id"]
+        return (review_id, True) if return_created else review_id
+    except Exception as e:
+        # The Gmail-only path and the nullable schema must be deployable in
+        # either order. An older database rejects the truthful NULL with 23502.
+        # Retry once with a value outside the valid Sheet row domain; the
+        # migration below later normalizes it back to NULL. Restrict this to the
+        # exact column/error pair so unrelated not-null failures still surface.
+        error_text = str(e).lower()
+        if (
+            row_index is None
+            and "23502" in error_text
+            and "row_index" in error_text
+        ):
+            compatibility_payload = dict(payload, row_index=LEGACY_NO_SHEET_ROW)
+            try:
+                result = _get_client().table(TABLE).insert(
+                    compatibility_payload
+                ).execute()
+                review_id = result.data[0]["id"]
+                return (review_id, True) if return_created else review_id
+            except Exception as retry_error:
+                e = retry_error
+
+        # The check-then-insert above closes the realistic overlap but not a
+        # true simultaneous race: both jobs read "no review yet", both draft,
+        # both insert. When the unique index on (account_id, thread_id,
+        # gmail_message_id) rejects the loser, return the winner instead of
+        # raising -- a duplicate-detection error must never cost the operator
+        # their notification, and two drafts for one reply is exactly what
+        # this function exists to prevent. (Postgres unique violation: 23505.)
+        if "23505" in str(e) or "duplicate key" in str(e).lower():
+            winner = find_review_id(account_id, thread_id, gmail_message_id)
+            if winner is not None:
+                print(f"Lost an add_review race on {thread_id}/{gmail_message_id}; "
+                      "keeping the existing review.")
+                return (winner, False) if return_created else winner
+        raise e
+
+
+def add_manual_review(account_id, row_index, name, email, thread_id,
+                      customer_reply, draft_reply, gmail_message_id=None,
+                      status="pending", degraded_classification=False,
+                      validator_problems=None, return_created=False):
+    """Create a review initiated by the operator without emailing an alert.
+
+    The Threads composer is already open in front of the operator, so creating
+    a notification for the same action would be noise.  This deliberately uses
+    add_review's normal message-id dedupe and unique-index race handling; the
+    only difference is skipping the outbox RPC.
+    """
+    return add_review(
+        account_id, row_index, name, email, thread_id, customer_reply,
+        draft_reply, gmail_message_id=gmail_message_id, status=status,
+        degraded_classification=degraded_classification,
+        validator_problems=validator_problems,
+        return_created=return_created, create_alert=False,
+    )
+
+
+def add_review_with_alert(account_id, row_index, name, email, thread_id,
+                          customer_reply, draft_reply, gmail_message_id=None,
+                          status="pending", degraded_classification=False,
+                          validator_problems=None, return_created=False):
+    """Create a Gmail reply review and its delayed alert atomically."""
+    return add_review(
+        account_id, row_index, name, email, thread_id, customer_reply,
+        draft_reply, gmail_message_id=gmail_message_id, status=status,
+        degraded_classification=degraded_classification,
+        validator_problems=validator_problems, return_created=return_created,
+    )
 
 
 def find_follow_up(account_id, source_draft_id):
@@ -214,6 +316,53 @@ def follow_up_edit_metrics(account_id):
         "approved": len(sent),
         "minimally_edited": minimally_edited,
     }
+
+
+def reply_edit_metrics(account_id):
+    """Summarize approval and edit signals for inbound reply drafts.
+
+    Reply drafts remain a full human-review lane. This endpoint is deliberately
+    aggregate-only: it exposes counts for the operator's evidence dashboard,
+    never the reply text or any cross-account training corpus.
+    """
+    result = _get_client().table(TABLE).select(
+        "status,draft_reply,original_draft_reply,rewritten,kind"
+    ).eq("account_id", account_id).execute()
+    rows = [row for row in (result.data or []) if row.get("kind") != "follow_up"]
+    sent = [row for row in rows if row.get("status") == "sent"]
+    human_edited = 0
+    model_rewritten = 0
+    untouched = 0
+    for row in sent:
+        original = (row.get("original_draft_reply") or "").strip()
+        approved = (row.get("draft_reply") or "").strip()
+        if row.get("rewritten"):
+            model_rewritten += 1
+        elif original and original != approved:
+            human_edited += 1
+        else:
+            untouched += 1
+    return {
+        "drafted": len(rows),
+        "approved": len(sent),
+        "human_edited": human_edited,
+        "model_rewritten": model_rewritten,
+        "untouched": untouched,
+    }
+
+
+def list_sent_edit_pairs(account_id, limit=100):
+    """Return bounded reply edit pairs for account-scoped style signals."""
+    result = (
+        _get_client().table(TABLE)
+        .select("draft_reply,original_draft_reply,rewritten,kind")
+        .eq("account_id", account_id)
+        .eq("status", "sent")
+        .neq("kind", "follow_up")
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
 
 
 def confirm_sender(account_id, review_id, draft_reply="", validator_problems=None):
@@ -314,7 +463,7 @@ def lane(review=None):
 # a newer one on the same thread today). Listed above so their eventual
 # arrival is a data change, not a redesign of every query and endpoint that
 # touches a review.
-VISIBLE_STATUSES = ("pending", "flagged", "answered_elsewhere")
+VISIBLE_STATUSES = ("pending", "flagged", "answered_elsewhere", "send_uncertain")
 SENDABLE_STATUSES = ("pending",)
 
 
@@ -332,6 +481,100 @@ def list_pending_reviews(account_id):
     return result.data
 
 
+def claim_send(account_id, review_id, sent_body=None):
+    """Atomically claim a reply and freeze the exact body sent/reconciled."""
+    payload = {"status": "sending"}
+    if sent_body is not None:
+        payload["draft_reply"] = sent_body
+    result = (
+        _get_client().table(TABLE).update(payload)
+        .eq("account_id", account_id).eq("id", review_id)
+        .eq("status", "pending").execute()
+    )
+    return bool(result.data)
+
+
+def update_claimed_body(account_id, review_id, sent_body):
+    """Persist edited follow-up copy after its source row owns the send."""
+    result = (
+        _get_client().table(TABLE).update({"draft_reply": sent_body})
+        .eq("account_id", account_id).eq("id", review_id)
+        .eq("status", "pending").execute()
+    )
+    return bool(result.data)
+
+
+def release_send_claim(account_id, review_id):
+    """Return a claimed reply to pending when no send attempt started."""
+    result = (
+        _get_client().table(TABLE).update({"status": "pending"})
+        .eq("account_id", account_id).eq("id", review_id)
+        .eq("status", "sending").execute()
+    )
+    return bool(result.data)
+
+
+def mark_send_uncertain(account_id, review_id):
+    """Keep an ambiguous Gmail result visible but permanently non-sendable."""
+    client = _get_client()
+    if hasattr(client, "rpc"):
+        result = client.rpc("mark_review_send_uncertain_with_alert", {
+            "p_account_id": account_id,
+            "p_review_id": review_id,
+        }).execute()
+        return bool(result.data)
+    result = (
+        client.table(TABLE).update({"status": "send_uncertain"})
+        .eq("account_id", account_id).eq("id", review_id)
+        .eq("status", "sending").execute()
+    )
+    return bool(result.data)
+
+
+def mark_send_uncertain_with_alert(account_id, review_id):
+    result = _get_client().rpc("mark_review_send_uncertain_with_alert", {
+        "p_account_id": account_id,
+        "p_review_id": review_id,
+    }).execute()
+    return bool(result.data)
+
+
+def list_reviews_stuck_in_send(account_id):
+    """Normal replies trapped in the transient ``sending`` claim.
+
+    ``sending`` sits between claim_send and (mark_sent | mark_send_uncertain).
+    A crashed worker process or an exhausted retry budget in that window
+    leaves the row invisible (not in VISIBLE_STATUSES) and permanently
+    unsendable (not in SENDABLE_STATUSES) -- a delivered reply recorded
+    nowhere. watch_replies._reconcile_review_sends owns recovering them;
+    only reply-kind rows qualify because follow-up claims are fenced through
+    drafts_db.follow_up_status instead."""
+    result = (
+        _get_client().table(TABLE)
+        .select("*")
+        .eq("account_id", account_id)
+        .eq("kind", "reply")
+        .eq("status", "sending")
+        .order("created_at")
+        .execute()
+    )
+    return result.data
+
+
+def mark_stuck_send_visible(account_id, review_id):
+    """Surface a stranded claim without weakening the duplicate fence.
+
+    sending -> send_uncertain, CAS on sending exactly like its siblings. The
+    card becomes a visible "Check Gmail" record the operator can trust but
+    never resend -- strictly better than an invisible row, and never an
+    automatic retry."""
+    return mark_send_uncertain(account_id, review_id)
+
+
+def mark_stuck_send_visible_with_alert(account_id, review_id):
+    return mark_send_uncertain_with_alert(account_id, review_id)
+
+
 def get_review(account_id, review_id):
     result = (
         _get_client().table(TABLE)
@@ -343,13 +586,70 @@ def get_review(account_id, review_id):
     return result.data[0] if result.data else None
 
 
+def latest_reply_for_thread(account_id, thread_id):
+    """Return the newest non-follow-up review for a Gmail thread."""
+    try:
+        result = (
+            _get_client().table(TABLE).select("status,gmail_message_id,created_at")
+            .eq("account_id", account_id).eq("thread_id", thread_id)
+            .neq("kind", "follow_up").order("created_at", desc=True)
+            .limit(1).execute()
+        )
+        return result.data[0] if result.data else None
+    except Exception as e:
+        print(f"Could not load reply status for {thread_id}: {e}")
+        return None
+
+
+def list_sent_bodies_for_thread(account_id, thread_id):
+    """Bodies of every reply this account already SENT on a thread, newest
+    last. Feeds watch_replies' echo guard: when the "newest message" on a
+    thread is verbatim something we ourselves sent, it is not a customer
+    reply -- drafting an answer to our own words is how one inbox ended up
+    with a four-turn AI conversation signed by invented people. Sent bodies
+    live in draft_reply (mark_sent overwrites the draft with what actually
+    went out), so that column is the source."""
+    try:
+        result = (
+            _get_client().table(TABLE)
+            .select("draft_reply")
+            .eq("account_id", account_id)
+            .eq("thread_id", thread_id)
+            .eq("status", "sent")
+            .execute()
+        )
+    except Exception as e:
+        print(f"Could not list sent bodies for echo guard on {thread_id}: {e}")
+        return []
+    return [
+        (row.get("draft_reply") or "")
+        for row in (result.data or [])
+        if (row.get("draft_reply") or "").strip()
+    ]
+
+
 def mark_sent(account_id, review_id, sent_body):
     """Records the reply that actually went out. Leaves original_draft_reply
     alone on purpose -- the diff between the two columns is what the model got
     wrong about this sender's voice, and overwriting both would destroy it."""
     _get_client().table(TABLE).update(
-        {"status": "sent", "draft_reply": sent_body}
+        {
+            "status": "sent",
+            "draft_reply": sent_body,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+        }
     ).eq("account_id", account_id).eq("id", review_id).execute()
+
+
+def count_sent_last_24_hours(account_id):
+    """Count reply and follow-up review sends in the rolling cap window."""
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    result = (
+        _get_client().table(TABLE).select("id", count="exact")
+        .eq("account_id", account_id).eq("status", "sent")
+        .gte("sent_at", since.isoformat()).limit(1).execute()
+    )
+    return result.count or 0
 
 
 def mark_rewritten(account_id, review_id):

@@ -7,6 +7,7 @@ import requests
 import gmail
 import providers
 import usage
+import voice_signals
 from config import DEFAULT_MEETING_PURPOSE
 
 MAX_RETRIES = 4
@@ -162,7 +163,10 @@ def _post(provider, system, user_prompt, purpose, may_wait):
             raise ProviderUnavailable(f"request failed: {e}") from e
 
         if response.status_code == 429:
-            wait = int(response.headers.get("Retry-After", 10) or 10)
+            try:
+                wait = max(0, int(response.headers.get("Retry-After", 10) or 10))
+            except (TypeError, ValueError):
+                wait = 10
             if not may_wait or wait > MAX_RETRY_WAIT or attempt == MAX_RETRIES - 1:
                 raise ProviderUnavailable(f"rate-limited (Retry-After: {wait}s)")
             print(f"{provider.display} rate-limited, retrying in {wait}s...")
@@ -174,7 +178,12 @@ def _post(provider, system, user_prompt, purpose, may_wait):
             # draft while another provider is configured.
             raise ProviderUnavailable(f"HTTP {response.status_code}: {response.text[:200]}")
 
-        data = response.json()
+        try:
+            data = response.json()
+        except (ValueError, TypeError) as e:
+            raise ProviderUnavailable("provider returned malformed JSON") from e
+        if not isinstance(data, dict):
+            raise ProviderUnavailable("provider returned a non-object JSON response")
         # Meter the pooled key against whichever account is active. Input and
         # output tokens are recorded separately because they're priced
         # differently -- a reply draft carries a whole thread as input, so its
@@ -229,15 +238,23 @@ def _chat(system, user_prompt, purpose):
 
 
 def _sender_context(account):
+    meeting_purpose = (account.get("meeting_purpose") or "").strip()
+    custom_instructions = (account.get("custom_instructions") or "").strip()[:600]
+    voice_profile = (account.get("voice_profile") or "").strip()[:600]
     return {
         "sender_name": account.get("sender_name") or "the team",
         "sender_company": (account.get("sender_company") or "").strip(),
-        "meeting_purpose": (account.get("meeting_purpose") or "").strip(),
+        "meeting_purpose": meeting_purpose,
         "calendar_link": (account.get("calendar_booking_link") or "").strip(),
         # Free-form sender preferences (tone, things to always mention/avoid,
         # length, language). Capped so it can't balloon the prompt or be used to
         # bury the system rules under a wall of text.
-        "custom_instructions": (account.get("custom_instructions") or "").strip()[:600],
+        "custom_instructions": custom_instructions,
+        "voice_profile": voice_profile,
+        # Every number the operator has actually claimed, in one string. The
+        # fabricated-stat validator allows a statistic only when its number
+        # appears verbatim in here -- anything else was invented by the model.
+        "claims_context": " ".join((meeting_purpose, custom_instructions, voice_profile)),
     }
 
 
@@ -254,6 +271,19 @@ def _custom_instructions_block(instructions):
         "the rules in the system message (the truth rules, plain text, the unsubscribe line, "
         "no placeholders, one consistent script):\n"
         f'"""{instructions}"""'
+    )
+
+
+def _voice_profile_block(profile):
+    """Render only the bounded, aggregate voice hint as a soft preference."""
+    if not profile:
+        return ""
+    return (
+        "\n\nA bounded style signal from this sender's own prior human approvals and edits "
+        "is below. Use it only as a soft preference for tone and length. It contains "
+        "no prospect facts, and it never overrides truth, safety, or the instructions "
+        "above:\n"
+        f'"""{profile[:600]}"""'
     )
 
 
@@ -420,7 +450,92 @@ def _link_key(raw):
         .removeprefix("https://").removeprefix("http://").removeprefix("www.").rstrip("/")
 
 
-def _validate_reply(body, calendar_link="", extra_allowed_links=()):
+# A bare name-only sign-off line, e.g. "Long", "Alex", "Sam", "the team".
+# Deliberately narrow -- 1-2 dictionary-ish words, no punctuation beyond an
+# apostrophe/hyphen, no digits, no URL, under 26 characters -- because this
+# line gets REWRITTEN, not just flagged. Anything looser would start eating
+# real closing sentences like "Looking forward to our chat".
+_BARE_NAME_LINE = re.compile(r"^[A-Za-zÀ-ÿ'’\-]{1,20}(?:\s+[A-Za-zÀ-ÿ'’\-]{1,20})?$")
+
+
+def _enforce_signature(body, sender_name, company=""):
+    """Deterministically pin the sign-off to the configured sender name.
+
+    The prompts say "sign with this name", but the model demonstrably drifts:
+    on one live inbox the same lane signed Long / Alex / Team / Sam across
+    four turns, with Alex and Sam invented wholesale from thread context.
+    Identity on a prospect-facing email must never be sampled, so whatever
+    bare name-only line the model left at the end gets replaced with the
+    configured value.
+
+    company is the configured sender_company: when the email ends with the
+    standard two-line "name then company" sign-off, the LAST line is the
+    company and must NOT be rewritten as a name -- the line above it is the
+    one pinned. Closing sentences, one-line bodies, and unsubscribe text all
+    pass through untouched."""
+    wanted = (sender_name or "").strip()
+    company = (company or "").strip()
+    if not wanted or not body:
+        return body
+    lines = body.rstrip().split("\n")
+
+    def last_nonempty(from_idx):
+        for i in range(from_idx, -1, -1):
+            if lines[i].strip():
+                return i
+        return None
+
+    name_idx = last_nonempty(len(lines) - 1)
+    if name_idx is None:
+        return body
+    # Two-line sign-off: last line is the configured company, so pin the
+    # NAME line above it instead of mangling the company into a name.
+    if company and lines[name_idx].strip().lower() == company.lower():
+        name_idx = last_nonempty(name_idx - 1)
+        if name_idx is None:
+            return body
+    # A sign-off needs something ABOVE it. A one-line body ("hi") IS the
+    # message, not a signature -- rewriting it would destroy the draft.
+    if not any(lines[j].strip() for j in range(name_idx)):
+        return body
+    candidate = lines[name_idx].strip().rstrip(".,-–—").strip()
+    if candidate and len(candidate) <= 26 \
+            and _BARE_NAME_LINE.fullmatch(candidate) \
+            and candidate.lower() != wanted.lower():
+        lines[name_idx] = wanted
+        print(f"Signature pinned to configured sender name {wanted!r} "
+              f"(model wrote {candidate!r}).")
+    return "\n".join(lines)
+
+
+# Unsourced quantitative claims: percentages ("up to 30%"), multipliers
+# ("3x faster", "twice as..."). The truth rules ban inventing these, and the
+# model demonstrably does anyway ("reduce project completion times by up to
+# 30%" went out to a live prospect). A stat is allowed ONLY when its number
+# appears verbatim in what the operator actually gave us.
+_FABRICATED_STAT = re.compile(
+    r"(?:up\s+to\s+)?\d+(?:\.\d+)?\s*%|(?:\d+(?:\.\d+)?\s*)(?:x|times)\b",
+    re.IGNORECASE,
+)
+_STAT_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _fabricated_stat_problems(text, allowed_context):
+    hits = []
+    seen = set()
+    for match in _FABRICATED_STAT.finditer(text or ""):
+        token = match.group(0)
+        number = _STAT_NUMBER.search(token).group(0)
+        if number in (allowed_context or ""):
+            continue
+        key = token.lower()
+        if key not in seen:
+            seen.add(key)
+            hits.append(token)
+    return hits
+
+
+def _validate_reply(body, calendar_link="", extra_allowed_links=(), allowed_claims_context=""):
     """Problems with a drafted reply; empty means it is safe to queue.
 
     The reply path had no mechanical gate at all before this: outreach got a
@@ -473,10 +588,17 @@ def _validate_reply(body, calendar_link="", extra_allowed_links=()):
     if banned:
         problems.append("Remove these phrases: " + ", ".join(banned) + ".")
 
+    invented = _fabricated_stat_problems(stripped, allowed_claims_context)
+    if invented:
+        problems.append(
+            "Remove the invented statistic(s) (" + ", ".join(invented[:3]) + ") -- the only "
+            "numbers allowed are ones given in the sender's own settings."
+        )
+
     return problems
 
 
-def _validate_outreach(subject, body, calendar_link, unsubscribe_url=""):
+def _validate_outreach(subject, body, calendar_link, unsubscribe_url="", allowed_claims_context=""):
     """Returns a list of human-readable problems with a generated email; empty
     means it is safe to queue. Every check here guards something that cannot be
     walked back once the message leaves Gmail."""
@@ -534,6 +656,13 @@ def _validate_outreach(subject, body, calendar_link, unsubscribe_url=""):
     if _MARKDOWN.search(body):
         problems.append("Remove markdown formatting; this is a plain-text email.")
 
+    invented = _fabricated_stat_problems(body, allowed_claims_context)
+    if invented:
+        problems.append(
+            "Remove the invented statistic(s) (" + ", ".join(invented[:3]) + ") -- the only "
+            "numbers allowed are ones given in the sender's own settings."
+        )
+
     return problems
 
 
@@ -545,11 +674,13 @@ def outreach_problems(account, subject, body, unsubscribe_url=""):
     validator change or be altered outside the generator. Auto mode therefore
     validates the stored subject/body again immediately before Gmail.
     """
+    ctx = _sender_context(account)
     return _validate_outreach(
         subject or "",
         body or "",
-        _sender_context(account)["calendar_link"],
+        ctx["calendar_link"],
         unsubscribe_url,
+        allowed_claims_context=ctx["claims_context"],
     )
 
 
@@ -687,6 +818,7 @@ def outreach_prompt(account, name, company, lead_reason=""):
             " relationship you already have."
         )
     base_prompt += _custom_instructions_block(ctx["custom_instructions"])
+    base_prompt += _voice_profile_block(ctx["voice_profile"])
     base_prompt += "\n\nWrite the email."
     return base_prompt
 
@@ -704,6 +836,7 @@ def retry_prompt(base_prompt, previous_text, problems):
 
 
 def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_url=""):
+    account = voice_signals.with_profile(account)
     ctx = _sender_context(account)
     # An untouched default goal gives the model no honest way to write "here's
     # what's in it for you" -- refuse rather than send content-free mail. The
@@ -722,10 +855,16 @@ def generate_outreach_email(account, name, company, lead_reason="", unsubscribe_
 
         text = _chat(OUTREACH_SYSTEM, user_prompt, usage.DRAFT_EMAIL)
         subject, body = _split_subject(text)
+        # Pin identity before the opt-out line is appended, so the bare-name
+        # detector sees the real end of the email.
+        body = _enforce_signature(body, ctx["sender_name"], ctx["sender_company"])
         if unsubscribe_url:
             body = f"{body}\n\n{_opt_out_line(unsubscribe_url)}"
 
-        problems = _validate_outreach(subject, body, ctx["calendar_link"], unsubscribe_url)
+        problems = _validate_outreach(
+            subject, body, ctx["calendar_link"], unsubscribe_url,
+            allowed_claims_context=ctx["claims_context"],
+        )
         if not problems:
             return subject, body
         attempts.append({"text": text, "problems": problems})
@@ -752,6 +891,7 @@ def rewrite_outreach_prompt(account, name, company, subject, body, instruction):
         + f"\n\nHere is the current drafted email:\n---\nSubject: {subject}\n\n{body}\n---"
         + _rewrite_instruction_block(instruction)
         + _custom_instructions_block(ctx["custom_instructions"])
+        + _voice_profile_block(ctx["voice_profile"])
         + '\n\nApply the change and output the complete revised email, in the same '
         '"Subject: ..." plus body format.'
     )
@@ -767,6 +907,7 @@ def rewrite_outreach_email(account, name, company, subject, body, instruction, u
     Same 2-attempt validate-and-retry shape as generate_outreach_email, and
     raises the same way on failure: nothing was written yet, so failing
     leaves the existing draft untouched in the browser."""
+    account = voice_signals.with_profile(account)
     ctx = _sender_context(account)
     stripped_body = _strip_opt_out_line(body, unsubscribe_url) if unsubscribe_url else body
     base_prompt = rewrite_outreach_prompt(account, name, company, subject, stripped_body, instruction)
@@ -779,6 +920,7 @@ def rewrite_outreach_email(account, name, company, subject, body, instruction, u
 
         text = _chat(OUTREACH_SYSTEM, user_prompt, usage.DRAFT_EMAIL)
         new_subject, new_body = _split_subject(text)
+        new_body = _enforce_signature(new_body, ctx["sender_name"], ctx["sender_company"])
         # Re-appended in code, never generated -- see _opt_out_line. The
         # "not already there" guard mirrors send_prepared_draft's own
         # defensive check: belt and suspenders behind the search-based
@@ -786,7 +928,10 @@ def rewrite_outreach_email(account, name, company, subject, body, instruction, u
         if unsubscribe_url and unsubscribe_url not in new_body:
             new_body = f"{new_body}\n\n{_opt_out_line(unsubscribe_url)}"
 
-        problems = _validate_outreach(new_subject, new_body, ctx["calendar_link"], unsubscribe_url)
+        problems = _validate_outreach(
+            new_subject, new_body, ctx["calendar_link"], unsubscribe_url,
+            allowed_claims_context=ctx["claims_context"],
+        )
         if not problems:
             return new_subject, new_body
         attempts.append({"text": text, "problems": problems})
@@ -821,6 +966,7 @@ def reply_prompt(account, name, company, customer_reply, history=()):
         + f"\n\nThe conversation so far, oldest first:\n{conversation}\n\n"
         f"Their newest message -- the one to answer now:\n{gmail.strip_quoted(customer_reply)}"
         + _custom_instructions_block(ctx["custom_instructions"])
+        + _voice_profile_block(ctx["voice_profile"])
         + "\n\nDraft the sender's reply."
     )
 
@@ -838,12 +984,16 @@ def reply_problems(account, draft):
     than left to spot it. The problems do not decide the lane: a reply is
     full-text regardless, because that is settled by where the prompt's text
     came from, not by what the validator managed to catch in the output."""
-    return _validate_reply(draft or "", _sender_context(account)["calendar_link"])
+    ctx = _sender_context(account)
+    return _validate_reply(
+        draft or "", ctx["calendar_link"], allowed_claims_context=ctx["claims_context"]
+    )
 
 
 def draft_reply(account, name, company, customer_reply, history=()):
     """history: (from_contact, body) pairs for every earlier message on the
     thread, oldest first (see gmail.get_latest_reply_with_history)."""
+    account = voice_signals.with_profile(account)
     ctx = _sender_context(account)
     user_prompt = reply_prompt(account, name, company, customer_reply, history)
 
@@ -863,7 +1013,10 @@ def draft_reply(account, name, company, customer_reply, history=()):
         if attempts:
             prompt = retry_prompt(user_prompt, attempts[-1]["text"], attempts[-1]["problems"])
         text = _chat(REPLY_SYSTEM, prompt, usage.DRAFT_REPLY)
-        problems = _validate_reply(text, ctx["calendar_link"])
+        text = _enforce_signature(text, ctx["sender_name"])
+        problems = _validate_reply(
+            text, ctx["calendar_link"], allowed_claims_context=ctx["claims_context"]
+        )
         if not problems:
             return text
         attempts.append({"text": text, "problems": problems})
@@ -885,11 +1038,13 @@ def follow_up_prompt(account, name, company, original_body):
         f"Prospect: {name}" + (f" at {company}" if company else "")
         + f"\n\nThe original email already in the thread:\n---\n{original_body}\n---"
         + _custom_instructions_block(ctx["custom_instructions"])
+        + _voice_profile_block(ctx["voice_profile"])
         + "\n\nDraft the one allowed follow-up."
     )
 
 
 def draft_follow_up(account, name, company, original_body, unsubscribe_url=""):
+    account = voice_signals.with_profile(account)
     ctx = _sender_context(account)
     base_prompt = follow_up_prompt(account, name, company, original_body)
     attempts = []
@@ -898,10 +1053,12 @@ def draft_follow_up(account, name, company, original_body, unsubscribe_url=""):
             base_prompt, attempts[-1]["text"], attempts[-1]["problems"]
         )
         body = _chat(FOLLOW_UP_SYSTEM, prompt, usage.DRAFT_EMAIL)
+        body = _enforce_signature(body, ctx["sender_name"])
         if unsubscribe_url and unsubscribe_url not in body:
             body = f"{body.rstrip()}\n\n{_opt_out_line(unsubscribe_url)}"
         problems = _validate_reply(
-            body, ctx["calendar_link"], extra_allowed_links=(unsubscribe_url,)
+            body, ctx["calendar_link"], extra_allowed_links=(unsubscribe_url,),
+            allowed_claims_context=ctx["claims_context"],
         )
         if not problems:
             return body
@@ -910,9 +1067,11 @@ def draft_follow_up(account, name, company, original_body, unsubscribe_url=""):
 
 
 def follow_up_problems(account, body, unsubscribe_url=""):
+    ctx = _sender_context(account)
     return _validate_reply(
-        body or "", _sender_context(account)["calendar_link"],
+        body or "", ctx["calendar_link"],
         extra_allowed_links=(unsubscribe_url,),
+        allowed_claims_context=ctx["claims_context"],
     )
 
 
@@ -932,6 +1091,7 @@ def rewrite_reply_prompt(account, name, company, customer_reply, draft_text, ins
         f"Here is the current drafted reply:\n---\n{draft_text}\n---"
         + _rewrite_instruction_block(instruction)
         + _custom_instructions_block(ctx["custom_instructions"])
+        + _voice_profile_block(ctx["voice_profile"])
         + "\n\nApply the change and output the complete revised reply."
     )
 
@@ -949,6 +1109,7 @@ def rewrite_reply(account, name, company, customer_reply, draft_text, instructio
     notification is the product. Here the review already exists with its
     current draft intact, so failing a rewrite loses nothing, and a clear
     error is more honest than silently keeping a possibly-broken attempt."""
+    account = voice_signals.with_profile(account)
     ctx = _sender_context(account)
     base_prompt = rewrite_reply_prompt(account, name, company, customer_reply, draft_text, instruction)
 
@@ -958,7 +1119,10 @@ def rewrite_reply(account, name, company, customer_reply, draft_text, instructio
         if attempts:
             prompt = retry_prompt(base_prompt, attempts[-1]["text"], attempts[-1]["problems"])
         text = _chat(REPLY_SYSTEM, prompt, usage.DRAFT_REPLY)
-        problems = _validate_reply(text, ctx["calendar_link"])
+        text = _enforce_signature(text, ctx["sender_name"])
+        problems = _validate_reply(
+            text, ctx["calendar_link"], allowed_claims_context=ctx["claims_context"]
+        )
         if not problems:
             return text
         attempts.append({"text": text, "problems": problems})

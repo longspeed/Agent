@@ -1,0 +1,23 @@
+{
+  "date": "2026-08-20",
+  "url": "https://8000-smi36mynvpzo2i7r.daytonaproxy01.net/",
+  "healthScore": 99,
+  "issues": [
+    {
+      "id": "QA-009",
+      "title": "Legacy pages load Tailwind from the CDN",
+      "severity": "low",
+      "category": "performance"
+    }
+  ],
+  "categoryScores": {
+    "console": 95,
+    "links": 100,
+    "visual": 100,
+    "functional": 100,
+    "ux": 100,
+    "performance": 100,
+    "content": 100,
+    "accessibility": 100
+  }
+}

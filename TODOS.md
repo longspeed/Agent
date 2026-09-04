@@ -1,6 +1,62 @@
 # TODOS
 
-Deferred from the multi-tenant hotfix pass (2026-07-16, `/plan-ceo-review`).
+## AI draft-quality fixes from the live /outreach quality audit (2026-08-23)
+
+Graded every historical review + first-touch draft on this account
+(10 reviews, 3 drafts). Mechanics pass; grounding fails. Four surgical
+fixes, all worked in the same pass:
+
+### G1. Exclude own-address messages from reply detection
+**What:** In `outreach-agent/agent.py`'s reply discovery, skip any thread
+message whose `From` is one of the account's own send addresses (the
+connected Gmail address). Today the account's own outbound messages are
+detected as "customer replies," and the model then drafts answers to
+itself — observed as a 4-turn self-conversation loop (reviews rows 6-10)
+that only stopped via manual dismiss.
+**Why:** Capture fidelity is the dominant term of the product's value
+equation; a tool that converses with itself destroys trust in one glance.
+**Priority:** P0
+
+### G2. Pin sender name/signature server-side
+**What:** Reply-draft generation must never let the model choose the
+sign-off. Inject the account's configured sender name (Settings) into the
+prompt AND strip/replace model-generated signatures server-side before
+persisting. Observed sign-offs drifted across Long / Alex / Team / Sam —
+Alex and Sam are hallucinated personas that exist nowhere in settings.
+**Why:** A wrong sender name on a prospect-facing email is unrecoverable;
+identity must be deterministic, not sampled.
+**Priority:** P0
+
+### G3. Dedupe review creation per thread+message
+**What:** Reviews rows 2 and 3 were created for the same thread 5 seconds
+apart with different drafts (`gmail_message_id` stored as None, so
+`find_review_id` can't match). Enforce uniqueness on
+(account_id, thread_id, newest message id): populate `gmail_message_id`
+at detection time and make `find_review_id` treat it as required when
+present; add a short re-check window against in-flight inserts.
+Also: two sheet rows sharing one contact email (observed: pessiskibi@
+gmail.com used for both "Jonh" and "Messi") cross-wire threads — scope
+review lookup by thread_id first, email second.
+**Why:** Double drafts mean double sends waiting to happen.
+**Priority:** P0
+
+### G4. Flag fabricated stats in the draft validator
+**What:** Extend the draft validator's problem list to catch unsourced
+quantitative claims ("reduce … by up to 30%", "% increase", "X% of
+customers") unless the stat comes verbatim from the operator's own
+settings/research note. Observed live: "Our team at Apple has developed
+solutions that can reduce project completion times by up to 30%." Add the
+pattern to whatever produces `validator_problems` so the review card shows
+"Check before sending."
+**Why:** Fabricated numbers are both an ethics failure and the classic
+spam tell the validator exists to catch.
+**Priority:** P1
+
+**Verification bar:** rerun the quality audit script after the fixes — no
+self-replies, single persona signature, no duplicate reviews, validator
+flags invented stats. Then run the test suite.
+
+## Deferred from the multi-tenant hotfix pass (2026-07-16, `/plan-ceo-review`).
 None of these block a single real customer from using the app end-to-end —
 they matter once there's more than one customer, or once sending volume grows.
 
@@ -121,9 +177,16 @@ just the one a bug report named:
 ## Deferred from the product CEO review (2026-07-19, HOLD SCOPE)
 
 ### Google verification path (blocks billing)
-**What:** Plan the exit from OAuth "Testing" status: Google verification for
-the restricted `gmail.modify` scope, including the paid third-party CASA
-security assessment.
+**Status update 2026-08-23:** The combined `gmail.modify` contract described
+below has been superseded. New connections authorize identity, Gmail
+read-only monitoring, Gmail sending, and optional Sheets/Drive incrementally.
+Legacy `gmail.modify` tokens remain usable only until those accounts reconnect.
+Verification requirements must now be evaluated against the actual narrower
+production grants, not the retired union scope.
+
+**What:** Plan the exit from OAuth "Testing" status for the incremental
+production scopes and confirm whether any remaining restricted scope requires
+a third-party security assessment.
 **Why:** Two consequences of Testing status are live today: (1) every
 account's refresh token expires after 7 days — candidates' Google connections
 self-destruct and it reads as product breakage (the reconnect flow works and
@@ -133,7 +196,7 @@ and the CASA assessment is an unpriced cost sitting in front of it.
 **Pros:** Unblocks real billing; kills the 7-day token death.
 **Cons:** Verification is slow (weeks) and CASA costs real money; worth
 researching whether narrower scopes could reduce the burden first.
-**Context:** `outreach-agent/config.py` SCOPES; `google_auth.py`
+**Context:** `outreach-agent/config.py` capability scope lists; `google_auth.py`
 `get_credentials()` handles the expiry cleanly already. Validation week
 mitigation: warn candidates, reconnect is one click (see VALIDATION-WEEK.md).
 **Effort:** M (human, mostly waiting/paperwork) → M (CC can't compress Google)
@@ -145,16 +208,10 @@ niche-pivot review considered dropping to `gmail.send`-only to skip CASA
 entirely. Turned out not to be free — `watch_replies.py`'s poll loop calls
 `gmail.find_bounce()` off the same thread-read as reply detection, which
 feeds `bounces.py`'s automated bounce-rate circuit breaker (`assert_sendable`
-→ `pause_reason` → `SendingPaused`). `gmail.send` can't read thread content,
-so send-only would silently disable that safety net along with reply
-drafting. Decision: keep `gmail.modify`, keep both features. The CASA filing
-itself is deferred, not skipped — unverified apps run up to the 100-user
-ceiling with no CASA cost (just the warning screen and 7-day token expiry),
-so the assessment is filed when approaching that ceiling, not before there is
-evidence anyone will use the product (per the 2026-08-06 revamp plan, T6a).
-This is no longer a "worth researching" cost — but it is not an urgent one
-for a sub-100-user product, which is why the priority below stays where the
-deferral puts it.
+→ `pause_reason` → `SendingPaused`). That safety requirement still needs Gmail
+read access, but it no longer justifies edit/delete permission. Monitoring now
+uses `gmail.readonly`; sending is a separate `gmail.send` grant. The old
+decision to keep `gmail.modify` is explicitly reversed.
 
 ### Background reply watcher — code done 2026-07-29, still blocked on the host
 **What:** Server-side scheduler for reply checking, so detection doesn't
@@ -327,8 +384,8 @@ original decision: `send_reply` never checked `suppressions_db` at all
 the outreach-send path); `original_draft_reply` was written as `""` instead
 of `NULL` on any drafting failure, which Phase 6's edit-diff learning would
 have read as "replace the model's output wholesale" rather than "the model
-wrote nothing." A `degraded_classification` column (boot-checked via
-`accounts_db._MIGRATED_COLUMNS`, not a manual migration — `add_review` is
+wrote nothing." A `degraded_classification` column (boot-checked via the
+protected schema contract, not a manual migration — `add_review` is
 the insert path for every review, so a missing column here stops reply
 detection entirely, not just one button) marks any review created while the
 Send-As lookup itself failed and fell back to just the primary address. 29
@@ -752,21 +809,18 @@ targeted audit of `billing.py`/`plans.py`/`bounces.py`) is still the
 highest-value thing to do before trusting `main` as a base for anything
 further.
 
-### Migration tooling
-**What:** No migration tool exists. `outreach-agent/README.md` documents
-hand-run `alter table` against the live database, and `accounts_db.
-_MIGRATED_COLUMNS` needs a boot-check entry per column.
-**Why:** The daily-use build adds roughly ten columns across four tables
-(`original_subject`, `original_body`, `original_draft_reply`, `sending_address`,
-`token_granted_at`, `worker_heartbeat_at`, `last_cycle_errors`, `last_error`,
-`push_subscription`, `notifications_stale_at`, `last_queue_opened_at`) with no
-staging project to rehearse against.
-**Pros:** Makes a ten-column change routine instead of ten careful manual steps.
-**Cons:** Real infra work for a schema that is still moving.
-**Context:** `outreach-agent/accounts_db.py` `_MIGRATED_COLUMNS`;
-`outreach-agent/README.md` migration section.
-**Effort:** M (human) → S (CC + gstack) · **Priority:** P2
-**Depends on:** Nothing blocking.
+### Migration tooling (resolved)
+**What:** The schema previously depended on hand-run SQL fragments and an
+inline `_MIGRATED_COLUMNS` boot check.
+**Resolution:** `supabase/migrations/20260827000000_sendkeep_baseline.sql` is
+now the canonical, idempotent baseline. `outreach-agent/schema_contract.py`
+calls the protected `sendkeep_schema_contract()` RPC to verify columns,
+nullability, indexes, RLS, and check constraints. CI rebuilds the database and
+runs pgTAP plus `supabase db lint`; production changes go through the protected
+GitHub Actions workflow described in `docs/operations.md`.
+**Follow-up:** Create a separate forward-only migration for each future schema
+change and rehearse it in staging before production. Do not edit the deployed
+baseline or reintroduce application-owned DDL.
 
 ### get_credentials should update the caller's account dict
 **What:** `google_auth.get_credentials` persists a refreshed token to Supabase

@@ -8,6 +8,7 @@ import contextlib
 from datetime import datetime, timezone
 import hashlib
 import io
+import json
 import os
 import sys
 import time
@@ -15,12 +16,24 @@ import traceback
 import zipfile
 from pathlib import Path
 
+import pytest
+
 # Make config importable even without a .env (harmless if one exists).
 for var, val in {
     "OPENROUTER_API_KEY": "test-key",
     "APP_SECRET_KEY": "test-secret",
     "SUPABASE_URL": "http://localhost",
     "SUPABASE_SECRET_KEY": "test-secret-key",
+    # Worker telemetry is exercised with explicit fakes below. The main suite
+    # must never reach Supabase merely because a watcher unit test runs.
+    "WORKER_TELEMETRY_ENABLED": "0",
+    "TRACKED_THREADS_ENABLED": "0",
+    "GMAIL_THREAD_DISCOVERY_ENABLED": "0",
+    # Legacy auto-send unit cases explicitly exercise the controlled path;
+    # production defaults are verified separately with AUTO_SEND_ENABLED unset.
+    "AUTO_SEND_ENABLED": "1",
+    "COMMITMENTS_ENABLED": "0",
+    "VOICE_FEEDBACK_ENABLED": "0",
 }.items():
     os.environ.setdefault(var, val)
 
@@ -31,11 +44,14 @@ import accounts_db
 import agent
 import auth
 import bounces
+import commitments
+import commitments_db
 import config
 import dns_check
 import drafts_db
 import gmail
 import google_auth
+import notify
 import providers
 import ratelimit
 import reviews_db
@@ -43,10 +59,13 @@ import sheet_template
 import sheets
 import send_outreach
 import suppressions_db
+import tracked_threads
 import watch_replies
 
 import plans
 import usage
+import voice_signals
+import worker_db
 
 # Plan quotas are read before nearly every operation (prepare_drafts,
 # find_leads) and metered after nearly every success, so without a default these
@@ -635,6 +654,47 @@ def test_add_review_writes_none_not_empty_string_when_there_is_no_draft():
     assert fake.rows[0]["draft_reply"] == ""
 
 
+def test_add_review_preserves_a_missing_sheet_row_for_gmail_only_reviews():
+    """A Gmail-discovered thread may have no Sheet row.  Persist NULL rather
+    than inventing a row number that could later address the wrong contact."""
+    fake = _ReviewsTable()
+    with patched(reviews_db, "_get_client", lambda: fake):
+        reviews_db.add_review(
+            "a1", None, "John", "john@x.com", "t1", "hi", "",
+            gmail_message_id="msg-1", status="flagged",
+        )
+    assert fake.rows[0]["row_index"] is None
+
+
+def test_add_review_retries_with_a_reserved_marker_on_a_legacy_not_null_schema():
+    """Code and schema deploy independently. A pre-migration database rejects
+    the truthful NULL; zero is outside the valid Sheet row domain and keeps the
+    reply visible until the migration normalizes it back to NULL."""
+    class LegacyReviewsTable(_ReviewsTable):
+        rejected_null = False
+
+        def execute(self):
+            if (
+                self._mode == "insert"
+                and self._values.get("row_index") is None
+                and not self.rejected_null
+            ):
+                self.rejected_null = True
+                raise Exception(
+                    "23502: null value in column row_index violates not-null constraint"
+                )
+            return super().execute()
+
+    fake = LegacyReviewsTable()
+    with patched(reviews_db, "_get_client", lambda: fake):
+        review_id = reviews_db.add_review(
+            "a1", None, "John", "john@x.com", "t1", "hi", "",
+            gmail_message_id="msg-legacy", status="flagged",
+        )
+    assert review_id == 1
+    assert fake.rows[0]["row_index"] == reviews_db.LEGACY_NO_SHEET_ROW
+
+
 def test_add_review_accepts_an_explicit_status_and_degraded_flag():
     fake = _ReviewsTable()
     with patched(reviews_db, "_get_client", lambda: fake):
@@ -644,6 +704,23 @@ def test_add_review_accepts_an_explicit_status_and_degraded_flag():
         )
     assert fake.rows[0]["status"] == "flagged"
     assert fake.rows[0]["degraded_classification"] is True
+
+
+def test_add_manual_review_uses_message_dedupe_without_creating_an_alert():
+    class RpcCapableReviews(_ReviewsTable):
+        def rpc(self, *_args, **_kwargs):
+            raise AssertionError("an operator-open composer must not enqueue an email alert")
+
+    fake = RpcCapableReviews()
+    with patched(reviews_db, "_get_client", lambda: fake):
+        review_id, created = reviews_db.add_manual_review(
+            "a1", None, "John", "john@x.com", "t1", "latest reply",
+            "draft text", gmail_message_id="msg-manual", return_created=True,
+        )
+
+    assert (review_id, created) == (1, True)
+    assert fake.rows[0]["gmail_message_id"] == "msg-manual"
+    assert fake.rows[0]["original_draft_reply"] == "draft text"
 
 
 def test_confirm_sender_promotes_flagged_to_pending_with_the_draft():
@@ -1052,7 +1129,8 @@ def test_the_model_draft_survives_the_operator_edit():
     reads it."""
     cap = _Capture()
     with patched(drafts_db, "_get_client", lambda: cap), \
-         patched(drafts_db, "has_pending_for_row", lambda a, r: False):
+         patched(drafts_db, "has_pending_for_row", lambda a, r: False), \
+         patched(drafts_db, "has_first_touch_conflict", lambda *a, **k: False):
         drafts_db.add_draft("a1", 2, "John", "j@x.com", "Acme",
                             "Model subject", "Model body")
     assert cap.inserted["original_subject"] == "Model subject"
@@ -1683,6 +1761,8 @@ def test_update_row_uses_verified_index():
 
     class Values:
         def get(self, spreadsheetId, range):
+            if range == "A1:I1":
+                return Exec({"values": [sheets.EXPECTED_HEADER]})
             # Row 2 no longer holds the expected email -- the fast path
             # must miss here so update_row's fallback scan (get_all_rows,
             # faked below) is what actually follows it to row 5.
@@ -1814,6 +1894,90 @@ def test_get_reply_check_rows_filters_status():
     assert [i for i, _ in got] == [2, 3]
 
 
+def test_list_recent_sent_threads_discovers_external_recipients_and_dedupes():
+    class Exec:
+        def __init__(self, value):
+            self.value = value
+
+        def execute(self):
+            return self.value
+
+    messages = {
+        "m1": {"payload": {"headers": [
+            {"name": "To", "value": "Jane Doe <jane@example.com>"},
+            {"name": "Cc", "value": "me@me.com"},
+            {"name": "Subject", "value": "Checking in"},
+        ]}},
+        "m2": {"payload": {"headers": [
+            {"name": "To", "value": "jane@example.com"},
+            {"name": "Subject", "value": "Re: Checking in"},
+        ]}},
+        "m3": {"payload": {"headers": [
+            {"name": "To", "value": "me@me.com"},
+            {"name": "Subject", "value": "Internal note"},
+        ]}},
+    }
+
+    class Messages:
+        def list(self, **kwargs):
+            assert kwargs["q"] == "in:sent newer_than:30d"
+            assert kwargs["maxResults"] == 50
+            return Exec({"messages": [
+                {"id": "m1", "threadId": "t1"},
+                {"id": "m2", "threadId": "t1"},
+                {"id": "m3", "threadId": "t2"},
+            ]})
+
+        def get(self, **kwargs):
+            return Exec(messages[kwargs["id"]])
+
+    class Users:
+        def messages(self):
+            return Messages()
+
+    with patched(gmail, "_get_service", lambda account: type("S", (), {"users": lambda self: Users()})()):
+        found = gmail.list_recent_sent_threads(
+            ACCOUNT, {"me@me.com"}, days=30, max_threads=50
+        )
+
+    assert found == [{
+        "thread_id": "t1",
+        "message_id": "m1",
+        "email": "jane@example.com",
+        "name": "Jane Doe",
+        "subject": "Checking in",
+        "source": "gmail_discovery",
+    }]
+
+
+def test_find_sent_reply_requires_exact_sent_recipient_subject_and_body():
+    """An ambiguous follow-up is resolved only by an exact Gmail Sent match."""
+    raw = base64.urlsafe_b64encode(b"A useful reminder\n\nUnsubscribe: https://x.test/u").decode()
+    thread = {
+        "messages": [
+            {"id": "incoming", "labelIds": [], "payload": {"headers": [
+                {"name": "Subject", "value": "Checking in"},
+            ], "body": {"data": base64.urlsafe_b64encode(b"hello").decode()}}},
+            {"id": "sent", "labelIds": ["SENT"], "payload": {"headers": [
+                {"name": "To", "value": "Jane <jane@example.com>"},
+                {"name": "Subject", "value": "Re: Checking in"},
+            ], "body": {"data": raw}}},
+        ],
+    }
+    assert gmail.find_sent_reply(
+        ACCOUNT, "t1", "jane@example.com",
+        "A useful reminder\n\nUnsubscribe: https://x.test/u", thread=thread,
+    )["id"] == "sent"
+    assert gmail.find_sent_reply(ACCOUNT, "t1", "jane@example.com", "different", thread=thread) is None
+    assert gmail.find_sent_reply(ACCOUNT, "t1", "other@example.com", "A useful reminder\n\nUnsubscribe: https://x.test/u", thread=thread) is None
+
+
+def test_auto_send_is_blocked_unless_deployment_enables_it():
+    with patched(config, "AUTO_SEND_ENABLED", False):
+        with pytest.raises(RuntimeError, match="disabled in safety-first mode"):
+            send_outreach.prepare_drafts(ACCOUNT, auto_send=True)
+
+
 # ------------------------------------------------------------- watch_replies
 
 def _watch_env(calls, reply_map, existing_reviews=None, bounce_map=None):
@@ -1827,15 +1991,16 @@ def _watch_env(calls, reply_map, existing_reviews=None, bounce_map=None):
 
     def fake_add_review(account_id, row_index, name, email, thread_id, customer_reply,
                         draft_reply, gmail_message_id=None, status="pending",
-                        degraded_classification=False, validator_problems=None):
+                        degraded_classification=False, validator_problems=None,
+                        return_created=False):
         calls.setdefault("add_review", []).append(
             (thread_id, customer_reply, draft_reply, status, degraded_classification, email)
         )
         key = (thread_id, gmail_message_id)
         if key in existing:
-            return existing[key]
+            return (existing[key], False) if return_created else existing[key]
         existing[key] = len(existing) + 1
-        return existing[key]
+        return (existing[key], True) if return_created else existing[key]
 
     def fake_get_reply(account, t, e, own_addresses, thread=None):
         result = reply_map.get(t)
@@ -1868,13 +2033,18 @@ def _watch_env(calls, reply_map, existing_reviews=None, bounce_map=None):
         (sheets, "require_full_header", lambda account: calls.setdefault("header_gate", []).append(True)),
         (sheets, "get_reply_check_rows", lambda account: calls["rows"]),
         (drafts_db, "list_active_follow_ups", lambda account_id: []),
+        (drafts_db, "list_sends_needing_reconciliation", lambda account_id: []),
+        (drafts_db, "list_follow_ups_needing_reconciliation", lambda account_id: []),
+        (reviews_db, "list_reviews_stuck_in_send", lambda account_id: []),
         (sheets, "update_row", lambda account, idx, **kw: calls.setdefault("update_row", []).append((idx, kw))),
         (gmail, "get_thread", fake_get_thread),
         (gmail, "get_own_addresses", lambda account: ({"me@me.com"}, False)),
         (gmail, "get_latest_reply_with_history", fake_get_reply),
         (gmail, "find_bounce", lambda account, t, e, thread=None: bounces_by_thread.get(t)),
+        (reviews_db, "list_sent_bodies_for_thread", lambda account_id, thread_id: []),
         (suppressions_db, "add", lambda account_id, email, source="unsubscribe_link":
             calls.setdefault("suppressed", []).append((email, source))),
+        (suppressions_db, "is_suppressed", lambda account_id, email: False),
         (plans, "check", lambda account, bucket: None),
         (agent, "draft_reply", lambda account, name, company, reply, history=():
             calls.setdefault("draft", []).append((name, company, reply, list(history))) or f"draft for {reply}"),
@@ -1899,6 +2069,451 @@ def test_check_for_replies_happy_path():
     assert calls["draft"] == [("John", "Acme", "yes let's talk", [(False, "orig")])]
     assert calls["update_row"] == [(2, {"status": "Replied", "expect_email": "john@x.com"})]
     assert calls["add_review"][0][0] == "t1"
+
+
+def test_tracked_thread_is_checked_when_its_sheet_row_is_gone():
+    calls = {"rows": []}
+    tracked = [{
+        "thread_id": "t1",
+        "name": "John",
+        "email": "john@x.com",
+        "company": "Acme",
+        "row_index": None,
+    }]
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t1": ("still interested", [(False, "orig")])}):
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(
+            watch_replies.tracked_threads, "list_active", lambda account_id: tracked,
+        ))
+        result = watch_replies.check_for_replies(ACCOUNT)
+    assert len(result["reviews"]) == 1
+    assert calls["thread_reads"] == ["t1"]
+    assert "update_row" not in calls, "a deleted Sheet row must not block Gmail coverage"
+
+
+def test_old_tracked_thread_cannot_mark_a_reused_sheet_row_replied():
+    calls = {"rows": [
+        (2, _row(status="Sent", thread="t-new", name="John", email="john@x.com")),
+    ]}
+    tracked = [{
+        "thread_id": "t-old",
+        "name": "John",
+        "email": "john@x.com",
+        "company": "Acme",
+        "row_index": 2,
+        "source": "sheet_backfill",
+    }]
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t-old": ("an old reply", [(False, "old email")])}):
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(
+            watch_replies.tracked_threads, "list_active", lambda account_id: tracked,
+        ))
+        result = watch_replies.check_for_replies(ACCOUNT)
+
+    assert len(result["reviews"]) == 1, "the old Gmail reply remains visible in its own audit trail"
+    assert "update_row" not in calls, "an old thread must not mutate a row now owned by a new thread"
+
+
+def test_tracked_thread_works_for_an_account_without_a_sheet():
+    calls = {"rows": []}
+    tracked = [{
+        "thread_id": "t1",
+        "name": "John",
+        "email": "john@x.com",
+        "company": "Acme",
+        "row_index": None,
+    }]
+
+    def sheet_must_not_be_read(account):
+        raise AssertionError("a no-Sheet tracked account must not read Sheets")
+
+    account = {**ACCOUNT, "google_sheet_id": ""}
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t1": ("still interested", [(False, "orig")])}):
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(sheets, "get_reply_check_rows", sheet_must_not_be_read))
+        stack.enter_context(patched(
+            watch_replies.tracked_threads, "list_active", lambda account_id: tracked,
+        ))
+        result = watch_replies.check_for_replies(account)
+    assert len(result["reviews"]) == 1
+    assert result["row_errors"] == []
+    assert calls["thread_reads"] == ["t1"]
+
+
+def test_reply_commitment_is_extracted_and_persisted_as_an_additive_signal():
+    calls = {"rows": [(2, _row(status="Sent", thread="t1", name="John", email="john@x.com"))]}
+    saved = []
+
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t1": ("I'll send the deck by Friday.", [])}):
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(
+            commitments_db, "add_candidates",
+            lambda account_id, thread_id, message_id, candidates:
+                saved.extend(candidates) or [dict(candidates[0], id=11)],
+        ))
+        result = watch_replies.check_for_replies(ACCOUNT)
+
+    assert len(result["commitments"]) == 1
+    assert saved[0]["action_text"] == "send the deck by Friday"
+    assert saved[0]["due_text"].lower() == "by friday"
+
+
+def test_off_sheet_reply_commitment_is_stored_before_sender_confirmation():
+    calls = {"rows": [(2, _row(status="Sent", thread="t1", name="John", email="john@x.com"))]}
+    saved = []
+    off_sheet = {
+        "text": "I'll send the security docs by Friday.",
+        "history": [],
+        "message_id": "off-sheet-message",
+        "kind": "off_sheet",
+        "answered_elsewhere": False,
+        "from_addr": "assistant@other.com",
+    }
+
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t1": off_sheet}):
+            stack.enter_context(patched(*target))
+        stack.enter_context(patched(
+            commitments_db, "add_candidates",
+            lambda account_id, thread_id, message_id, candidates:
+                saved.extend(candidates) or [dict(candidates[0], id=12)],
+        ))
+        result = watch_replies.check_for_replies(ACCOUNT)
+
+    assert len(result["commitments"]) == 1
+    assert saved[0]["action_text"] == "send the security docs by Friday"
+
+
+def test_an_echo_of_our_own_message_never_cancels_a_pending_follow_up():
+    """Regression: the echo check originally ran AFTER
+    cancel_follow_up(follow_up, "reply"), so our own misclassified outgoing
+    message killed a scheduled follow-up before anyone noticed it was never a
+    customer reply. Echo detection must act before anything else does."""
+    calls = {"rows": [(2, _row(status="Sent", thread="t1", name="John", email="john@x.com", body="orig"))]}
+    follow_up = {"id": 77, "thread_id": "t1", "name": "John",
+                 "email": "john@x.com", "company": "Acme"}
+    acted_on = []
+
+    def fake_mark_replied(account_id, draft_id):
+        acted_on.append(("replied", draft_id))
+        return True
+
+    def fake_cancel(account_id, draft_id, reason):
+        acted_on.append((reason, draft_id))
+        return True
+
+    def fake_dismiss_for_source(account_id, source_draft_id):
+        acted_on.append(("dismissed", source_draft_id))
+
+    with contextlib.ExitStack() as stack:
+        for target in _watch_env(calls, {"t1": ("YES   let's  talk", [(False, "orig")])}):
+            stack.enter_context(patched(*target))
+        for target in [
+            # What we sent on this thread differs only in case/whitespace --
+            # exactly what the normalizer exists to see through.
+            (reviews_db, "list_sent_bodies_for_thread",
+             lambda account_id, t: ["yes let's TALK"]),
+            (drafts_db, "list_active_follow_ups", lambda account_id: [follow_up]),
+            (drafts_db, "list_follow_ups_needing_reconciliation", lambda account_id: []),
+            (drafts_db, "mark_follow_up_replied", fake_mark_replied),
+            (drafts_db, "cancel_follow_up", fake_cancel),
+            (reviews_db, "dismiss_follow_up_for_source", fake_dismiss_for_source),
+        ]:
+            stack.enter_context(patched(*target))
+        result = watch_replies.check_for_replies(ACCOUNT)
+
+    assert result["reviews"] == [], "an echo must not be queued as a reply"
+    assert acted_on == [], (
+        "the pending follow-up must survive an echo untouched "
+        f"(got {acted_on})"
+    )
+
+
+def test_stuck_reply_send_is_reconciled_from_gmail_sent_proof():
+    """A reply claimed for sending whose request died before mark_sent ran
+    must be closed by the worker when Gmail's Sent thread proves it left --
+    otherwise a delivered reply is recorded nowhere."""
+    stuck = [{"id": 9, "thread_id": "t1", "email": "j@x.com", "draft_reply": "on my way"}]
+    marked = []
+
+    with contextlib.ExitStack() as stack:
+        for target in [
+            (reviews_db, "list_reviews_stuck_in_send", lambda account_id: stuck),
+            (gmail, "get_thread", lambda account, t: {"messages": [], "id": t}),
+            (gmail, "find_sent_reply",
+             lambda account, t, to, body, thread=None: {"id": "sent-1"}),
+            (reviews_db, "mark_sent",
+             lambda account_id, rid, sent_body: marked.append((rid, sent_body))),
+            (reviews_db, "mark_stuck_send_visible",
+             lambda account_id, rid: pytest.fail("proof means the row is closed, not surfaced")),
+        ]:
+            stack.enter_context(patched(*target))
+        errors = []
+        watch_replies._reconcile_review_sends(ACCOUNT, errors)
+
+    assert errors == []
+    assert marked == [(9, "on my way")], marked
+
+
+def test_unprovable_stuck_reply_send_becomes_visible_without_losing_the_fence():
+    """When Gmail offers no exact proof (operator edited before sending), the
+    row must surface as send_uncertain -- visible and permanently
+    non-sendable -- instead of staying invisible forever. Never a retry."""
+    stuck = [{"id": 10, "thread_id": "t1", "email": "j@x.com", "draft_reply": ""}]
+    flipped = []
+    sent_calls = []
+
+    with contextlib.ExitStack() as stack:
+        for target in [
+            (reviews_db, "list_reviews_stuck_in_send", lambda account_id: stuck),
+            (gmail, "get_thread", lambda account, t: {"messages": [], "id": t}),
+            (gmail, "find_sent_reply",
+             lambda account, t, to, body, thread=None: None),
+            (reviews_db, "mark_sent",
+             lambda account_id, rid, sent_body: sent_calls.append(rid)),
+            (reviews_db, "mark_stuck_send_visible",
+             lambda account_id, rid: flipped.append(rid) or True),
+        ]:
+            stack.enter_context(patched(*target))
+        errors = []
+        watch_replies._reconcile_review_sends(ACCOUNT, errors)
+
+    assert errors == []
+    assert sent_calls == [], "no proof means never mark sent"
+    assert flipped == [10], flipped
+
+
+def test_commitment_extractor_stays_quiet_for_non_promises_and_resolves_dates():
+    reference = datetime(2026, 8, 19, 14, 0, tzinfo=timezone.utc)  # Wednesday
+    assert commitments.extract_commitments("Sounds good, let's talk soon.", reference) == []
+    assert commitments.extract_commitments("we will have a", reference) == []
+    assert commitments.extract_commitments("I'll send the", reference) == []
+    result = commitments.extract_commitments("I'll send the deck by Friday.", reference)
+    assert len(result) == 1
+    assert result[0]["action_text"] == "send the deck by Friday"
+    assert result[0]["due_at"].startswith("2026-08-21T09:00:00")
+    multiple = commitments.extract_commitments(
+        "I'll send the deck by Friday. I'll schedule the demo tomorrow.", reference,
+    )
+    assert [item["due_text"].lower() for item in multiple] == ["by friday", "tomorrow"]
+
+
+def test_commitment_extractor_accepts_gmail_iso_timestamp():
+    result = commitments.extract_commitments(
+        "I'll send the deck by Friday.",
+        "2026-08-19T14:00:00+00:00",
+    )
+    assert len(result) == 1
+    assert result[0]["due_at"].startswith("2026-08-21T09:00:00")
+
+
+def test_due_commitments_use_the_atomic_mark_and_alert_transition():
+    due = [{"id": 17, "status": "confirmed", "action_text": "send the deck"}]
+    marked = []
+    errors = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(
+            watch_replies.commitments_db,
+            "list_due",
+            lambda account_id: due,
+        ))
+        stack.enter_context(patched(
+            watch_replies.commitments_db,
+            "mark_due",
+            lambda account_id, commitment_id: marked.append((account_id, commitment_id)) or True,
+        ))
+        result = watch_replies._process_due_commitments({"id": "a1"}, errors)
+    assert errors == []
+    assert marked == [("a1", 17)]
+    assert result == [{"id": 17, "status": "due", "action_text": "send the deck"}]
+
+
+class _CommitmentsTable:
+    def __init__(self, rows):
+        self.rows = rows
+        self._eq = []
+        self._in = []
+        self._lte = []
+        self._values = None
+        self._mode = None
+
+    def table(self, name): return self
+    def select(self, cols):
+        self._mode = "select"
+        return self
+    def update(self, values):
+        self._mode = "update"
+        self._values = values
+        return self
+    def eq(self, col, val):
+        self._eq.append((col, val))
+        return self
+    def in_(self, col, values):
+        self._in.append((col, values))
+        return self
+    def lte(self, col, value):
+        self._lte.append((col, value))
+        return self
+    def order(self, *args, **kwargs): return self
+    def limit(self, *args, **kwargs): return self
+    def execute(self):
+        matched = [
+            row for row in self.rows
+            if all(row.get(col) == value for col, value in self._eq)
+            and all(row.get(col) in values for col, values in self._in)
+            and all(row.get(col) is not None and row.get(col) <= value for col, value in self._lte)
+        ]
+        if self._mode == "update":
+            for row in matched:
+                row.update(self._values)
+        self._eq, self._in, self._lte, self._values, self._mode = [], [], [], None, None
+        return type("R", (), {"data": matched})()
+
+
+def test_commitment_confirmation_does_not_erase_detected_due_date():
+    due = "2026-08-21T09:00:00+00:00"
+    fake = _CommitmentsTable([{
+        "id": 4, "account_id": "a1", "status": "detected", "due_at": due,
+        "reminder_at": None,
+    }])
+    with patched(commitments_db, "_get_client", lambda: fake):
+        confirmed = commitments_db.confirm("a1", 4)
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["due_at"] == due
+    assert fake.rows[0]["reminder_at"] is None
+
+
+def test_commitment_confirmation_can_attach_optional_pipeline_value():
+    fake = _CommitmentsTable([{
+        "id": 5, "account_id": "a1", "status": "detected", "due_at": None,
+        "reminder_at": None,
+    }])
+    with patched(commitments_db, "_get_client", lambda: fake):
+        confirmed = commitments_db.confirm("a1", 5, estimated_value=14000)
+    assert confirmed["estimated_value"] == 14000
+
+
+def test_commitment_completion_is_idempotent_and_keeps_the_graph_row():
+    fake = _CommitmentsTable([{
+        "id": 6, "account_id": "a1", "status": "due", "completed_at": None,
+    }])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(commitments_db, "_get_client", lambda: fake))
+        stack.enter_context(patched(commitments_db, "enabled", lambda: True))
+        first = commitments_db.complete("a1", 6)
+        second = commitments_db.complete("a1", 6)
+    assert first["status"] == "completed"
+    assert second["status"] == "completed"
+    assert fake.rows[0]["status"] == "completed"
+
+
+def test_commitment_summary_separates_open_value_from_completed_value():
+    fake = _CommitmentsTable([
+        {"id": 7, "account_id": "a1", "status": "confirmed", "estimated_value": 14000},
+        {"id": 8, "account_id": "a1", "status": "due", "estimated_value": None},
+        {"id": 9, "account_id": "a1", "status": "completed", "estimated_value": 9000},
+    ])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(commitments_db, "_get_client", lambda: fake))
+        stack.enter_context(patched(commitments_db, "enabled", lambda: True))
+        result = commitments_db.summary("a1")
+    assert result["open_count"] == 2
+    assert result["overdue_count"] == 1
+    assert result["valued_count"] == 1
+    assert result["estimated_value"] == 14000.0
+    assert result["value_provenance"] == "user_entered"
+    assert result["completed_count"] == 1
+    assert result["reviewed_count"] == 3
+    assert result["dismissed_count"] == 0
+    assert result["precision_status"] == "healthy"
+
+
+def test_commitment_precision_thresholds_make_false_positives_the_gate():
+    def status_for(dismissed, confirmed):
+        rows = [
+            {
+                "id": i, "account_id": "a1", "status": "dismissed",
+                "dismissal_reason": "incorrect", "estimated_value": None,
+            }
+            for i in range(dismissed)
+        ] + [
+            {"id": 100 + i, "account_id": "a1", "status": "completed", "estimated_value": None}
+            for i in range(confirmed)
+        ]
+        fake = _CommitmentsTable(rows)
+        with patched(commitments_db, "_get_client", lambda: fake), \
+             patched(commitments_db, "enabled", lambda: True):
+            return commitments_db.summary("a1")
+
+    assert status_for(0, 10)["precision_status"] == "healthy"
+    assert status_for(9, 91)["precision_status"] == "healthy"
+    assert status_for(1, 9)["precision_status"] == "dangerous"
+    assert status_for(2, 8)["precision_status"] == "dangerous"
+    assert status_for(20, 80)["precision_status"] == "dangerous"
+    assert status_for(21, 79)["precision_status"] == "stop"
+    stopped = status_for(3, 7)
+    assert stopped["precision_status"] == "stop"
+    assert stopped["stop_onboarding"] is True
+
+
+def test_commitment_precision_counts_only_explicit_incorrect_dismissals():
+    fake = _CommitmentsTable([
+        {
+            "id": 1, "account_id": "a1", "status": "dismissed",
+            "dismissal_reason": "incorrect", "estimated_value": None,
+        },
+        {
+            "id": 2, "account_id": "a1", "status": "dismissed",
+            "dismissal_reason": "not_applicable", "estimated_value": None,
+        },
+        {"id": 3, "account_id": "a1", "status": "completed", "estimated_value": None},
+    ])
+    with patched(commitments_db, "_get_client", lambda: fake), \
+         patched(commitments_db, "enabled", lambda: True):
+        result = commitments_db.summary("a1")
+    assert result["reviewed_count"] == 3
+    assert result["dismissed_count"] == 1
+    assert result["false_positive_rate"] == pytest.approx(1 / 3)
+    assert result["stop_onboarding"] is True
+
+
+def test_global_promise_precision_does_not_gate_on_three_samples():
+    fake = _CommitmentsTable([
+        {
+            "id": 1, "account_id": "a1", "status": "dismissed",
+            "dismissal_reason": "incorrect",
+        },
+        {"id": 2, "account_id": "a2", "status": "completed"},
+        {"id": 3, "account_id": "a3", "status": "completed"},
+    ])
+    with patched(commitments_db, "_get_client", lambda: fake), \
+         patched(commitments_db, "enabled", lambda: True):
+        result = commitments_db.onboarding_precision()
+    assert result["reviewed_count"] == 3
+    assert result["false_positive_rate"] == pytest.approx(1 / 3)
+    assert result["precision_status"] == "insufficient_data"
+    assert result["stop_onboarding"] is False
+
+
+def test_commitment_queue_excludes_confirmed_and_lists_only_due_confirmations():
+    now = "2026-08-21T09:00:00+00:00"
+    fake = _CommitmentsTable([
+        {"id": 1, "account_id": "a1", "status": "detected", "reminder_at": None},
+        {"id": 2, "account_id": "a1", "status": "confirmed", "reminder_at": "2026-08-20T09:00:00+00:00"},
+        {"id": 3, "account_id": "a1", "status": "confirmed", "reminder_at": "2026-08-22T09:00:00+00:00"},
+        {"id": 4, "account_id": "a1", "status": "due", "reminder_at": "2026-08-19T09:00:00+00:00"},
+    ])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(commitments_db, "_get_client", lambda: fake))
+        stack.enter_context(patched(commitments_db, "enabled", lambda: True))
+        active = commitments_db.list_active("a1")
+        due = commitments_db.list_due("a1", now=now)
+    assert [row["id"] for row in active] == [1, 4]
+    assert [row["id"] for row in due] == [2]
 
 
 def test_the_quoted_chain_is_trimmed_before_storage_but_not_before_dedupe():
@@ -2138,7 +2753,7 @@ def test_run_all_accounts_processes_every_account_and_isolates_failures():
     heartbeats = []
     sleeps = []
     with contextlib.ExitStack() as stack:
-        stack.enter_context(patched(accounts_db, "list_accounts_with_a_sheet", lambda: accounts))
+        stack.enter_context(patched(accounts_db, "list_accounts_for_worker", lambda: accounts))
         stack.enter_context(patched(watch_replies, "check_for_replies", fake_check))
         stack.enter_context(patched(accounts_db, "set_worker_heartbeat",
             lambda aid, error=None: heartbeats.append((aid, error))))
@@ -2162,7 +2777,7 @@ def test_run_all_accounts_skips_gmail_work_for_a_dead_token_but_keeps_heartbeat_
     checked = []
     heartbeats = []
     with contextlib.ExitStack() as stack:
-        stack.enter_context(patched(accounts_db, "list_accounts_with_a_sheet", lambda: accounts))
+        stack.enter_context(patched(accounts_db, "list_accounts_for_worker", lambda: accounts))
         stack.enter_context(patched(watch_replies, "check_for_replies",
             lambda a: checked.append(a) or {"reviews": [], "row_errors": [], "bounces": []}))
         stack.enter_context(patched(accounts_db, "set_worker_heartbeat",
@@ -2189,7 +2804,7 @@ def test_run_all_accounts_debug_mode_never_writes_a_heartbeat():
 def test_run_all_accounts_survives_an_account_listing_failure():
     def boom():
         raise RuntimeError("supabase down")
-    with patched(accounts_db, "list_accounts_with_a_sheet", boom):
+    with patched(accounts_db, "list_accounts_for_worker", boom):
         result = watch_replies.run_all_accounts()
     assert result == {"checked": 0, "skipped_no_token": 0, "failed": 0, "elapsed": 0.0}
 
@@ -2202,7 +2817,7 @@ def test_run_all_accounts_warns_when_a_cycle_runs_long():
     accounts = [_acct("a1")]
     buf = io.StringIO()
     with contextlib.ExitStack() as stack:
-        stack.enter_context(patched(accounts_db, "list_accounts_with_a_sheet", lambda: accounts))
+        stack.enter_context(patched(accounts_db, "list_accounts_for_worker", lambda: accounts))
         stack.enter_context(patched(watch_replies, "check_for_replies",
             lambda a: {"reviews": [], "row_errors": [], "bounces": []}))
         stack.enter_context(patched(accounts_db, "set_worker_heartbeat", lambda *a, **k: None))
@@ -2210,6 +2825,253 @@ def test_run_all_accounts_warns_when_a_cycle_runs_long():
         stack.enter_context(contextlib.redirect_stdout(buf))
         watch_replies.run_all_accounts()
     assert "WARNING" in buf.getvalue() and "longer than the" in buf.getvalue()
+
+
+def test_run_all_accounts_records_a_durable_cycle_and_account_event():
+    accounts = [_acct("a1")]
+    events = []
+    finished = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(watch_replies.worker_db, "start_run", lambda: 42))
+        stack.enter_context(patched(
+            watch_replies.worker_db, "record_event",
+            lambda *args: events.append(args),
+        ))
+        stack.enter_context(patched(
+            watch_replies.worker_db, "finish_run",
+            lambda *args: finished.append(args),
+        ))
+        stack.enter_context(patched(accounts_db, "list_accounts_for_worker", lambda: accounts))
+        stack.enter_context(patched(
+            watch_replies, "check_for_replies",
+            lambda a: {"reviews": [1], "row_errors": [], "bounces": []},
+        ))
+        stack.enter_context(patched(accounts_db, "set_worker_heartbeat", lambda *a, **k: None))
+        result = watch_replies.run_all_accounts()
+
+    assert events == [(42, "a1", "account_check", "success", {
+        "reviews": 1, "row_errors": 0, "bounces": 0,
+    })]
+    assert finished and finished[0][0] == 42
+    assert finished[0][2] == "success"
+    assert finished[0][1]["checked"] == 1
+    assert finished[0][1]["degraded"] == 0
+    assert finished[0][1]["degraded_reasons"] == {}
+    assert result["failed"] == 0
+
+
+def test_run_all_accounts_persists_bounded_degraded_reason_and_raw_event_detail():
+    accounts = [_acct("a1")]
+    events = []
+    finished = []
+    raw_error = "reviews insert failed: constraint 23502"
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(watch_replies.worker_db, "start_run", lambda: 43))
+        stack.enter_context(patched(
+            watch_replies.worker_db, "record_event",
+            lambda *args: events.append(args),
+        ))
+        stack.enter_context(patched(
+            watch_replies.worker_db, "finish_run",
+            lambda *args: finished.append(args),
+        ))
+        stack.enter_context(patched(accounts_db, "list_accounts_for_worker", lambda: accounts))
+        stack.enter_context(patched(
+            watch_replies, "check_for_replies",
+            lambda a: {"reviews": [], "row_errors": [raw_error], "bounces": []},
+        ))
+        stack.enter_context(patched(accounts_db, "set_worker_heartbeat", lambda *a, **k: None))
+        stack.enter_context(patched(watch_replies.notifications, "account_error", lambda *a: None))
+        result = watch_replies.run_all_accounts()
+
+    assert result["degraded"] == 1
+    assert result["degraded_reasons"] == {"row_errors": 1}
+    assert finished[0][2] == "degraded"
+    assert finished[0][1]["degraded_reasons"] == {"row_errors": 1}
+    assert events[0][4]["error"] == raw_error
+    assert raw_error not in json.dumps(result)
+
+
+def test_worker_event_writer_upserts_a_stable_run_scoped_dedupe_key():
+    """The unique indexes only protect writes if the writer supplies the key.
+
+    A retry of the same account check must update one durable event rather than
+    creating an unbounded stream of indistinguishable rows.
+    """
+    calls = []
+
+    class Table:
+        def upsert(self, payload, **kwargs):
+            calls.append((payload, kwargs))
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class Client:
+        def table(self, name):
+            assert name == worker_db.EVENTS_TABLE
+            return Table()
+
+    with patched(worker_db, "enabled", lambda: True), \
+         patched(worker_db, "_get_client", lambda: Client()):
+        worker_db.record_event(42, "a1", "account_check", "success", {"reviews": 1})
+
+    assert calls == [(
+        {
+            "run_id": 42,
+            "account_id": "a1",
+            "event_type": "account_check",
+            "status": "success",
+            "details": {"reviews": 1},
+            "dedupe_key": "42:a1:account_check",
+        },
+        {"on_conflict": "run_id,event_type,dedupe_key"},
+    )]
+
+
+def test_worker_event_writer_uses_account_scope_for_events_without_a_run():
+    calls = []
+
+    class Table:
+        def upsert(self, payload, **kwargs):
+            calls.append((payload, kwargs))
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class Client:
+        def table(self, name):
+            return Table()
+
+    with patched(worker_db, "enabled", lambda: True), \
+         patched(worker_db, "_get_client", lambda: Client()):
+        worker_db.record_event(None, "a1", "cycle_error", "failed")
+
+    assert calls[0][0]["dedupe_key"] == "adhoc:a1:cycle_error"
+    assert calls[0][1]["on_conflict"] == "account_id,event_type,dedupe_key"
+
+
+def test_legacy_direct_notification_entry_points_are_disabled():
+    account = {"email": "owner@example.com", "last_error": "Gmail is down"}
+    assert notify.account_error(account, "Google disconnected — reconnect in Settings") is False
+    assert notify.account_recovered(account) is False
+    assert notify.new_reply(account, {"id": 1}) is False
+
+
+def test_reconnect_alert_copy_contains_no_account_or_error_detail():
+    subject, body, path = notify._message({
+        "event_type": "gmail_disconnected", "source_id": "account-1",
+    })
+    assert subject == "Sendkeep needs your attention"
+    assert "owner@example.com" not in body
+    assert "traceback" not in body.lower()
+    assert path == "/settings"
+
+
+def test_worker_health_endpoint_requires_a_token_and_reports_snapshot():
+    import server
+
+    class Request:
+        def __init__(self, headers):
+            self.headers = headers
+
+    previous = os.environ.get("WORKER_HEALTH_TOKEN")
+    try:
+        os.environ.pop("WORKER_HEALTH_TOKEN", None)
+        not_configured = server.worker_health(Request({}))
+        assert not_configured.status_code == 503
+
+        os.environ["WORKER_HEALTH_TOKEN"] = "health-secret"
+        unauthorized = server.worker_health(Request({"x-worker-health-token": "wrong"}))
+        assert unauthorized.status_code == 401
+        with patched(server.worker_db, "health_snapshot", lambda: {
+            "ok": True, "status": "healthy", "age_seconds": 12,
+        }):
+            healthy = server.worker_health(Request({"x-worker-health-token": "health-secret"}))
+        assert healthy.status_code == 200
+    finally:
+        if previous is None:
+            os.environ.pop("WORKER_HEALTH_TOKEN", None)
+        else:
+            os.environ["WORKER_HEALTH_TOKEN"] = previous
+
+
+def test_worker_health_marks_a_live_but_degraded_cycle_unhealthy():
+    now = datetime.now(timezone.utc).isoformat()
+    with patched(worker_db, "latest_run", lambda: {
+        "status": "degraded", "started_at": now, "finished_at": now,
+        "checked_accounts": 1, "skipped_accounts": 1, "failed_accounts": 0,
+        "degraded_accounts": 1, "degraded_reasons": {"google_disconnected": 1},
+    }):
+        snapshot = worker_db.health_snapshot(stale_after_seconds=900)
+    assert snapshot["status"] == "degraded"
+    assert snapshot["ok"] is False
+    assert snapshot["degraded_accounts"] == 1
+    assert snapshot["degraded_reasons"] == {"google_disconnected": 1}
+
+
+def test_commitments_endpoint_adds_contact_context_from_tracked_threads():
+    import server
+
+    class Request:
+        def __init__(self):
+            self.state = type("State", (), {"account_id": "a1"})()
+
+    commitment = {"id": 3, "thread_id": "t1", "action_text": "send deck"}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.commitments_db, "list_active", lambda aid: [commitment]))
+        stack.enter_context(patched(
+            server.tracked_threads, "list_active",
+            lambda aid: [{"thread_id": "t1", "name": "John", "email": "john@x.com"}],
+        ))
+        result = server.list_commitments(Request())
+    assert result[0]["contact_name"] == "John"
+    assert result[0]["contact_email"] == "john@x.com"
+
+
+def test_completed_commitment_endpoint_returns_contact_context_for_outcome_nudge():
+    import server
+
+    class Request:
+        def __init__(self):
+            self.state = type("State", (), {"account_id": "a1"})()
+
+    completed = {"id": 4, "thread_id": "t1", "status": "completed", "estimated_value": 14000}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.commitments_db, "complete", lambda aid, cid: completed))
+        stack.enter_context(patched(
+            server.tracked_threads, "list_active",
+            lambda aid: [{"thread_id": "t1", "name": "John", "email": "john@x.com"}],
+        ))
+        result = server.complete_commitment(Request(), 4)
+    assert result["contact_name"] == "John"
+    assert result["contact_email"] == "john@x.com"
+
+
+def test_commitment_dismissal_records_extraction_errors_separately_from_due_cleanup():
+    import server
+
+    class Request:
+        state = type("State", (), {"account_id": "a1"})()
+
+    reasons = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(
+            server.commitments_db, "get",
+            lambda account_id, commitment_id: {
+                "id": commitment_id,
+                "status": "detected" if commitment_id == 1 else "due",
+            },
+        ))
+        stack.enter_context(patched(
+            server.commitments_db, "dismiss",
+            lambda account_id, commitment_id, reason: reasons.append(reason) or True,
+        ))
+        assert server.dismiss_commitment(Request(), 1)["reason"] == "incorrect"
+        assert server.dismiss_commitment(Request(), 2)["reason"] == "not_applicable"
+    assert reasons == ["incorrect", "not_applicable"]
 
 
 # --------------------------------------------- send_outreach: prepare (phase 1)
@@ -2271,6 +3133,10 @@ def test_auto_send_preparation_notification_does_not_claim_manual_review():
     rows = [(2, _row())]
     calls = {}
     with contextlib.ExitStack() as stack:
+        # This test exercises the separately gated controlled deployment path;
+        # make that prerequisite explicit instead of inheriting a developer's
+        # .env value during pytest collection.
+        stack.enter_context(patched(config, "AUTO_SEND_ENABLED", True))
         stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
         stack.enter_context(patched(send_outreach.bounces, "assert_sendable", lambda account: None))
         stack.enter_context(patched(suppressions_db, "list_suppressed_emails", lambda aid: set()))
@@ -2359,14 +3225,24 @@ def _send_env(stack, order, sheet_raises=None, thread_id="t-9"):
     receives ("gmail"|"queue"|"sheet", detail) tuples."""
     stack.enter_context(patched(send_outreach, "_MARK_RETRY_DELAY", 0))
     stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+    stack.enter_context(patched(bounces, "assert_sendable", lambda account: None))
+    stack.enter_context(patched(send_outreach, "assert_domain_safe", lambda account: None))
+    stack.enter_context(patched(
+        sheets, "get_all_rows",
+        lambda account: [(2, _row(status="", email="j@x.com"))],
+    ))
+    stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: False))
+    stack.enter_context(patched(drafts_db, "has_first_touch_conflict", lambda *a, **k: False))
+    stack.enter_context(patched(tracked_threads, "upsert_thread", lambda *a, **k: None))
     stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x.y"))
 
-    def fake_send(account, to, s, b, unsubscribe_url=""):
+    def fake_send(account, to, s, b, unsubscribe_url="", message_id=""):
         order.append(("gmail", {"to": to, "body": b, "header": unsubscribe_url}))
         return thread_id
 
     def fake_mark_sent(aid, did, subject, body, **kwargs):
         order.append(("queue", {"draft_id": did, "subject": subject, "body": body}))
+        return True
 
     def fake_update_row(account, idx, **kw):
         order.append(("sheet", {"row": idx, **kw}))
@@ -2374,7 +3250,12 @@ def _send_env(stack, order, sheet_raises=None, thread_id="t-9"):
             raise sheet_raises
 
     stack.enter_context(patched(gmail, "send_email", fake_send))
+    stack.enter_context(patched(drafts_db, "claim_send", lambda *args: True))
+    stack.enter_context(patched(drafts_db, "release_send_claim", lambda *args: True))
+    stack.enter_context(patched(drafts_db, "mark_send_uncertain", lambda *args: True))
     stack.enter_context(patched(drafts_db, "mark_sent", fake_mark_sent))
+    stack.enter_context(patched(send_outreach.send_capacity_db, "reserve", lambda *args: True))
+    stack.enter_context(patched(send_outreach.send_capacity_db, "complete", lambda *args: True))
     stack.enter_context(patched(sheets, "update_row", fake_update_row))
 
 
@@ -2414,7 +3295,7 @@ def test_a_send_refuses_to_start_when_it_could_not_be_recorded():
             assert False, "must refuse before sending"
         except RuntimeError as e:
             assert "sent_at is missing" in str(e)
-            assert "alter table public.outreach_drafts" in str(e)
+            assert drafts_db.schema_contract.BASELINE_MIGRATION in str(e)
     assert sent == [], "no email may leave when the send could not be recorded"
 
 
@@ -2462,7 +3343,7 @@ def test_a_send_refuses_when_any_authoritative_send_column_is_missing():
             assert False, "must refuse before sending"
         except RuntimeError as e:
             assert "follow-up workflow" in str(e)
-            assert "20260813_add_follow_up_workflow.sql" in str(e)
+            assert drafts_db.schema_contract.BASELINE_MIGRATION in str(e)
     assert sent == [], "no email may leave when mark_sent cannot complete"
 
 
@@ -2506,35 +3387,40 @@ def test_send_all_prepared_skips_suppressed_and_respects_cap():
         {"id": 2, "row_index": 3, "email": "b@x.com", "subject": "S", "body": "b"},
         {"id": 3, "row_index": 4, "email": "c@x.com", "subject": "S", "body": "b"},
     ]
-    sent, discarded, marked = [], [], []
-    readiness_calls = {"n": 0}
-    def fake_readiness(account, sent_today=0, **k):
-        readiness_calls["n"] += 1
-        return {"remaining_today": 1}  # only room for one send
+    sent, discarded = [], []
+    rows = [
+        (2, _row(email="a@x.com")),
+        (3, _row(email="b@x.com")),
+        (4, _row(email="c@x.com")),
+    ]
+    reservations = iter((True, False))
     with contextlib.ExitStack() as stack:
-        stack.enter_context(patched(suppressions_db, "list_source_timestamps", lambda aid, src: []))
-        stack.enter_context(patched(drafts_db, "count_sent_last_24_hours", lambda aid: 0))
-        stack.enter_context(patched(drafts_db, "count_sent_since", lambda aid, since: 0))
         stack.enter_context(patched(send_outreach, "_SEND_ALL_MIN_GAP", 0))
         stack.enter_context(patched(send_outreach, "_SEND_ALL_MAX_GAP", 0))
         stack.enter_context(patched(drafts_db, "list_pending_drafts", lambda aid: drafts))
+        stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(send_outreach, "assert_domain_safe", lambda account: None))
+        stack.enter_context(patched(sheets, "get_all_rows", lambda account: rows))
         stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: email == "a@x.com"))
         stack.enter_context(patched(drafts_db, "discard", lambda aid, did: discarded.append(did)))
-        stack.enter_context(patched(sheets, "campaign_readiness", fake_readiness))
-        stack.enter_context(patched(sheets, "get_all_rows", lambda account: []))  # no send history yet -> bounce guard is a no-op
-        def fake_send(account, draft, subject=None, body=None):
-            sent.append(draft["email"]); return "t", draft["body"]
-        stack.enter_context(patched(send_outreach, "send_prepared_draft", fake_send))
-        stack.enter_context(patched(drafts_db, "mark_sent", lambda aid, did, s, b: marked.append(did)))
+        stack.enter_context(patched(drafts_db, "has_first_touch_conflict", lambda *a, **k: False))
+        stack.enter_context(patched(drafts_db, "claim_send", lambda *a, **k: True))
+        stack.enter_context(patched(drafts_db, "release_send_claim", lambda *a, **k: True))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "reserve", lambda *a, **k: next(reservations)))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "complete", lambda *a, **k: True))
+        stack.enter_context(patched(auth, "unsubscribe_url", lambda *a: "https://u/x"))
+        stack.enter_context(patched(gmail, "send_email", lambda account, email, *a, **k: sent.append(email) or "t"))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: True))
+        stack.enter_context(patched(tracked_threads, "upsert_thread", lambda *a, **k: None))
+        stack.enter_context(patched(send_outreach, "mark_row_sent", lambda *a, **k: None))
         stack.enter_context(patched(send_outreach, "notify", lambda *a: None))
         result = send_outreach.send_all_prepared(ACCOUNT)
     assert sent == ["b@x.com"], "suppressed skipped, then one sent before the cap bit"
     assert discarded == [1], "the suppressed draft is discarded, not left pending"
     assert result["sent"] == 1
-    reasons = {s["reason"] for s in result["skipped"]}
-    assert "recipient unsubscribed" in reasons and "daily limit reached" in reasons
-    # Efficiency guarantee: the cap is read once for the batch, not per draft.
-    assert readiness_calls["n"] == 1, "campaign_readiness must be read once, not per draft"
+    reasons = " ".join(s["reason"].lower() for s in result["skipped"])
+    assert "opted out" in reasons and "rolling 24-hour" in reasons
 
 
 def test_send_all_retires_a_draft_that_became_unverified_after_preparation():
@@ -2550,7 +3436,7 @@ def test_send_all_retires_a_draft_that_became_unverified_after_preparation():
         result = send_outreach.send_all_prepared(ACCOUNT)
     assert log["sent"] == ["verified@x.com"]
     assert log["discarded"] == [1]
-    assert {item["reason"] for item in result["skipped"]} == {"address is still marked unverified in the sheet"}
+    assert any("unverified" in item["reason"].lower() for item in result["skipped"])
 
 
 def test_send_all_prepared_can_limit_a_batch_to_new_drafts():
@@ -2623,19 +3509,36 @@ def _sendall_env(stack, drafts, rows, outcomes, sent_today=0):
     stack.enter_context(patched(drafts_db, "discard",
                                 lambda aid, did: log["discarded"].append(did)))
     stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, e: False))
-    stack.enter_context(patched(suppressions_db, "list_source_timestamps", lambda aid, s: []))
-    stack.enter_context(patched(drafts_db, "count_sent_last_24_hours", lambda aid: sent_today))
-    stack.enter_context(patched(drafts_db, "count_sent_since", lambda aid, since: 0))
+    stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+    stack.enter_context(patched(bounces, "assert_sendable", lambda account: None))
+    stack.enter_context(patched(send_outreach, "assert_domain_safe", lambda account: None))
+    stack.enter_context(patched(drafts_db, "has_first_touch_conflict", lambda *a, **k: False))
     stack.enter_context(patched(sheets, "get_all_rows", lambda account: rows))
-
-    def fake_send(account, draft, subject=None, body=None):
-        outcome = outcomes.get(draft["email"])
+    stack.enter_context(patched(auth, "unsubscribe_url", lambda *a: "https://u/x"))
+    stack.enter_context(patched(drafts_db, "claim_send", lambda *a, **k: True))
+    stack.enter_context(patched(drafts_db, "release_send_claim", lambda *a, **k: True))
+    capacity = {"used": sent_today}
+    def reserve(account_id, operation_key, limit):
+        if capacity["used"] >= limit:
+            return False
+        capacity["used"] += 1
+        return True
+    stack.enter_context(patched(send_outreach.send_capacity_db, "reserve", reserve))
+    stack.enter_context(patched(send_outreach.send_capacity_db, "complete", lambda *a, **k: True))
+    stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: True))
+    stack.enter_context(patched(tracked_threads, "upsert_thread", lambda *a, **k: None))
+    def fake_gmail(account, email, *args, **kwargs):
+        outcome = outcomes.get(email)
         if isinstance(outcome, Exception):
             raise outcome
-        log["sent"].append(draft["email"])
-        return {"thread_id": "t", "body": draft["body"], "sheet_error": outcome}
-
-    stack.enter_context(patched(send_outreach, "send_prepared_draft", fake_send))
+        log["sent"].append(email)
+        return "t"
+    def fake_sheet(account, row_index, email, *args, **kwargs):
+        outcome = outcomes.get(email)
+        if isinstance(outcome, str):
+            raise RuntimeError(outcome)
+    stack.enter_context(patched(gmail, "send_email", fake_gmail))
+    stack.enter_context(patched(send_outreach, "mark_row_sent", fake_sheet))
     return log
 
 
@@ -2651,7 +3554,9 @@ def test_the_daily_cap_counts_emails_sent_not_sheet_writes():
     outcomes = {d["email"]: "sent, but the sheet row was not updated" for d in drafts}
     # 24 sends already in the send log today; cap 25 -> room for exactly one.
     rows = [(i, _row(status="Sent", email=f"h{i}@x.com", sent_at=_days_ago(0)))
-            for i in range(1, 25)]
+            for i in range(1, 25)] + [
+        (draft["row_index"], _row(status="", email=draft["email"])) for draft in drafts
+    ]
     with contextlib.ExitStack() as stack:
         log = _sendall_env(stack, drafts, rows, outcomes, sent_today=24)
         result = send_outreach.send_all_prepared(ACCOUNT)
@@ -2659,7 +3564,7 @@ def test_the_daily_cap_counts_emails_sent_not_sheet_writes():
     assert result["sent"] == 1
     assert result["failed"] == [], "a sheet write failure is not a failed send"
     assert len(result["sheet_warnings"]) == 1
-    assert any(s["reason"] == "daily limit reached" for s in result["skipped"])
+    assert any("rolling 24-hour" in s["reason"] for s in result["skipped"])
 
 
 def test_send_all_skips_a_draft_whose_row_already_says_sent():
@@ -2678,10 +3583,10 @@ def test_send_all_skips_a_draft_whose_row_already_says_sent():
         result = send_outreach.send_all_prepared(ACCOUNT)
     assert log["sent"] == ["fresh@x.com"]
     assert log["discarded"] == [1], "the already-sent draft is retired, not re-sent"
-    assert any(s["reason"] == "already marked Sent in the sheet" for s in result["skipped"])
+    assert any("already handled" in s["reason"] for s in result["skipped"])
 
 
-def test_a_deleted_sheet_row_does_not_start_a_resend_loop():
+def test_a_deleted_sheet_row_blocks_before_gmail_and_retires_the_draft():
     """End to end, the failure the ordering fix exists to prevent. The operator
     deletes a row after preparing drafts -- which the old bounce-pause message
     literally told them to do. Before: the email went out, the sheet write raised
@@ -2705,6 +3610,10 @@ def test_a_deleted_sheet_row_does_not_start_a_resend_loop():
         stack.enter_context(patched(drafts_db, "count_sent_last_24_hours", lambda aid: 0))
         stack.enter_context(patched(drafts_db, "count_sent_since", lambda aid, since: 0))
         stack.enter_context(patched(sheets, "get_all_rows", lambda account: []))
+        stack.enter_context(patched(
+            drafts_db, "discard",
+            lambda aid, did: queue_status.update(status="discarded") or True,
+        ))
         # drafts_db.mark_sent takes the draft out of the pending set; reflect that
         # so the second batch sees what production would. Wraps _send_env's
         # recorder rather than replacing it, so the write still shows up in order.
@@ -2719,12 +3628,11 @@ def test_a_deleted_sheet_row_does_not_start_a_resend_loop():
         first = send_outreach.send_all_prepared(ACCOUNT)
         second = send_outreach.send_all_prepared(ACCOUNT)
 
-    assert [s for s, _ in order].count("gmail") == 1, (
-        "the prospect must be emailed exactly once across both batches"
-    )
-    assert first["sent"] == 1 and len(first["sheet_warnings"]) == 1
+    assert [s for s, _ in order].count("gmail") == 0
+    assert first["sent"] == 0
     assert second["sent"] == 0, "nothing left to send"
-    assert first["failed"] == [], "delivered mail must not be reported as failed"
+    assert first["failed"] == []
+    assert first["skipped"], "the stale row must be reported as a permanent block"
 
 
 # ------------------------------------------------------------ header write gate
@@ -2813,6 +3721,11 @@ def test_server_auto_mode_sends_only_drafts_created_by_this_prepare():
     sent_ids = []
     server._accounts_sending.discard(account["id"])
     with contextlib.ExitStack() as stack:
+        # Auto mode is only valid for a controlled deployment. Keep this unit
+        # test independent from the local .env while production remains manual
+        # by default.
+        stack.enter_context(patched(server.config, "AUTO_SEND_ENABLED", True))
+        stack.enter_context(patched(server, "_account_monitoring", lambda a: {"status": "healthy", "message": "Reply monitoring is active.", "last_checked_at": "2099-01-01T00:00:00+00:00"}))
         stack.enter_context(patched(server, "_account", lambda r: account))
         stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
         stack.enter_context(patched(server, "_campaign_preview", lambda a: {"eligible": 1, "blockers": []}))
@@ -2830,6 +3743,28 @@ def test_server_auto_mode_sends_only_drafts_created_by_this_prepare():
     assert sent_ids == [42]
     assert result["auto_mode_seen"] is True
     assert result["auto_sent"]["sent"] == 1
+
+
+def test_server_auto_mode_pauses_when_monitoring_is_not_healthy():
+    import server
+    from types import SimpleNamespace
+
+    account = dict(ACCOUNT, outreach_send_mode="auto")
+    req = SimpleNamespace(state=SimpleNamespace(account_id=account["id"]))
+    body = server.PrepareCampaignBody(confirmed=True)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.config, "AUTO_SEND_ENABLED", True))
+        stack.enter_context(patched(server, "_account", lambda r: account))
+        stack.enter_context(patched(server, "_account_monitoring", lambda a: {
+            "status": "stale",
+            "message": "Reply monitoring is delayed. Check the worker or reconnect Gmail.",
+            "last_checked_at": "2020-01-01T00:00:00+00:00",
+        }))
+        with pytest.raises(server.HTTPException) as exc:
+            server.prepare_campaigns(req, body)
+    assert exc.value.status_code == 409
+    assert "first-touch preparation is paused" in exc.value.detail
+    assert "stale" in exc.value.detail
 
 
 def test_server_prepare_blocked_by_settings():
@@ -2869,6 +3804,73 @@ def test_me_surfaces_send_blockers():
     with patched(server, "_account", lambda r: ready_account):
         result = server.me(req)
     assert result["sendBlockers"] == []
+
+
+def test_me_surfaces_account_monitoring_state():
+    """A connected OAuth token is not enough: Settings must show the worker
+    heartbeat/error that proves reply monitoring is actually working."""
+    import server
+    from types import SimpleNamespace
+
+    req = SimpleNamespace(state=SimpleNamespace(account_id=ACCOUNT["id"]))
+    connected = dict(ACCOUNT, email="owner@example.com", google_token="ciphertext", last_error=None)
+
+    with patched(server, "_account", lambda r: connected), patched(
+        server.google_auth,
+        "capability_status",
+        lambda account: {"monitor": True, "send": False, "sheets": False},
+    ):
+        result = server.me(req)
+    assert result["monitoring"]["status"] == "waiting"
+
+    broken = dict(connected, last_error="Google disconnected — reconnect in Settings")
+    with patched(server, "_account", lambda r: broken), patched(
+        server.google_auth,
+        "capability_status",
+        lambda account: {"monitor": True, "send": False, "sheets": False},
+    ):
+        result = server.me(req)
+    assert result["monitoring"] == {
+        "status": "attention",
+        "message": "Google disconnected — reconnect in Settings",
+        "last_checked_at": None,
+    }
+
+    healthy = dict(connected, worker_heartbeat_at="2099-01-01T00:00:00+00:00")
+    with patched(server, "_account", lambda r: healthy), patched(
+        server.google_auth,
+        "capability_status",
+        lambda account: {"monitor": True, "send": False, "sheets": False},
+    ):
+        result = server.me(req)
+    assert result["monitoring"]["status"] == "healthy"
+
+
+def test_record_outcome_requires_a_monitored_conversation_and_is_idempotent():
+    import server
+    from types import SimpleNamespace
+
+    req = SimpleNamespace(state=SimpleNamespace(account_id="a1"))
+    campaign = {"email": "prospect@example.com", "name": "Prospect", "company": "Acme", "source": "gmail"}
+    saved = {
+        "id": 12,
+        "event_type": "meeting_booked",
+        "status": "confirmed",
+        "details": {"email": "prospect@example.com", "name": "Prospect", "company": "Acme"},
+        "created_at": "2026-08-20T00:00:00+00:00",
+    }
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "list_campaigns", lambda request: [campaign]))
+        stack.enter_context(patched(server.outcomes_db, "list_outcomes", lambda account_id: []))
+        stack.enter_context(patched(server.outcomes_db, "record", lambda *args, **kwargs: saved))
+        result = server.record_outcome(req, server.OutcomeBody(email="Prospect@example.com", outcome="meeting_booked"))
+    assert result["outcome"] == "meeting_booked"
+    assert result["email"] == "prospect@example.com"
+
+    with patched(server, "list_campaigns", lambda request: []):
+        with pytest.raises(server.HTTPException) as exc:
+            server.record_outcome(req, server.OutcomeBody(email="unknown@example.com", outcome="meeting_booked"))
+    assert exc.value.status_code == 404
 
 
 # --------------------------------------------------------- drafts_db: rewritten
@@ -2928,6 +3930,151 @@ def test_drafts_mark_sent_does_not_touch_rewritten():
     assert fake.rows[0]["rewritten"] is True, "mark_sent must never write the rewritten column"
 
 
+class _MetricsTable:
+    """Small read-only PostgREST fake for aggregate review-signal queries."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.filters = []
+
+    def table(self, name):
+        return self
+
+    def select(self, columns):
+        return self
+
+    def eq(self, column, value):
+        self.filters.append((column, value))
+        return self
+
+    def execute(self):
+        rows = [
+            row for row in self.rows
+            if all(row.get(column) == value for column, value in self.filters)
+        ]
+        self.filters = []
+        return type("R", (), {"data": rows})()
+
+
+def test_drafts_edit_metrics_separates_human_edits_from_model_rewrites():
+    fake = _MetricsTable([
+        {"account_id": "a1", "status": "sent", "subject": "S", "body": "same", "original_subject": "S", "original_body": "same", "rewritten": False},
+        {"account_id": "a1", "status": "sent", "subject": "S", "body": "operator copy", "original_subject": "S", "original_body": "model copy", "rewritten": False},
+        {"account_id": "a1", "status": "sent", "subject": "S2", "body": "rewrite", "original_subject": "S", "original_body": "model copy", "rewritten": True},
+        {"account_id": "a1", "status": "pending", "subject": "S", "body": "queued", "original_subject": "S", "original_body": "queued", "rewritten": False},
+    ])
+    with patched(drafts_db, "_get_client", lambda: fake):
+        result = drafts_db.edit_metrics("a1")
+    assert result == {
+        "drafted": 4,
+        "approved": 3,
+        "human_edited": 1,
+        "model_rewritten": 1,
+        "untouched": 1,
+    }
+
+
+def test_reply_edit_metrics_excludes_follow_up_rows():
+    fake = _MetricsTable([
+        {"account_id": "a1", "kind": "reply", "status": "sent", "draft_reply": "edited", "original_draft_reply": "model", "rewritten": False},
+        {"account_id": "a1", "kind": "reply", "status": "sent", "draft_reply": "same", "original_draft_reply": "same", "rewritten": False},
+        {"account_id": "a1", "kind": "follow_up", "status": "sent", "draft_reply": "follow-up", "original_draft_reply": "model", "rewritten": False},
+    ])
+    with patched(reviews_db, "_get_client", lambda: fake):
+        result = reviews_db.reply_edit_metrics("a1")
+    assert result == {
+        "drafted": 2,
+        "approved": 2,
+        "human_edited": 1,
+        "model_rewritten": 0,
+        "untouched": 1,
+    }
+
+
+def test_voice_profile_uses_only_unrewritten_edits_and_keeps_copy_aggregate_only():
+    calls = []
+    first_touch = [
+        {
+            "original_body": "model draft about a prospect",
+            "body": "Hi there, can we talk Tuesday? Oanh",
+            "rewritten": False,
+        },
+        {
+            "original_body": "another model draft",
+            "body": "Hi there, could we talk Thursday? Oanh",
+            "rewritten": False,
+        },
+        {
+            "original_body": "A short approved draft.",
+            "body": "A short approved draft.",
+            "rewritten": False,
+        },
+        {
+            "original_body": "model copy",
+            "body": "private prospect detail that must not leak",
+            "rewritten": True,
+        },
+    ]
+    replies = [{
+        "original_draft_reply": "model reply",
+        "draft_reply": "Hello, here is the update. Oanh",
+        "rewritten": False,
+    }]
+
+    def load_first(account_id):
+        calls.append(("first_touch", account_id))
+        return first_touch
+
+    def load_replies(account_id):
+        calls.append(("reply", account_id))
+        return replies
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(config, "VOICE_FEEDBACK_ENABLED", True))
+        stack.enter_context(patched(drafts_db, "list_sent_edit_pairs", load_first))
+        stack.enter_context(patched(reviews_db, "list_sent_edit_pairs", load_replies))
+        voice_signals.clear()
+        profile = voice_signals.profile("acct-1")
+
+    assert calls == [("first_touch", "acct-1"), ("reply", "acct-1")]
+    assert "4 human approvals" in profile
+    assert "3 were edited" in profile
+    assert "words" in profile
+    assert "private prospect detail" not in profile
+    assert "Tuesday" not in profile and "Thursday" not in profile
+    voice_signals.clear()
+
+
+def test_voice_profile_is_fenced_as_a_soft_sender_preference():
+    profile = (
+        "Observed from 3 human approvals in this inbox; 3 were edited: keep messages around 24 words."
+    )
+    prompt = agent.outreach_prompt(dict(ACCOUNT, voice_profile=profile), "John", "Acme")
+    assert "bounded style signal" in prompt
+    assert "soft preference" in prompt
+    assert "no prospect facts" in prompt
+    assert profile in prompt
+
+
+def test_generation_attaches_account_scoped_voice_profile_before_prompting():
+    attached = []
+
+    def attach(account):
+        attached.append(account["id"])
+        return dict(account, voice_profile="Observed from 3 human approvals in this inbox")
+
+    captured = {}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(agent.voice_signals, "with_profile", attach))
+        stack.enter_context(patched(
+            agent, "_chat", lambda system, prompt, purpose: captured.update(prompt=prompt) or GOOD_EMAIL,
+        ))
+        agent.generate_outreach_email(ACCOUNT, "John", "Acme")
+
+    assert attached == ["acct-1"]
+    assert "human approvals" in captured["prompt"]
+
+
 def test_send_all_prepared_never_marks_a_draft_rewritten():
     """send_prepared_draft's rewritten default is False by construction for
     the batch path -- there is no browser-side rewritten state a
@@ -2952,9 +4099,14 @@ def test_send_all_prepared_never_marks_a_draft_rewritten():
         stack.enter_context(patched(drafts_db, "count_sent_since", lambda aid, since: 0))
         stack.enter_context(patched(suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(sheets, "campaign_readiness", lambda account, sent_today=0, rows=None: {"remaining_today": 5}))
-        stack.enter_context(patched(sheets, "get_all_rows", lambda account: []))
+        stack.enter_context(patched(sheets, "get_all_rows", lambda account: [(2, _row(email="a@x.com"))]))
+        stack.enter_context(patched(send_outreach, "assert_domain_safe", lambda account: None))
+        stack.enter_context(patched(drafts_db, "has_first_touch_conflict", lambda *a, **k: False))
         stack.enter_context(patched(gmail, "send_email", lambda *a, **k: "t-1"))
-        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: None))
+        stack.enter_context(patched(drafts_db, "claim_send", lambda *a, **k: True))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: True))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "reserve", lambda *a, **k: True))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "complete", lambda *a, **k: True))
         stack.enter_context(patched(drafts_db, "mark_rewritten", boom))
         stack.enter_context(patched(send_outreach, "mark_row_sent", lambda *a, **k: None))
         stack.enter_context(patched(send_outreach, "notify", lambda *a: None))
@@ -3098,15 +4250,18 @@ def test_send_draft_409_and_discards_when_suppressed():
     discarded = []
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
-        stack.enter_context(patched(server.drafts_db, "count_sent_last_24_hours", lambda aid: 0))
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(server.bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(server.send_outreach, "assert_domain_safe", lambda account: None))
+        stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: True))
         stack.enter_context(patched(server.drafts_db, "discard", lambda aid, did: discarded.append(did)))
         try:
             server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
             raise AssertionError("expected 409")
-        except server.HTTPException as e:
-            assert e.status_code == 409
+        except send_outreach.SendFailure as e:
+            assert e.code == "send_blocked" and e.retryable is False
     assert discarded == [7], "a draft whose recipient opted out is discarded, not sent"
 
 
@@ -3114,17 +4269,21 @@ def test_send_draft_409_when_cap_reached():
     import server
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
-        stack.enter_context(patched(server.drafts_db, "count_sent_last_24_hours", lambda aid: 0))
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(server.bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(server.send_outreach, "assert_domain_safe", lambda account: None))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
-        stack.enter_context(patched(server.suppressions_db, "list_suppressed_emails", lambda aid: set()))
         stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
-        stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 0}))
+        stack.enter_context(patched(server.drafts_db, "has_first_touch_conflict", lambda *a, **k: False))
+        stack.enter_context(patched(server.drafts_db, "claim_send", lambda *a, **k: True))
+        stack.enter_context(patched(server.drafts_db, "release_send_claim", lambda *a, **k: True))
+        stack.enter_context(patched(server.send_capacity_db, "reserve", lambda *a, **k: False))
         try:
             server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
             raise AssertionError("expected 409")
-        except server.HTTPException as e:
-            assert e.status_code == 409
+        except send_outreach.SendFailure as e:
+            assert e.code == "capacity_reached" and e.retryable is True
 
 
 def test_send_draft_retires_a_source_guess_that_is_still_unverified():
@@ -3135,14 +4294,17 @@ def test_send_draft_retires_a_source_guess_that_is_still_unverified():
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
         stack.enter_context(patched(server.drafts_db, "get_draft", lambda aid, did: dict(_PENDING_DRAFT)))
+        stack.enter_context(patched(server.drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(server.bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(server.send_outreach, "assert_domain_safe", lambda account: None))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
         stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, row)]))
         stack.enter_context(patched(server.drafts_db, "discard", lambda aid, did: discarded.append(did)))
         try:
             server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
             raise AssertionError("expected source-verification gate")
-        except server.HTTPException as e:
-            assert e.status_code == 409
+        except send_outreach.SendFailure as e:
+            assert e.code == "send_blocked"
             assert "unverified" in e.detail
     assert discarded == [7]
 
@@ -3219,11 +4381,18 @@ def test_send_draft_calls_mark_rewritten_when_payload_says_so():
         stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
         stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(send_outreach, "assert_domain_safe", lambda account: None))
+        stack.enter_context(patched(drafts_db, "has_first_touch_conflict", lambda *a, **k: False))
         stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
         stack.enter_context(patched(gmail, "send_email", lambda *a, **k: "t-1"))
-        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: None))
+        stack.enter_context(patched(drafts_db, "claim_send", lambda *a, **k: True))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: True))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "reserve", lambda *a, **k: True))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "complete", lambda *a, **k: True))
         stack.enter_context(patched(drafts_db, "mark_rewritten", lambda aid, did: marked.append(did)))
         stack.enter_context(patched(send_outreach, "mark_row_sent", lambda *a, **k: None))
+        stack.enter_context(patched(tracked_threads, "upsert_thread", lambda *a, **k: None))
         result = server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b", rewritten=True))
     assert result == {"ok": True, "sheet_warning": None}
     assert marked == [7]
@@ -3240,12 +4409,19 @@ def test_send_draft_does_not_call_mark_rewritten_by_default():
         stack.enter_context(patched(server.sheets, "get_all_rows", lambda account: [(2, _row())]))
         stack.enter_context(patched(server.sheets, "campaign_readiness", lambda account, **k: {"remaining_today": 5}))
         stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(send_outreach, "assert_domain_safe", lambda account: None))
+        stack.enter_context(patched(drafts_db, "has_first_touch_conflict", lambda *a, **k: False))
         stack.enter_context(patched(auth, "unsubscribe_url", lambda aid, e: "https://u/unsub?t=x"))
         stack.enter_context(patched(gmail, "send_email", lambda *a, **k: "t-1"))
-        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: None))
+        stack.enter_context(patched(drafts_db, "claim_send", lambda *a, **k: True))
+        stack.enter_context(patched(drafts_db, "mark_sent", lambda *a, **k: True))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "reserve", lambda *a, **k: True))
+        stack.enter_context(patched(send_outreach.send_capacity_db, "complete", lambda *a, **k: True))
         stack.enter_context(patched(drafts_db, "mark_rewritten",
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not mark rewritten without the flag"))))
         stack.enter_context(patched(send_outreach, "mark_row_sent", lambda *a, **k: None))
+        stack.enter_context(patched(tracked_threads, "upsert_thread", lambda *a, **k: None))
         result = server.send_draft(_srv_req(), 7, server.SendDraftBody(subject="s", body="b"))
     assert result == {"ok": True, "sheet_warning": None}
 
@@ -3308,6 +4484,174 @@ _PENDING_REVIEW = {"id": 9, "row_index": 2, "thread_id": "t1", "name": "John",
 _FLAGGED_REVIEW = dict(_PENDING_REVIEW, email="assistant@other.com", status="flagged")
 
 
+def _tracked_reply_candidate(**overrides):
+    candidate = {
+        "text": "Could you send the pricing details?",
+        "history": [(False, "Initial outreach")],
+        "message_id": "m-1",
+        "kind": "on_sheet",
+        "answered_elsewhere": False,
+        "from_addr": "john@x.com",
+        "timestamp": "2026-08-31T02:00:00+00:00",
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def test_draft_tracked_reply_endpoint_is_account_scoped_and_starts_a_job():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT, id="acct-1")))
+        stack.enter_context(patched(server.tracked_threads, "get_by_id",
+            lambda aid, tid: {"id": tid, "status": "active"} if aid == "acct-1" else None))
+        stack.enter_context(patched(server.ratelimit, "check", lambda *a, **k: True))
+        stack.enter_context(patched(server, "start_job", lambda aid, fn: "job-thread-reply"))
+        assert server.draft_tracked_reply(_srv_req(), 73) == {"job_id": "job-thread-reply"}
+
+
+def test_draft_tracked_reply_endpoint_hides_foreign_thread_ids():
+    import server
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT, id="acct-1")))
+        stack.enter_context(patched(server.tracked_threads, "get_by_id", lambda *a: None))
+        with pytest.raises(server.HTTPException) as exc:
+            server.draft_tracked_reply(_srv_req(), 999)
+    assert exc.value.status_code == 404
+
+
+def test_draft_tracked_reply_job_creates_normal_review_without_exposing_gmail_thread_id():
+    import server
+    tracked = {
+        "id": 73, "status": "active", "thread_id": "gmail-secret-thread",
+        "row_index": None, "name": "John", "email": "john@x.com", "company": "Acme",
+    }
+    review = dict(_PENDING_REVIEW, id=81, row_index=None, draft_reply="Here are the pricing details.")
+    captured = {}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.tracked_threads, "get_by_id", lambda *a: dict(tracked)))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_reply_candidates_with_history",
+            lambda *a, **k: [_tracked_reply_candidate()]))
+        stack.enter_context(patched(server.gmail, "get_reply_subject", lambda thread: "Re: Pricing"))
+        stack.enter_context(patched(server.reviews_db, "find_review_id", lambda *a: None))
+        stack.enter_context(patched(server.plans, "check", lambda *a: None))
+        stack.enter_context(patched(server.agent, "draft_reply",
+            lambda *a, **k: "Here are the pricing details."))
+        stack.enter_context(patched(server.agent, "reply_problems", lambda *a: []))
+        stack.enter_context(patched(server.reviews_db, "add_manual_review",
+            lambda *a, **k: captured.update(args=a, kwargs=k) or (81, True)))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda *a: dict(review)))
+        result = server._draft_tracked_reply_job(dict(ACCOUNT, id="acct-1"), 73)
+
+    assert result["review_id"] == 81
+    assert result["existing"] is False
+    assert result["contact"] == {"name": "John", "email": "john@x.com"}
+    assert result["latest_message"] == "sounds good"
+    assert "thread_id" not in result
+    assert "gmail-secret-thread" not in repr(result)
+    assert captured["kwargs"]["gmail_message_id"] == "m-1"
+    assert captured["kwargs"]["return_created"] is True
+
+
+def test_draft_tracked_reply_job_reopens_existing_pending_review_without_spending_ai():
+    import server
+    tracked = {
+        "id": 73, "status": "active", "thread_id": "t1", "row_index": None,
+        "name": "John", "email": "john@x.com", "company": "Acme",
+    }
+    existing = dict(_PENDING_REVIEW, id=44, draft_reply="Existing draft", validator_problems="")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.tracked_threads, "get_by_id", lambda *a: dict(tracked)))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_reply_candidates_with_history",
+            lambda *a, **k: [_tracked_reply_candidate()]))
+        stack.enter_context(patched(server.gmail, "get_reply_subject", lambda thread: "Re: Hello"))
+        stack.enter_context(patched(server.reviews_db, "find_review_id", lambda *a: 44))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda *a: dict(existing)))
+        stack.enter_context(patched(server.plans, "check",
+            lambda *a: (_ for _ in ()).throw(AssertionError("existing draft must not spend quota"))))
+        stack.enter_context(patched(server.agent, "draft_reply",
+            lambda *a: (_ for _ in ()).throw(AssertionError("existing draft must not call AI"))))
+        result = server._draft_tracked_reply_job(dict(ACCOUNT, id="acct-1"), 73)
+
+    assert result["existing"] is True
+    assert result["draft"] == "Existing draft"
+
+
+def test_draft_tracked_reply_job_refuses_non_actionable_gmail_messages():
+    import server
+    tracked = {"id": 73, "status": "active", "thread_id": "t1", "email": "john@x.com"}
+    cases = [
+        (_tracked_reply_candidate(answered_elsewhere=True), "already answered"),
+        (_tracked_reply_candidate(kind="off_sheet", from_addr="assistant@other.com"), "No reply from this contact"),
+    ]
+    for candidate, error_text in cases:
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patched(server.tracked_threads, "get_by_id", lambda *a: dict(tracked)))
+            stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+            stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+            stack.enter_context(patched(server.gmail, "get_reply_candidates_with_history",
+                lambda *a, **k: [candidate]))
+            with pytest.raises(RuntimeError) as exc:
+                server._draft_tracked_reply_job(dict(ACCOUNT, id="acct-1"), 73)
+        assert error_text.lower() in str(exc.value).lower()
+
+
+def test_draft_tracked_reply_job_refuses_stale_context_after_newer_participant_message():
+    import server
+    tracked = {"id": 73, "status": "active", "thread_id": "t1", "email": "john@x.com"}
+    candidates = [
+        _tracked_reply_candidate(),
+        _tracked_reply_candidate(
+            message_id="m-2", kind="off_sheet", from_addr="assistant@other.com",
+            text="Jumping in with updated requirements.",
+        ),
+    ]
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.tracked_threads, "get_by_id", lambda *a: dict(tracked)))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_reply_candidates_with_history",
+            lambda *a, **k: candidates))
+        with pytest.raises(RuntimeError) as exc:
+            server._draft_tracked_reply_job(dict(ACCOUNT, id="acct-1"), 73)
+    assert "newer message from another participant" in str(exc.value)
+
+
+def test_draft_tracked_reply_job_preserves_plan_quota_message_for_the_ui():
+    import server
+    tracked = {"id": 73, "status": "active", "thread_id": "t1", "email": "john@x.com"}
+    quota = server.plans.QuotaExceeded(
+        "trial", server.usage.UNIT_DRAFT_REPLY, 10, 10,
+        "Your Trial plan includes 10 reply drafts.",
+    )
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.tracked_threads, "get_by_id", lambda *a: dict(tracked)))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_reply_candidates_with_history",
+            lambda *a, **k: [_tracked_reply_candidate()]))
+        stack.enter_context(patched(server.reviews_db, "find_review_id", lambda *a: None))
+        stack.enter_context(patched(server.plans, "check", lambda *a: (_ for _ in ()).throw(quota)))
+        with pytest.raises(RuntimeError) as exc:
+            server._draft_tracked_reply_job(dict(ACCOUNT, id="acct-1"), 73)
+    assert "10 reply drafts" in str(exc.value)
+
+
+def test_draft_tracked_reply_job_fails_closed_when_alias_classification_is_degraded():
+    import server
+    tracked = {"id": 73, "status": "active", "thread_id": "t1", "email": "john@x.com"}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.tracked_threads, "get_by_id", lambda *a: dict(tracked)))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, True)))
+        with pytest.raises(RuntimeError) as exc:
+            server._draft_tracked_reply_job(dict(ACCOUNT, id="acct-1"), 73)
+    assert "aliases could not be verified" in str(exc.value)
+
+
 def test_send_reply_409_when_suppressed():
     """Unlike the outreach-send path, nothing gated this at all before now --
     an unsubscribed contact could still receive a reply."""
@@ -3329,8 +4673,17 @@ def test_send_reply_happy_path_when_not_suppressed():
     sent = {}
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.reviews_db, "claim_send", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "reserve", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "complete", lambda *args: True))
+        stack.enter_context(patched(server.reviews_db, "release_send_claim", lambda aid, rid: True))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a, **k: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: {"message_id": "m-1"}))
+        stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
         stack.enter_context(patched(server.gmail, "send_reply",
             lambda a, tid, to, body: sent.update(to=to, body=body)))
         stack.enter_context(patched(server.reviews_db, "mark_sent",
@@ -3339,13 +4692,57 @@ def test_send_reply_happy_path_when_not_suppressed():
     assert sent == {"to": "john@x.com", "body": "hi", "marked": (9, "hi")}
 
 
+def test_send_reply_fails_closed_when_gmail_cannot_revalidate_candidate():
+    import server
+    released = []
+    sent = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
+        stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
+        stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.reviews_db, "claim_send", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "reserve", lambda *args: True))
+        stack.enter_context(patched(server.reviews_db, "release_send_claim", lambda aid, rid: released.append(rid)))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a, **k: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: None))
+        stack.enter_context(patched(server.gmail, "send_reply", lambda *a, **k: sent.append(True)))
+        try:
+            server.send_reply(_srv_req(), 9, server.SendReplyBody(body="hi"))
+            raise AssertionError("expected a fail-closed 409")
+        except server.HTTPException as e:
+            assert e.status_code == 409
+            assert "re-validate" in e.detail
+    assert released == [9]
+    assert sent == []
+
+
+def test_send_capacity_blocks_a_paid_inbox_at_fifty_sends():
+    import server
+    account = dict(ACCOUNT, plan="pilot")
+    with patched(server.drafts_db, "count_sent_last_24_hours", lambda aid: 50):
+        with pytest.raises(server.HTTPException) as exc:
+            server._assert_send_capacity(account)
+    assert exc.value.status_code == 409
+    assert "50-send" in exc.value.detail
+
+
 def test_send_reply_calls_mark_rewritten_when_payload_says_so():
     import server
     marked = []
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.reviews_db, "claim_send", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "reserve", lambda *args: True))
+        stack.enter_context(patched(server.reviews_db, "release_send_claim", lambda aid, rid: True))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a, **k: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: {"message_id": "m-1"}))
+        stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
         stack.enter_context(patched(server.gmail, "send_reply", lambda a, tid, to, body: None))
         stack.enter_context(patched(server.reviews_db, "mark_sent", lambda aid, rid, body: None))
         stack.enter_context(patched(server.reviews_db, "mark_rewritten", lambda aid, rid: marked.append(rid)))
@@ -3358,8 +4755,16 @@ def test_send_reply_does_not_call_mark_rewritten_by_default():
     import server
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: dict(_PENDING_REVIEW)))
         stack.enter_context(patched(server.suppressions_db, "is_suppressed", lambda aid, email: False))
+        stack.enter_context(patched(server.reviews_db, "claim_send", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "reserve", lambda *args: True))
+        stack.enter_context(patched(server.reviews_db, "release_send_claim", lambda aid, rid: True))
+        stack.enter_context(patched(server.gmail, "get_thread", lambda *a, **k: {"messages": []}))
+        stack.enter_context(patched(server.gmail, "get_own_addresses", lambda *a: ({"me@x.com"}, False)))
+        stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: {"message_id": "m-1"}))
+        stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
         stack.enter_context(patched(server.gmail, "send_reply", lambda a, tid, to, body: None))
         stack.enter_context(patched(server.reviews_db, "mark_sent", lambda aid, rid, body: None))
         stack.enter_context(patched(server.reviews_db, "mark_rewritten",
@@ -3523,6 +4928,30 @@ def test_confirm_sender_job_happy_path_drafts_and_confirms():
     assert result == {"warning": None}
     assert confirmed == {"id": 9, "draft": "Here's a reply."}
     assert calls["draft"] == [1]
+
+
+def test_confirm_sender_job_does_not_read_sheets_without_a_row_index():
+    import server
+    for missing_row in (None, reviews_db.LEGACY_NO_SHEET_ROW):
+        review = dict(_FLAGGED_REVIEW, row_index=missing_row)
+        with contextlib.ExitStack() as stack:
+            calls = _confirm_sender_env(stack, review)
+            stack.enter_context(patched(
+                server.sheets, "get_all_rows",
+                lambda a: (_ for _ in ()).throw(
+                    AssertionError("a Gmail-only review must not read Sheets")
+                ),
+            ))
+            confirmed = {}
+            stack.enter_context(patched(
+                server.reviews_db, "confirm_sender",
+                lambda aid, rid, draft_reply="", validator_problems=None:
+                    confirmed.update(id=rid, draft=draft_reply) or True,
+            ))
+            result = server._confirm_sender_job(ACCOUNT, review)
+        assert result == {"warning": None}
+        assert confirmed == {"id": 9, "draft": "Here's a reply."}
+        assert calls["draft"] == [1]
 
 
 def test_confirm_sender_job_quota_exceeded_confirms_with_empty_draft_and_the_rich_message():
@@ -3733,7 +5162,7 @@ def test_server_plan_copy_is_accurate():
     with patched(server, "_account", lambda r: dict(ACCOUNT)):
         plan = server.get_plan(req)
     assert "verified-email" not in plan["note"]
-    assert "Human-approved" in plan["note"]
+    assert "promise detection" in plan["note"]
 
 
 # ------------------------------------------------------------------------ auth
@@ -3755,6 +5184,69 @@ def test_oauth_state_roundtrip():
     assert not auth.verify_oauth_state(auth.create_session_token("x"))  # two dots
 
 
+def test_public_product_theme_is_available_before_login():
+    import server
+
+    assert "/static/product-theme.css" in server.PUBLIC_PATHS
+
+
+def test_oauth_callback_rejects_missing_browser_state_cookie_with_safe_retry():
+    import server
+    from types import SimpleNamespace
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server.auth, "create_oauth_state", lambda: "signed-state"))
+        stack.enter_context(patched(server.auth, "verify_oauth_state", lambda state: state == "signed-state"))
+        stack.enter_context(patched(
+            server.google_auth, "build_login_auth_url",
+            lambda state: f"https://accounts.google.test/?state={state}",
+        ))
+        response = server.google_login_start("/outreach")
+        assert "oauth_state=signed-state" in response.headers["set-cookie"]
+        response = server.google_login_callback(
+            SimpleNamespace(cookies={}),
+            state="signed-state",
+            code="code",
+        )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login?google_error=oauth_state_expired"
+    assert "oauth_state=" in response.headers["set-cookie"]
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_expired_oauth_callback_preserves_safe_next_without_exchanging_code():
+    import server
+    from types import SimpleNamespace
+
+    expired_state = auth.create_oauth_state(ttl_seconds=-1)
+    with patched(
+        server.google_auth,
+        "exchange_login_code",
+        lambda code: pytest.fail("an expired callback must never exchange its code"),
+    ):
+        response = server.google_login_callback(
+            SimpleNamespace(cookies={
+                server.OAUTH_STATE_COOKIE: expired_state,
+                server.NEXT_COOKIE_NAME: "/outreach?tab=inbox",
+            }),
+            state=expired_state,
+            code="discard-me",
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == (
+        "/login?google_error=oauth_state_expired&next=%2Foutreach%3Ftab%3Dinbox"
+    )
+
+
+def test_google_grant_state_binds_account_and_capability():
+    state = auth.create_google_grant_state("acct-42", "monitor", ttl_seconds=60)
+    assert auth.verify_google_grant_state(state) == ("acct-42", "monitor")
+    tampered = state[:-1] + ("0" if state[-1] != "0" else "1")
+    assert auth.verify_google_grant_state(tampered) is None
+    assert auth.verify_google_grant_state(auth.create_session_token("acct-42")) is None
+
+
 def test_session_signing_key_split_preserves_unsubscribe_but_not_sessions():
     """SESSION_SIGNING_KEY defaults to APP_SECRET_KEY, so every token signed
     today is effectively signed under APP_SECRET_KEY. Once an operator later
@@ -3772,6 +5264,159 @@ def test_session_signing_key_split_preserves_unsubscribe_but_not_sessions():
 
 
 # -------------------------------------------------------------- google_auth
+
+def test_google_capabilities_are_incremental_and_legacy_modify_still_works():
+    account = {"id": "acct-7", "google_token": "ciphertext"}
+    monitor = json.dumps({"scopes": [config.GMAIL_MONITOR_SCOPES[0]]})
+    with patched(accounts_db, "get_google_token", lambda account: monitor):
+        assert google_auth.capability_status(account) == {
+            "monitor": True, "send": False, "sheets": False,
+        }
+    legacy = json.dumps({"scopes": [google_auth.LEGACY_GMAIL_MODIFY, *config.SHEETS_SCOPES]})
+    with patched(accounts_db, "get_google_token", lambda account: legacy):
+        assert google_auth.capability_status(account) == {
+            "monitor": True, "send": True, "sheets": True,
+        }
+
+
+def test_incremental_google_grant_preserves_refresh_token_and_scope_union():
+    existing = json.dumps({
+        "refresh_token": "keep-me", "scopes": config.GMAIL_MONITOR_SCOPES,
+        "google_account_email": "owner@example.com",
+    })
+    granted = json.dumps({
+        "token": "new-access", "scopes": config.GMAIL_SEND_SCOPES,
+        "google_account_email": "owner@example.com",
+    })
+    merged = json.loads(google_auth.merge_token_json(existing, granted))
+    assert merged["refresh_token"] == "keep-me"
+    assert set(merged["scopes"]) == set(config.GMAIL_MONITOR_SCOPES + config.GMAIL_SEND_SCOPES)
+
+
+def test_incremental_google_grant_rejects_a_different_mailbox():
+    existing = json.dumps({
+        "refresh_token": "keep-me",
+        "scopes": config.GMAIL_MONITOR_SCOPES,
+        "google_account_email": "owner@example.com",
+    })
+    granted = json.dumps({
+        "token": "attacker-or-wrong-mailbox",
+        "scopes": config.GMAIL_SEND_SCOPES,
+        "google_account_email": "other@example.com",
+    })
+    with pytest.raises(google_auth.GoogleIdentityMismatch):
+        google_auth.merge_token_json(existing, granted)
+
+
+def test_sheets_only_grant_verifies_identity_from_the_id_token_not_gmail():
+    """A sheets-only consent carries no Gmail scope, so the old unconditional
+    getProfile call answered 403 and the whole connect flow died with a
+    misleading error. Identity comes from the exchanged ID token instead --
+    and the Gmail API is never touched."""
+    claims = base64.urlsafe_b64encode(
+        json.dumps({"email": "Owner@Example.com"}).encode()
+    ).decode().rstrip("=")
+    fake_creds = type("Creds", (), {})()
+    fake_creds.scopes = list(config.SHEETS_SCOPES)
+    fake_creds.to_json = lambda: json.dumps({"token": "t", "scopes": config.SHEETS_SCOPES})
+    fake_creds.id_token = f"header.{claims}.signature"
+
+    class FakeFlow:
+        credentials = fake_creds
+
+        def fetch_token(self, code):
+            assert code == "code-1"
+
+    def gmail_must_not_be_called(*a, **k):
+        raise AssertionError("a sheets-only grant must not call the Gmail API")
+
+    with patched(google_auth, "_flow", lambda capability: FakeFlow()), \
+            patched(google_auth, "build", gmail_must_not_be_called):
+        token = json.loads(google_auth.exchange_code("code-1", "sheets"))
+    assert token["google_account_email"] == "owner@example.com"
+
+
+def test_mail_grant_still_verifies_identity_via_gmail_profile():
+    """A grant carrying Gmail scope keeps the stronger identity source: the
+    live mailbox profile, not just the ID-token claim."""
+    fake_creds = type("Creds", (), {})()
+    fake_creds.scopes = list(config.GMAIL_MONITOR_SCOPES)
+    fake_creds.to_json = lambda: json.dumps(
+        {"token": "t", "scopes": config.GMAIL_MONITOR_SCOPES}
+    )
+    fake_creds.id_token = None
+
+    class FakeService:
+        def users(self):
+            return self
+
+        def getProfile(self, userId):
+            return self
+
+        def execute(self):
+            return {"emailAddress": "owner@example.com"}
+
+    class FakeFlow:
+        credentials = fake_creds
+
+        def fetch_token(self, code):
+            pass
+
+    with patched(google_auth, "_flow", lambda capability: FakeFlow()), \
+            patched(google_auth, "build",
+                    lambda *a, **k: FakeService()) as _build:
+        token = json.loads(google_auth.exchange_code("code-1"))
+    assert token["google_account_email"] == "owner@example.com"
+
+
+def test_google_connect_pauses_only_new_monitoring_when_precision_is_over_twenty_percent():
+    import server
+
+    class Request:
+        state = type("State", (), {"account_id": "acct-7"})()
+
+    account = {"id": "acct-7"}
+    stopped = {
+        "false_positive_rate": 0.25,
+        "precision_status": "stop",
+        "stop_onboarding": True,
+    }
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda request: account))
+        stack.enter_context(patched(
+            server.google_auth, "capability_status",
+            lambda account: {"monitor": False, "send": False, "sheets": False},
+        ))
+        stack.enter_context(patched(server.commitments_db, "onboarding_precision", lambda: stopped))
+        with pytest.raises(server.HTTPException) as exc:
+            server.google_connect(Request(), "monitor")
+    assert exc.value.status_code == 503
+    assert "25%" in str(exc.value.detail)
+
+    calls = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(server, "_account", lambda request: account))
+        stack.enter_context(patched(
+            server.google_auth, "capability_status",
+            lambda account: {"monitor": True, "send": False, "sheets": False},
+        ))
+        stack.enter_context(patched(server.commitments_db, "onboarding_precision", lambda: stopped))
+        stack.enter_context(patched(
+            server.auth, "create_google_grant_state",
+            lambda aid, capability, ttl: f"state:{aid}:{capability}",
+        ))
+        stack.enter_context(patched(
+            server.google_auth, "build_auth_url",
+            lambda state, capability: calls.append((state, capability)) or "https://google.test/auth",
+        ))
+        response = server.google_connect(Request(), "monitor")
+        send_response = server.google_connect(Request(), "send")
+    assert response.status_code in (302, 307)
+    assert send_response.status_code in (302, 307)
+    assert calls == [
+        ("state:acct-7:monitor", "monitor"),
+        ("state:acct-7:send", "send"),
+    ]
 
 def test_get_credentials_clears_token_on_fernet_key_rotation():
     """If the Fernet key derived from APP_SECRET_KEY is ever rotated, every
@@ -3847,6 +5492,9 @@ def test_link_google_account_links_by_email_or_reuses_by_google_id():
             return self
 
         def eq(self, *a, **k):
+            return self
+
+        def is_(self, *a, **k):
             return self
 
         def execute(self):
@@ -4017,6 +5665,111 @@ def test_dns_check_all_clear():
         result = dns_check.check_domain("acme.test")
     assert {f["status"] for f in result["findings"]} == {"ok"}
     assert "all look correct" in result["summary"]
+
+
+def test_dns_safety_gate_blocks_authentication_failures_but_not_custom_dkim_warning():
+    blocked = {
+        "managed": False,
+        "findings": [
+            {"name": "SPF", "status": "warning", "detail": "Google is not authorised."},
+            {"name": "DKIM", "status": "warning", "detail": "Custom selector not found."},
+            {"name": "DMARC", "status": "missing", "detail": "No DMARC record."},
+        ],
+    }
+    assert len(dns_check.safety_blockers(blocked)) == 2
+    assert dns_check.safety_blockers({"managed": True, "findings": []}) == []
+
+
+def test_domain_safety_fails_closed_when_dns_cannot_be_verified():
+    account = dict(ACCOUNT, google_token="encrypted")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(send_outreach.gmail, "get_sending_address", lambda account, capability="monitor": "owner@acme.test"))
+        stack.enter_context(patched(send_outreach.dns_check, "check_domain", lambda domain: {
+            "domain": domain,
+            "managed": False,
+            "findings": [
+                {"name": "SPF", "status": "unknown", "detail": "DNS unavailable."},
+                {"name": "DKIM", "status": "unknown", "detail": "DNS unavailable."},
+                {"name": "DMARC", "status": "unknown", "detail": "DNS unavailable."},
+            ],
+            "summary": "Could not complete the DNS checks.",
+        }))
+        state = send_outreach.domain_safety(account)
+    assert state["status"] == "blocked"
+    assert state["send_blockers"]
+    with pytest.raises(RuntimeError, match="domain-safety gate"):
+        with patched(send_outreach, "domain_safety", lambda account: state):
+            send_outreach.assert_domain_safe(account)
+
+
+def test_export_thread_rows_include_a_gmail_handoff_url():
+    import account_export
+
+    rows = account_export._portable_rows(
+        "tracked_threads", [{"thread_id": "abc/123", "email": "owner@example.com"}]
+    )
+    assert rows[0]["gmail_url"].endswith("abc%2F123")
+
+
+def test_prepare_drafts_enforces_domain_safety_before_llm_work():
+    account = dict(ACCOUNT, google_token="encrypted")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
+        stack.enter_context(patched(send_outreach.bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(send_outreach, "domain_safety", lambda account: {
+            "status": "blocked",
+            "send_blockers": ["SPF is missing."],
+        }))
+        with pytest.raises(RuntimeError, match="SPF is missing"):
+            send_outreach.prepare_drafts(account)
+
+
+def test_dns_safety_gate_blocks_authentication_failures_but_not_custom_dkim_warning():
+    blocked = {
+        "managed": False,
+        "findings": [
+            {"name": "SPF", "status": "warning", "detail": "Google is not authorised."},
+            {"name": "DKIM", "status": "warning", "detail": "Custom selector not found."},
+            {"name": "DMARC", "status": "missing", "detail": "No DMARC record."},
+        ],
+    }
+    assert len(dns_check.safety_blockers(blocked)) == 2
+    assert dns_check.safety_blockers({"managed": True, "findings": []}) == []
+
+
+def test_domain_safety_fails_closed_when_dns_cannot_be_verified():
+    account = dict(ACCOUNT, google_token="encrypted")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(send_outreach.gmail, "get_sending_address", lambda account, capability="monitor": "owner@acme.test"))
+        stack.enter_context(patched(send_outreach.dns_check, "check_domain", lambda domain: {
+            "domain": domain,
+            "managed": False,
+            "findings": [
+                {"name": "SPF", "status": "unknown", "detail": "DNS unavailable."},
+                {"name": "DKIM", "status": "unknown", "detail": "DNS unavailable."},
+                {"name": "DMARC", "status": "unknown", "detail": "DNS unavailable."},
+            ],
+            "summary": "Could not complete the DNS checks.",
+        }))
+        state = send_outreach.domain_safety(account)
+    assert state["status"] == "blocked"
+    assert state["send_blockers"]
+    with pytest.raises(RuntimeError, match="domain-safety gate"):
+        with patched(send_outreach, "domain_safety", lambda account: state):
+            send_outreach.assert_domain_safe(account)
+
+
+def test_prepare_drafts_enforces_domain_safety_before_llm_work():
+    account = dict(ACCOUNT, google_token="encrypted")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(sheets, "require_full_header", lambda account: None))
+        stack.enter_context(patched(send_outreach.bounces, "assert_sendable", lambda account: None))
+        stack.enter_context(patched(send_outreach, "domain_safety", lambda account: {
+            "status": "blocked",
+            "send_blockers": ["SPF is missing."],
+        }))
+        with pytest.raises(RuntimeError, match="SPF is missing"):
+            send_outreach.prepare_drafts(account)
 
 
 def test_txt_records_joins_split_chunks():
@@ -4840,18 +6593,109 @@ class _FakeTable:
         return type("R", (), {"data": [], "count": 0})()
 
 
+def _schema_snapshot(*, missing=(), row_index_nullable=True,
+                     missing_indexes=(), missing_rls=(), missing_constraints=()):
+    missing = set(missing)
+    return {
+        "version": accounts_db.schema_contract.BASELINE_MIGRATION,
+        "columns": {
+            f"{requirement.table}.{requirement.column}":
+                f"{requirement.table}.{requirement.column}" not in missing
+            for requirement in accounts_db.schema_contract.REQUIREMENTS
+        },
+        "nullable": {"reviews.row_index": row_index_nullable},
+        "indexes": {
+            name: name not in set(missing_indexes)
+            for name in accounts_db.schema_contract.INDEX_REQUIREMENTS
+        },
+        "rls": {
+            table: table not in set(missing_rls)
+            for table in accounts_db.schema_contract.RLS_TABLES
+        },
+        "constraints": {
+            name: name not in set(missing_constraints)
+            for name in accounts_db.schema_contract.CONSTRAINT_REQUIREMENTS
+        },
+    }
+
+
+def _healthy_outbox_snapshot():
+    return {
+        "version": accounts_db.schema_contract.OUTBOX_MIGRATION,
+        "table": True,
+        "rls": True,
+        "ready_index": True,
+        "dedupe_constraint": True,
+        "status_constraint": True,
+        "event_constraint": True,
+        "source_constraint": True,
+        "rpcs": True,
+        "service_role_execute": True,
+        "client_execute_revoked": True,
+    }
+
+
+def _healthy_atomic_send_snapshot():
+    return {
+        "version": accounts_db.schema_contract.ATOMIC_SEND_MIGRATION,
+        "table": True,
+        "rls": True,
+        "client_table_access_revoked": True,
+        "operation_unique": True,
+        "status_constraint": True,
+        "active_index": True,
+        "active_row_index": True,
+        "recipient_index": True,
+        "reservation_rpc": True,
+        "duplicate_check_rpc": True,
+        "stripe_rpc": True,
+        "service_role_execute": True,
+        "client_execute_revoked": True,
+    }
+
+
 def test_schema_check_names_the_missing_column_and_its_consequence():
     """The window this closes: bounce_ack_count is only needed by an account
     already paused for a bad bounce rate, so without a boot-time warning the
     first person to discover it is a customer having a bad day whose only exit is
     deleting sheet rows -- the remediation the pause message stopped giving."""
-    with patched(accounts_db, "_get_client",
-                 lambda: _FakeTable(missing={"bounce_ack_count"})):
+    with patched(
+        accounts_db.schema_contract, "_contract_snapshot",
+        lambda: _schema_snapshot(missing={"accounts.bounce_ack_count"}),
+    ), patched(
+        accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 1, warnings
     assert "bounce_ack_count" in warnings[0]
-    assert "alter table public.accounts" in warnings[0], "give the statement, not just the name"
-    assert "deleting sheet rows" in warnings[0], "say what breaks, not just what is absent"
+    assert "20260827000000_sendkeep_baseline" in warnings[0]
+    assert "bounce pauses" in warnings[0], "say what breaks, not just what is absent"
+
+
+def test_schema_contract_uses_one_protected_rpc_snapshot():
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"version": accounts_db.schema_contract.BASELINE_MIGRATION}
+
+    with patched(
+        accounts_db.schema_contract.requests,
+        "post",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or Response(),
+    ):
+        snapshot = accounts_db.schema_contract._contract_snapshot(timeout_seconds=3)
+
+    assert snapshot["version"] == accounts_db.schema_contract.BASELINE_MIGRATION
+    assert calls[0][0][0].endswith("/rest/v1/rpc/sendkeep_schema_contract")
+    assert calls[0][1]["json"] == {}
+    assert calls[0][1]["timeout"] == 3
+    assert calls[0][1]["headers"]["Authorization"].startswith("Bearer ")
 
 
 def test_schema_check_names_degraded_classification_when_missing():
@@ -4860,12 +6704,65 @@ def test_schema_check_names_degraded_classification_when_missing():
     button, a missing degraded_classification column fails every insert and
     stops reply detection entirely. It has to be onboarded through the boot
     check like reviews' other two columns, not left to a manual README step."""
-    with patched(accounts_db, "_get_client",
-                 lambda: _FakeTable(missing={"degraded_classification"})):
+    with patched(
+        accounts_db.schema_contract, "_contract_snapshot",
+        lambda: _schema_snapshot(missing={"reviews.degraded_classification"}),
+    ), patched(
+        accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 1, warnings
     assert "degraded_classification" in warnings[0]
-    assert "alter table public.reviews" in warnings[0]
+    assert "20260827000000_sendkeep_baseline" in warnings[0]
+
+
+def test_schema_check_detects_the_live_row_index_nullability_regression():
+    with patched(
+        accounts_db.schema_contract, "_contract_snapshot",
+        lambda: _schema_snapshot(row_index_nullable=False),
+    ), patched(
+        accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ):
+        warnings = accounts_db.check_schema()
+    assert len(warnings) == 1
+    assert "reviews.row_index must be nullable" in warnings[0]
+
+
+def test_schema_check_detects_missing_dedupe_index():
+    with patched(
+        accounts_db.schema_contract, "_contract_snapshot",
+        lambda: _schema_snapshot(missing_indexes={"worker_events_run_dedupe_unique_idx"}),
+    ), patched(
+        accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ):
+        warnings = accounts_db.check_schema()
+    assert len(warnings) == 1
+    assert "worker_events_run_dedupe_unique_idx" in warnings[0]
+    assert "idempotent" in warnings[0]
+
+
+def test_schema_check_detects_missing_rls_and_constraint_controls():
+    with patched(
+        accounts_db.schema_contract, "_contract_snapshot",
+        lambda: _schema_snapshot(
+            missing_rls={"worker_events"},
+            missing_constraints={"commitments_status_check"},
+        ),
+    ), patched(
+        accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ):
+        warnings = accounts_db.check_schema()
+    assert len(warnings) == 2
+    assert any("worker_events" in warning and "RLS" in warning for warning in warnings)
+    assert any("commitments_status_check" in warning for warning in warnings)
 
 
 class _AccountsTable:
@@ -4927,6 +6824,76 @@ def test_list_accounts_with_a_sheet_includes_accounts_with_no_token():
     assert [a["id"] for a in result] == ["a1"]
 
 
+def test_list_accounts_for_worker_includes_active_tracked_threads_without_a_sheet():
+    class WorkerTable:
+        def __init__(self):
+            self.accounts = [
+                {"id": "sheet-account", "google_sheet_id": "sheet-1"},
+                {"id": "thread-account", "google_sheet_id": ""},
+                {"id": "idle-account", "google_sheet_id": None},
+            ]
+            self.tracked = [{"account_id": "thread-account", "status": "active"}]
+            self.current = "accounts"
+            self.filters = []
+
+        def table(self, name):
+            self.current = "tracked" if name == "tracked_threads" else "accounts"
+            return self
+
+        def select(self, cols): return self
+
+        def eq(self, col, value):
+            self.filters.append((col, value))
+            return self
+
+        def execute(self):
+            rows = self.accounts if self.current == "accounts" else self.tracked
+            rows = [
+                row for row in rows
+                if all(row.get(col) == value for col, value in self.filters)
+            ]
+            self.filters = []
+            return type("R", (), {"data": rows})()
+
+    previous = os.environ.get("TRACKED_THREADS_ENABLED")
+    try:
+        os.environ["TRACKED_THREADS_ENABLED"] = "1"
+        fake = WorkerTable()
+        with patched(accounts_db, "_get_client", lambda: fake):
+            result = accounts_db.list_accounts_for_worker()
+    finally:
+        if previous is None:
+            os.environ.pop("TRACKED_THREADS_ENABLED", None)
+        else:
+            os.environ["TRACKED_THREADS_ENABLED"] = previous
+    assert [account["id"] for account in result] == ["sheet-account", "thread-account"]
+
+
+def test_list_accounts_for_worker_includes_connected_gmail_without_a_sheet():
+    fake = _AccountsTable([
+        {"id": "gmail-only", "google_sheet_id": "", "google_token": "tok"},
+        {"id": "disconnected", "google_sheet_id": "", "google_token": None},
+        {"id": "sheet-account", "google_sheet_id": "sheet-1", "google_token": "tok"},
+    ])
+    previous_discovery = os.environ.get("GMAIL_THREAD_DISCOVERY_ENABLED")
+    previous_tracking = os.environ.get("TRACKED_THREADS_ENABLED")
+    try:
+        os.environ["GMAIL_THREAD_DISCOVERY_ENABLED"] = "1"
+        os.environ["TRACKED_THREADS_ENABLED"] = "1"
+        with patched(accounts_db, "_get_client", lambda: fake):
+            result = accounts_db.list_accounts_for_worker()
+    finally:
+        if previous_discovery is None:
+            os.environ.pop("GMAIL_THREAD_DISCOVERY_ENABLED", None)
+        else:
+            os.environ["GMAIL_THREAD_DISCOVERY_ENABLED"] = previous_discovery
+        if previous_tracking is None:
+            os.environ.pop("TRACKED_THREADS_ENABLED", None)
+        else:
+            os.environ["TRACKED_THREADS_ENABLED"] = previous_tracking
+    assert [account["id"] for account in result] == ["gmail-only", "sheet-account"]
+
+
 def test_set_worker_heartbeat_records_and_clears_last_error():
     fake = _AccountsTable([{"id": "a1", "worker_heartbeat_at": None, "last_error": None}])
     with patched(accounts_db, "_get_client", lambda: fake):
@@ -4951,23 +6918,31 @@ def test_set_worker_heartbeat_is_best_effort():
 
 
 def test_schema_check_is_silent_on_a_migrated_database():
-    with patched(accounts_db, "_get_client", lambda: _FakeTable()):
+    with patched(
+        accounts_db.schema_contract, "_contract_snapshot", _schema_snapshot
+    ), patched(
+        accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot
+    ), patched(
+        accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot
+    ):
         assert accounts_db.check_schema() == []
 
 
 def test_schema_check_does_not_blame_a_migration_for_an_unreachable_database():
     """A network failure would otherwise report every column as missing and send
     someone off to run SQL they do not need."""
-    with patched(accounts_db, "_get_client", lambda: _FakeTable(unreachable=True)):
+    with patched(
+        accounts_db.schema_contract, "_contract_snapshot",
+        lambda: (_ for _ in ()).throw(RuntimeError("connection refused")),
+    ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 1
     assert "Could not verify" in warnings[0]
-    assert "alter table" not in warnings[0]
+    assert "Apply Supabase migration" not in warnings[0]
 
 
-def test_a_degraded_control_warns_but_never_blocks_boot():
-    """Each degrades to something that still runs, so refusing to start would be
-    the larger outage. And one probe throwing must not hide the others."""
+def test_a_degraded_control_warns_locally_but_never_hides_other_probes():
+    """Local mode stays repairable, and one failed probe cannot hide another."""
     import server
     out = io.StringIO()
 
@@ -4990,6 +6965,24 @@ def test_a_degraded_control_warns_but_never_blocks_boot():
          contextlib.redirect_stdout(out):
         server.report_degraded_controls()
     assert "bounce_ack_count" in out.getvalue()
+
+
+def test_production_refuses_to_boot_with_an_incompatible_schema():
+    import server
+    previous = os.environ.get("APP_ENV")
+    try:
+        os.environ["APP_ENV"] = "production"
+        with patched(
+            server.accounts_db, "check_schema",
+            lambda: ["reviews.sent_at is missing"],
+        ), patched(server.ratelimit, "enforcement_warnings", lambda: []):
+            with pytest.raises(RuntimeError, match="schema is incompatible"):
+                server.report_degraded_controls()
+    finally:
+        if previous is None:
+            os.environ.pop("APP_ENV", None)
+        else:
+            os.environ["APP_ENV"] = previous
 
 
 def test_the_ratelimiter_reports_when_workers_make_it_unenforceable():
@@ -5096,14 +7089,17 @@ def test_send_all_prepared_refuses_when_bounce_rate_is_unsafe():
     sent = []
     with contextlib.ExitStack() as stack:
         stack.enter_context(_bounce_inputs(sent=40, bounces=4))
-        stack.enter_context(patched(sheets, "get_all_rows", lambda account: _bounce_rows(40, 4)))
+        rows = _bounce_rows(40, 4)
+        stack.enter_context(patched(sheets, "get_all_rows", lambda account: rows))
+        stack.enter_context(patched(drafts_db, "require_send_log", lambda: None))
+        stack.enter_context(patched(drafts_db, "list_pending_drafts", lambda aid: [{
+            "id": 1, "row_index": rows[0][0], "email": rows[0][1][sheets.COL_EMAIL],
+            "subject": "S", "body": "b",
+        }]))
         stack.enter_context(patched(gmail, "send_email", lambda *a, **k: sent.append(a) or "t"))
-        try:
-            send_outreach.send_all_prepared(ACCOUNT)
-            raise AssertionError("expected SendingPaused")
-        except bounces.SendingPaused:
-            pass
+        result = send_outreach.send_all_prepared(ACCOUNT)
     assert sent == [], "no email may leave while sending is paused"
+    assert result["sent"] == 0 and len(result["failed"]) == 1
 
 
 def test_bounce_stats_counts_bounced_rows_as_sent():
@@ -5640,15 +7636,17 @@ def test_an_unrecognized_plan_falls_back_to_the_smallest_entitlement():
 def test_the_daily_send_limit_follows_the_plan():
     """The cap used to be one global constant for every account."""
     assert plans.daily_send_limit_for({"plan": "trial"}) == 25
-    assert plans.daily_send_limit_for({"plan": "team"}) == 100
+    assert plans.daily_send_limit_for({"plan": "pilot"}) == 50
+    assert plans.daily_send_limit_for({"plan": "team"}) == 50
     assert plans.daily_send_limit_for({}) == 25, "unmigrated row reads as trial"
 
 
-def test_an_explicit_deployment_limit_still_outranks_the_plan():
-    """Self-hosted single-tenant installs have no plans and no Stripe. An
-    explicitly set DAILY_SEND_LIMIT must keep working for them."""
+def test_an_explicit_deployment_limit_can_lower_but_not_raise_the_plan_cap():
+    """Self-hosted installs may choose a stricter cap, never a looser one."""
     with patched(config, "DAILY_SEND_LIMIT_OVERRIDE", 5):
         assert plans.daily_send_limit_for({"plan": "team"}) == 5
+    with patched(config, "DAILY_SEND_LIMIT_OVERRIDE", 100):
+        assert plans.daily_send_limit_for({"plan": "team"}) == 50
 
 
 def test_reply_drafting_is_never_capped_because_the_site_sells_it_as_unlimited():
@@ -5691,7 +7689,7 @@ def test_lead_sourcing_refuses_before_spending_a_single_search():
             leads.find_leads(ACCOUNT, "founders in logistics")
         except plans.QuotaExceeded as e:
             assert spent == {"searches": 0, "llm": 0}, "a refused batch must cost nothing"
-            assert "Trial" in str(e) and "Upgrade to Pilot" in str(e), \
+            assert "Trial" in str(e) and "Upgrade to Inbox" in str(e), \
                 "a quota refusal has to say what ran out and what to do about it"
             return
     assert False, "an exhausted lead allowance must refuse"
@@ -5784,24 +7782,26 @@ def test_plan_limits_match_the_numbers_on_the_pricing_page():
     page = (Path(__file__).resolve().parent.parent
             / "site" / "src" / "components" / "pricing.tsx").read_text(encoding="utf-8")
 
-    assert "25 approved sends per day" in page
     assert plans.PLANS["trial"].daily_send_limit == 25
-
-    assert "50 sourced leads" in page
     assert plans.PLANS["trial"].lead_allowance == 50
     assert plans.PLANS["trial"].lead_window == "lifetime", \
         "the page writes the trial's leads without a /mo suffix"
 
-    assert "500 sourced leads/mo" in page
     assert plans.PLANS["pilot"].lead_allowance == 500
     assert plans.PLANS["pilot"].lead_window == "month"
 
-    assert "Unlimited reply drafts" in page
+    assert "One follow-up reminder per contact" in page
     assert plans.PLANS["pilot"].monthly_replies is None
 
-    for tier, price in (("Pilot", 19), ("Team", 149)):
-        assert f"${price}/mo" in page
-        assert plans.PLANS[tier.lower()].price_monthly_usd == price
+    assert "Capped first-touch trial" in page
+    assert "Gmail Sent-thread discovery" in page
+    assert "sourced leads" not in page
+
+    assert "$29/mo" in page
+    assert plans.PLANS["pilot"].price_monthly_usd == 29
+    assert plans.PLANS["team"].price_monthly_usd == 49
+    assert "$49/inbox/mo" in page
+    assert "Agency pilot" in page
 
 
 # --------------------------------------------------------------------- billing
@@ -5888,15 +7888,18 @@ def test_the_upgrade_follows_our_reference_not_anything_the_payer_typed():
     import billing
 
     change = billing.plan_change_from_event({
+        "id": "evt_upgrade", "created": 100,
         "type": "checkout.session.completed",
         "data": {"object": {
             "payment_status": "paid",
             "client_reference_id": "acct-real",
+            "subscription": "sub_real",
             "customer_email": "victim@example.com",
             "metadata": {"account_id": "acct-real", "plan": "pilot"},
         }},
     })
-    assert change == ("acct-real", "pilot")
+    assert change["account_id"] == "acct-real" and change["plan"] == "pilot"
+    assert change["subscription_id"] == "sub_real"
 
 
 def test_an_unpaid_checkout_session_grants_nothing():
@@ -5905,6 +7908,7 @@ def test_an_unpaid_checkout_session_grants_nothing():
 
     for status in ("unpaid", "no_payment_required", "paid"):
         change = billing.plan_change_from_event({
+            "id": f"evt_{status}", "created": 100,
             "type": "checkout.session.completed",
             "data": {"object": {
                 "payment_status": status,
@@ -5915,7 +7919,7 @@ def test_an_unpaid_checkout_session_grants_nothing():
         if status == "unpaid":
             assert change is None, "an unpaid session must not grant a plan"
         else:
-            assert change == ("acct-1", "team")
+            assert change["account_id"] == "acct-1" and change["plan"] == "team"
 
 
 def test_a_forged_plan_name_cannot_invent_a_tier():
@@ -5925,6 +7929,7 @@ def test_a_forged_plan_name_cannot_invent_a_tier():
     import billing
 
     assert billing.plan_change_from_event({
+        "id": "evt_bad_plan", "created": 100,
         "type": "checkout.session.completed",
         "data": {"object": {
             "payment_status": "paid",
@@ -5939,9 +7944,10 @@ def test_cancelling_a_subscription_returns_the_account_to_the_trial():
     import billing
 
     assert billing.plan_change_from_event({
+        "id": "evt_cancel", "created": 101,
         "type": "customer.subscription.deleted",
-        "data": {"object": {"metadata": {"account_id": "acct-9"}}},
-    }) == ("acct-9", "trial")
+        "data": {"object": {"id": "sub_9", "metadata": {"account_id": "acct-9"}}},
+    })["plan"] == "trial"
 
 
 def test_an_unhandled_event_type_changes_nothing():
@@ -5965,6 +7971,36 @@ def test_checkout_is_refused_for_a_plan_that_is_not_sold():
         except billing.BillingNotConfigured:
             return
     assert False, "the trial is not a sellable plan"
+
+
+def test_paid_checkout_is_one_managed_inbox_per_account():
+    """The Agency price is per isolated inbox, not a seat bundle or an
+    unbounded quantity a browser can choose."""
+    import billing
+
+    captured = {}
+
+    def fake_post(path, form):
+        captured["path"] = path
+        captured["form"] = form
+        return {"url": "https://checkout.stripe.test/session"}
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(billing, "STRIPE_SECRET_KEY", "sk_test_x"))
+        stack.enter_context(patched(billing, "PUBLIC_BASE_URL", "https://sendkeep.test"))
+        stack.enter_context(patched(billing, "price_id_for", lambda plan, yearly=False: "price_team"))
+        stack.enter_context(patched(billing, "_post", fake_post))
+        url = billing.create_checkout_session(
+            {"id": "acct-agency", "email": "owner@example.com"}, "team"
+        )
+
+    assert url == "https://checkout.stripe.test/session"
+    assert captured["path"] == "checkout/sessions"
+    fields = dict(captured["form"])
+    assert fields["line_items[0][quantity]"] == "1"
+    assert fields["client_reference_id"] == "acct-agency"
+    assert fields["metadata[plan]"] == "team"
+    assert fields["line_items[0][price]"] == "price_team"
 
 
 # ------------------------------------------------------ single follow-up loop
@@ -6055,6 +8091,29 @@ def test_due_follow_up_enters_manual_review_once_without_sending():
     assert "send_reply" not in calls, "the watcher queues; only operator approval may send"
 
 
+def test_worker_reconciles_fenced_follow_up_without_operator_gmail_inspection():
+    source = {
+        "id": 44, "thread_id": "t1", "email": "john@x.com",
+        "follow_up_status": "sending",
+    }
+    review = {
+        "id": 91, "status": "pending", "email": "john@x.com",
+        "draft_reply": "A useful reminder",
+    }
+    order = []
+    errors = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patched(drafts_db, "list_follow_ups_needing_reconciliation", lambda aid: [source]))
+        stack.enter_context(patched(reviews_db, "find_follow_up", lambda aid, did: review))
+        stack.enter_context(patched(gmail, "get_thread", lambda *a: {"messages": []}))
+        stack.enter_context(patched(gmail, "find_sent_reply", lambda *a, **k: {"id": "sent"}))
+        stack.enter_context(patched(drafts_db, "mark_follow_up_sent", lambda aid, did: order.append("source") or True))
+        stack.enter_context(patched(reviews_db, "mark_sent", lambda aid, rid, body: order.append("review")))
+        watch_replies._reconcile_follow_up_sends(ACCOUNT, errors)
+    assert errors == []
+    assert order == ["source", "review"]
+
+
 def test_follow_up_send_rechecks_thread_and_cancels_on_last_second_reply():
     import server
     review = dict(_PENDING_REVIEW, id=90, kind="follow_up", source_draft_id=44)
@@ -6091,6 +8150,7 @@ def test_approved_follow_up_sends_once_with_opt_out_and_records_source_first():
     sent = {}
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
         stack.enter_context(patched(server.drafts_db, "get_draft",
                                     lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
@@ -6101,9 +8161,12 @@ def test_approved_follow_up_sends_once_with_opt_out_and_records_source_first():
         stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: None))
         stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
         stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
+        stack.enter_context(patched(server.reviews_db, "update_claimed_body", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "reserve", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "complete", lambda *args: True))
         stack.enter_context(patched(server.gmail, "send_reply",
                                     lambda a, tid, to, body, unsubscribe_url="": sent.update(body=body, header=unsubscribe_url)))
-        stack.enter_context(patched(server.drafts_db, "mark_follow_up_sent", lambda aid, did: order.append("source")))
+        stack.enter_context(patched(server.drafts_db, "mark_follow_up_sent", lambda aid, did: order.append("source") or True))
         stack.enter_context(patched(server.reviews_db, "mark_sent", lambda aid, rid, body: order.append("review")))
         result = server.send_reply(_srv_req(), 90, server.SendReplyBody(body="A useful reminder"))
     assert result == {"ok": True}
@@ -6218,6 +8281,7 @@ def test_follow_up_gmail_failure_is_delivery_uncertain_not_resendable():
     calls = []
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
         stack.enter_context(patched(server.drafts_db, "get_draft",
                                     lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
@@ -6228,6 +8292,8 @@ def test_follow_up_gmail_failure_is_delivery_uncertain_not_resendable():
         stack.enter_context(patched(server.gmail, "get_latest_reply_with_history", lambda *a, **k: None))
         stack.enter_context(patched(server.gmail, "find_bounce", lambda *a, **k: None))
         stack.enter_context(patched(server.auth, "unsubscribe_url", lambda aid, email: "https://x.test/u"))
+        stack.enter_context(patched(server.reviews_db, "update_claimed_body", lambda *args: True))
+        stack.enter_context(patched(server.send_capacity_db, "reserve", lambda *args: True))
         stack.enter_context(patched(server.drafts_db, "release_follow_up_send",
                                     lambda aid, did: calls.append("released")))
         stack.enter_context(patched(server.drafts_db, "mark_follow_up_sent",
@@ -6239,8 +8305,8 @@ def test_follow_up_gmail_failure_is_delivery_uncertain_not_resendable():
         try:
             server.send_reply(_srv_req(), 90, server.SendReplyBody(body="reminder"))
             raise AssertionError("expected 502")
-        except server.HTTPException as e:
-            assert e.status_code == 502
+        except send_outreach.DeliveryUncertain as e:
+            assert e.code == "send_uncertain" and e.retryable is False
     assert "released" not in calls, "a possibly-sent follow-up must not become resendable"
     assert calls == [], "no sent/review write may happen when Gmail failed"
 
@@ -6253,6 +8319,7 @@ def test_follow_up_preflight_failure_releases_claim_because_send_never_started()
     calls = []
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
         stack.enter_context(patched(server.drafts_db, "get_draft",
                                     lambda aid, did: {"id": 44, "follow_up_status": "queued"}))
@@ -6291,7 +8358,7 @@ def test_sending_row_send_attempt_surfaces_uncertain_not_dismissed():
             raise AssertionError("expected 409")
         except server.HTTPException as e:
             assert e.status_code == 409
-            assert "uncertain" in e.detail
+            assert "verified" in e.detail
     assert dismissed == [], "an uncertain send must not be dismissed as handled"
 
 
@@ -6393,6 +8460,7 @@ def test_follow_up_cannot_be_dismissed_after_another_request_claims_send():
     dismissed = []
     with contextlib.ExitStack() as stack:
         stack.enter_context(patched(server, "_account", lambda r: dict(ACCOUNT)))
+        stack.enter_context(patched(server, "_assert_send_capacity", lambda account: None))
         stack.enter_context(patched(server.reviews_db, "get_review", lambda aid, rid: review))
         stack.enter_context(patched(server.drafts_db, "cancel_follow_up", lambda *a: False))
         stack.enter_context(patched(server.reviews_db, "dismiss",
@@ -6500,6 +8568,127 @@ def test_zero_row_queue_transition_hides_the_unsendable_review():
 
 
 # ---------------------------------------------------------------------- runner
+
+# ------------------------------------------- draft-quality hardening (2026-08-23)
+
+def test_enforce_signature_replaces_a_hallucinated_signoff():
+    """The model signed a live inbox Long / Alex / Team / Sam across four turns
+    with Alex and Sam invented from thread context. Identity is never sampled:
+    a bare trailing name line that disagrees with settings gets replaced."""
+    body = "Sounds good, grab a time here.\n\nAlex"
+    out = agent._enforce_signature(body, "Oanh")
+    assert out.endswith("Oanh") and "Alex" not in out, out
+    # Configured name already correct: untouched.
+    assert agent._enforce_signature("See you then.\n\nOanh", "Oanh") == "See you then.\n\nOanh"
+
+
+def test_enforce_signature_leaves_real_sentences_alone():
+    """A closing sentence is prose, not a signature -- it must survive even
+    when its words happen to look name-shaped."""
+    body = "Thanks for the quick reply. I just booked the slot. Looking forward to our chat"
+    assert agent._enforce_signature(body, "Oanh") == body
+    # A one-line body IS the message, never a sign-off.
+    assert agent._enforce_signature("hi", "Oanh") == "hi"
+
+
+def test_enforce_signature_pins_the_name_line_above_a_company_signoff():
+    """First-touch emails end 'Name\\nCompany'. The company line is a bare
+    single word and once got rewritten INTO the sender name, destroying it."""
+    body = "Grab a time here.\n\nAlex\nLedgerline"
+    out = agent._enforce_signature(body, "Oanh", "Ledgerline")
+    assert out == "Grab a time here.\n\nOanh\nLedgerline", out
+    # Company already correct but name drifted -- same fix.
+    out2 = agent._enforce_signature("See you then.\n\nSam\nLedgerline", "Oanh", "Ledgerline")
+    assert out2 == "See you then.\n\nOanh\nLedgerline", out2
+
+
+def test_validate_reply_flags_invented_statistics_but_allows_configured_ones():
+    invented = "We cut onboarding time by up to 40% for teams like yours. Worth a chat? Oanh"
+    problems = agent._validate_reply(invented, "", allowed_claims_context="help teams automate invoicing")
+    assert any("invented statistic" in p and "40%" in p for p in problems), problems
+
+    allowed_ctx = "customers report a 30% faster close"
+    disclosed = "Teams typically see a 30% faster close. Worth a chat? Oanh"
+    assert agent._validate_reply(disclosed, "", allowed_claims_context=allowed_ctx) == []
+
+
+def test_validate_outreach_flags_the_live_fabricated_stat():
+    subject = "Cutting your project timelines"
+    body = (
+        "Hi John, saw you're scaling delivery at Acme. Our solutions reduce "
+        "project completion times by up to 30%. Grab a time here: "
+        "https://cal.com/oanh/15min\n\nOanh"
+    )
+    problems = agent._validate_outreach(subject, body, "https://cal.com/oanh/15min", "")
+    assert any("30%" in p for p in problems), problems
+
+
+def test_add_review_returns_existing_row_when_insert_hits_the_unique_index():
+    """Two concurrent check jobs can both pass check-then-insert; Postgres
+    rejects the loser with 23505 and add_review must hand back the winner --
+    a race error must never cost the notification, or duplicate the review."""
+    class _InsertBuilder:
+        def __init__(self, store):
+            self.store = store
+
+        def insert(self, payload):
+            self.payload = payload
+            return self
+
+        def execute(self):
+            if getattr(self.store, "armed", False):
+                self.store.armed = False
+                raise Exception('(code = 23505, message = "duplicate key value '
+                                'violates unique constraint reviews_thread_message_idx")')
+            self.store.data = [{"id": 4242}]
+            return self
+
+    class _SelectBuilder:
+        def __init__(self, result):
+            self.result = result
+            # find_review_id reads .data on the execute() result; these same
+            # builders double as both query builder and response.
+            self.data = []
+
+        def select(self, *_a, **_k):
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def is_(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a):
+            return self
+
+        def execute(self):
+            if self.result.selects:
+                self.data = self.result.selects.pop(0)
+            return self
+
+    class Store:
+        armed = True
+        selects = [[], [{"id": 4242}]]  # first lookup misses, race lookup finds the winner
+
+    store = Store()
+    original_client = reviews_db._client
+    builders = iter([_SelectBuilder(store), _InsertBuilder(store), _SelectBuilder(store)])
+
+    class FakeClient:
+        def table(self, *_a):
+            return next(builders)
+
+    reviews_db._client = FakeClient()
+    try:
+        out = reviews_db.add_review(
+            "acct-1", 3, "John", "john@acme.test", "thread-1",
+            None, "Great! Here's the link.", gmail_message_id="msg-9",
+        )
+    finally:
+        reviews_db._client = original_client
+    assert out == 4242, f"the pre-existing winner is returned: {out}"
+
 
 def main():
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

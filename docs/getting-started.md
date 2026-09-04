@@ -8,15 +8,17 @@
 > Limits shown in the app are read live from `/api/plan` rather than
 > hardcoded, so the numbers below are the defaults and may differ per instance.
 
-Sendkeep emails a list of leads from your own Gmail and handles the replies.
-Bring a list you already have, or let it find one for you.
+Sendkeep is the promise and follow-up memory layer attached to Gmail. Connect
+Gmail and it discovers a bounded window of recent Sent threads, extracts
+promised actions, and keeps one follow-up visible. Reply in Gmail or Gemini;
+bring a list only if you want the optional first-touch lane.
 
-It runs two agents against one Google Sheet of leads:
+The core workflow is Gmail-first:
 
-- **The outreach agent** (core) emails the leads you approved, from your own
-  Gmail, then watches for replies and drafts responses for you to approve.
-- **The lead sourcing agent** (optional) finds people matching a description
-  you write and adds them to your sheet for review.
+- **The promise layer** watches Gmail threads sent by Sendkeep, Gmail, another
+  tool, or a VA, then keeps promised actions and one follow-up visible.
+- **The first-touch lane** (optional) uses a Google Sheet for approved contacts
+  and sends at a capped, human-reviewed pace.
 
 **You do not need the lead sourcing agent.** If you already have a list,
 whether that is a CSV export, a spreadsheet a colleague sent you, or a sheet
@@ -24,8 +26,9 @@ you built by hand, the outreach agent works on its own. Point it at your
 prepared sheet and never open the Leads page. Everything from step 5 onwards
 applies exactly the same either way.
 
-You stay in the loop at both points that matter: no lead gets emailed until you
-approve it, and no reply gets sent until you read it.
+The core workflow is read-only against Gmail Sent. Reply in Gmail or Gemini;
+confirm or dismiss promises and follow-up reminders in Sendkeep. Optional
+first-touch delivery remains manual by default.
 
 Setup takes about ten minutes. You need a Google account, and a calendar
 booking link (Cal.com, Calendly, or similar) if you want meetings to be
@@ -44,14 +47,16 @@ there's no separate password to set.
 
 ---
 
-## Step 2 — Connect your Google account
+## Step 2 — Connect Gmail
 
-Open **Settings** and click **Connect Google**. You will be asked to grant two
-things:
+Open **Settings** and click **Connect Gmail**. The first grant is read-only Gmail
+access for Sent monitoring. Gmail sending and optional Sheets/Drive access are
+requested separately only when you enable those capabilities.
 
 - **Gmail** — so outreach is sent from your own address, and replies land in
   your own inbox.
-- **Sheets** — so the agents can read your lead sheet and write statuses back.
+- **Sheets** — only if you want the optional first-touch lane to read a lead
+  sheet and write statuses back.
 
 Your token is encrypted before it is stored, and it is never written to disk.
 
@@ -60,8 +65,8 @@ Google shows "This app hasn't been verified." Click **Advanced**, then **Go to
 Sendkeep** to continue. This is normal for an app that has not yet completed
 Google's verification review.
 
-When it works, the Google account card reads "Connected — Gmail and Sheets are
-authorized."
+When it works, the Google account card reads "Connected — Gmail monitoring is
+authorized." A Sheet is optional.
 
 ---
 
@@ -223,13 +228,14 @@ Go to **Outreach**. Before anything sends you get a preview showing how many
 contacts are eligible right now, how many already went out in the last 24
 hours, and how many are being held back by the daily cap.
 
-Sending requires an explicit confirmation. Nothing goes out on a single stray
-click.
+Sending requires an explicit confirmation. The core Gmail Sent workflow never
+sends. Optional first-touch delivery is manual by default and capped for safety.
 
-For each contact the agent writes the email, sends it from your Gmail, and
-immediately marks the row `Sent` with the thread ID, the timestamp, and the
-body it used. It sends four at a time. When the batch finishes you get a
-summary at your notification email.
+For each contact the agent writes the email. It waits for your approval before
+sending in the standard deployment. When a message sends, the
+row is marked `Sent` with the thread ID, the timestamp, and the body it used.
+It sends four at a time. When the batch finishes you get a summary at your
+notification email.
 
 **The daily cap is 25 emails per 24 hours by default** (the instance owner can
 change it). This is a deliberate rate limit, not a licensing limit. Sending
@@ -240,19 +246,22 @@ also run at most 5 batches per hour.
 
 ## Step 8 — Handle replies
 
-Click **Check replies** on the Outreach page. The agent looks at every thread
-it has sent, finds new responses, strips out the quoted history, and drafts a
-reply for each one.
+Open **Promises** or **Threads** on the Outreach page. The worker watches tracked
+conversations, including recent Gmail Sent threads discovered even when another
+tool sent them, and extracts evidence-backed actions. Reply in the original
+Gmail thread; Sendkeep is not a second reply inbox.
 
-Drafts land in a review queue. For each you can **edit the text and send**, or
-**dismiss** it without sending. Sent replies go out in the original thread, so
-the conversation stays intact for the person receiving it.
+The optional reply-help lane remains under **More** for operators who want a
+grounded draft. It is secondary to Gmail and is not required for the core
+promise workflow.
 
 If a sent contact stays silent, Sendkeep queues one follow-up after the delay in
 Settings. It never sends that follow-up automatically. A reply, bounce, opt-out,
 or dismissal cancels it, and the Outreach page shows the number currently due.
 
-Nothing in the reply/follow-up queue is sent without you reading it first.
+Follow-up reminders never send automatically. An ambiguous send stays locked
+until the worker verifies the exact message in Gmail Sent; it is never silently
+retried.
 
 You can also check a single contact with a read-only "has this person replied
 yet?" check, which drafts nothing and writes nothing.

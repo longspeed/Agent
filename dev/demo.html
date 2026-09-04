@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sendkeep local demo</title>
+    <style>
+      :root { color-scheme: dark; --bg: #11100e; --panel: #1b1916; --line: #39332d; --text: #f4eadb; --muted: #afa294; --accent: #f08a4b; --ok: #9bd08e; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: radial-gradient(circle at 80% 0%, #332219, transparent 40%), var(--bg); color: var(--text); font: 15px/1.55 Inter, system-ui, sans-serif; }
+      a { color: var(--text); }
+      .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+      header { border-bottom: 1px solid var(--line); }
+      nav { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+      .brand { font-weight: 700; letter-spacing: -.03em; }
+      .tag { color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: .12em; }
+      main { padding: 48px 0 72px; }
+      h1, h2, p { margin-top: 0; }
+      h1 { max-width: 700px; font-size: clamp(32px, 6vw, 62px); line-height: 1.02; letter-spacing: -.05em; margin-bottom: 18px; }
+      h2 { font-size: 20px; letter-spacing: -.02em; }
+      .lede { color: var(--muted); max-width: 650px; font-size: 17px; }
+      .banner { margin: 28px 0; padding: 16px 18px; border: 1px solid #75502f; border-radius: 14px; background: #2b2119; color: #f5c49a; }
+      .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 36px; }
+      .metric, .card { background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: 16px; }
+      .metric { padding: 16px; }
+      .metric strong { display: block; font-size: 28px; }
+      .metric span, .meta { color: var(--muted); font-size: 13px; }
+      .queue { display: grid; gap: 12px; }
+      .card { padding: 20px; display: grid; grid-template-columns: 1fr auto; gap: 20px; }
+      .kind { color: var(--accent); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+      .card h3 { margin: 5px 0; font-size: 19px; }
+      .preview { color: var(--muted); margin: 8px 0 12px; }
+      .pill { display: inline-block; padding: 4px 9px; border: 1px solid #5d4937; border-radius: 999px; color: #f1bd91; font-size: 12px; }
+      button { border: 0; border-radius: 9px; padding: 10px 13px; background: var(--accent); color: #21130b; font: inherit; font-weight: 700; cursor: pointer; }
+      button.secondary { background: transparent; border: 1px solid var(--line); color: var(--text); }
+      button:disabled { opacity: .55; cursor: wait; }
+      .actions { display: flex; flex-direction: column; gap: 9px; min-width: 145px; }
+      .footer-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+      #message { min-height: 24px; margin-top: 18px; color: var(--ok); }
+      @media (max-width: 650px) { main { padding-top: 32px; } .summary { grid-template-columns: 1fr; } .card { grid-template-columns: 1fr; } .actions { flex-direction: row; } }
+    </style>
+  </head>
+  <body>
+    <header><nav class="shell"><span class="brand">Sendkeep</span><span class="tag">Local demo / no external services</span></nav></header>
+    <main class="shell">
+      <p class="tag">Developer first success</p>
+      <h1>See the warm-reply queue before connecting Gmail.</h1>
+      <p class="lede">This is seeded data. It demonstrates replies, promised follow-ups, and review actions without OAuth, Supabase, an LLM, or real email.</p>
+      <div class="banner"><strong>Safe by construction.</strong> Local demo mode never sends email. The send endpoint returns a deliberate 409 so tests cannot accidentally contact a real person.</div>
+      <section class="summary" id="summary" aria-label="Queue summary"></section>
+      <h2>Review queue</h2>
+      <div class="queue" id="queue" aria-live="polite"><p class="meta">Loading the seeded queue...</p></div>
+      <div class="footer-actions">
+        <button class="secondary" id="reset">Reset demo data</button>
+        <button id="send">Try protected send</button>
+      </div>
+      <p id="message" role="status"></p>
+    </main>
+    <script>
+      const message = document.querySelector('#message');
+      const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+      async function loadState() {
+        const state = await fetch('/api/demo/state').then((response) => response.json());
+        document.querySelector('#summary').innerHTML = [
+          ['needs_review', 'Need review'],
+          ['promised_follow_ups', 'Promised follow-ups'],
+          ['sent', 'External emails sent'],
+        ].map(([key, label]) => `<div class="metric"><strong>${state.summary[key]}</strong><span>${label}</span></div>`).join('');
+        document.querySelector('#queue').innerHTML = state.queue.map((item) => `
+          <article class="card">
+            <div>
+              <div class="kind">${escapeHtml(item.kind)}</div>
+              <h3>${escapeHtml(item.contact)} <span class="meta">at ${escapeHtml(item.company)}</span></h3>
+              <div class="meta">${escapeHtml(item.email)} · ${escapeHtml(item.subject)}</div>
+              <p class="preview">“${escapeHtml(item.preview)}”</p>
+              <span class="pill">${escapeHtml(item.status)}</span>
+              <p class="meta">${escapeHtml(item.next_step)} · ${escapeHtml(item.age)}</p>
+            </div>
+            <div class="actions">
+              <button class="review" data-id="${escapeHtml(item.id)}" ${item.status === 'Reviewed' ? 'disabled' : ''}>${item.status === 'Reviewed' ? 'Reviewed' : 'Mark reviewed'}</button>
+              <button class="secondary" disabled>Send reply</button>
+            </div>
+          </article>`).join('');
+        document.querySelectorAll('.review').forEach((button) => button.addEventListener('click', async () => {
+          button.disabled = true;
+          await fetch(`/api/demo/queue/${encodeURIComponent(button.dataset.id)}/review`, { method: 'POST' });
+          message.textContent = 'Saved locally. No external service was called.';
+          await loadState();
+        }));
+      }
+      document.querySelector('#reset').addEventListener('click', async () => {
+        await fetch('/api/demo/reset', { method: 'POST' });
+        message.textContent = 'Demo data restored.';
+        await loadState();
+      });
+      document.querySelector('#send').addEventListener('click', async () => {
+        const response = await fetch('/api/demo/send', { method: 'POST' });
+        const body = await response.json();
+        message.textContent = `${response.status}: ${body.detail}`;
+      });
+      loadState().catch((error) => { message.textContent = `Could not load demo state: ${error}`; });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,52 @@
+name: Deploy database migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: "I have reviewed the dry run and want to apply production migrations"
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: production-database
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    # A migration must come from the protected main branch and require an
+    # explicit confirmation. Environment approvals remain the final gate.
+    if: github.ref == 'refs/heads/main' && inputs.confirm_production == true
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v3
+        with:
+          # Keep deploy and CI on the exact same CLI so a successful rebuild
+          # means the production push uses the same migration semantics.
+          version: 2.101.0
+      - name: Require successful CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          successes="$(gh run list --workflow ci.yml --branch main --commit "$GITHUB_SHA" --limit 20 --json conclusion --jq '[.[] | select(.conclusion == "success")] | length')"
+          test "$successes" -gt 0 || {
+            echo "No successful CI run exists for $GITHUB_SHA; wait for CI before migrating production."
+            exit 1
+          }
+      - name: Link the protected production project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Preview pending migrations
+        run: supabase db push --dry-run
+      - name: Apply forward-only migrations
+        run: supabase db push

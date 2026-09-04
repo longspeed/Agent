@@ -3,15 +3,21 @@ their encrypted Google OAuth token, their sheet id, and their outreach settings.
 Also records per-account usage of metered third-party services (LLM, search)."""
 import base64
 import hashlib
+import os
 import re
 
 from cryptography.fernet import Fernet
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SECRET_KEY, APP_SECRET_KEY
+import schema_contract
 
 ACCOUNTS_TABLE = "accounts"
 USAGE_TABLE = "usage_events"
+
+
+class GoogleIdentityConflict(RuntimeError):
+    """An email is already bound to a different immutable Google subject."""
 
 
 # Settings a customer may edit about themselves via the API.
@@ -27,156 +33,34 @@ EDITABLE_SETTINGS = (
     "follow_up_delay_days",
 )
 
-# Columns the code needs that a project created before them will not have, as
-# (column, what breaks without it, the statement that adds it). Checked at boot
-# rather than on first use -- see check_schema for why that distinction matters
-# for this particular column.
-_MIGRATED_COLUMNS = (
-    (
-        ACCOUNTS_TABLE,
-        "bounce_ack_count",
-        "a paused account cannot clear its own bounce pause, leaving deleting "
-        "sheet rows as the only way out",
-        "alter table public.accounts add column if not exists "
-        "bounce_ack_count integer not null default 0;",
-    ),
-    (
-        "outreach_drafts",
-        "sent_at",
-        "sending is blocked outright (drafts_db.require_send_log), because a send "
-        "that cannot be recorded would be re-sent on the next batch",
-        "alter table public.outreach_drafts add column if not exists sent_at timestamptz;",
-    ),
-    (
-        ACCOUNTS_TABLE,
-        "plan",
-        "every account is treated as the free trial, so paid customers silently "
-        "get trial quotas and a Stripe webhook has nowhere to write the plan it "
-        "just collected money for",
-        "alter table public.accounts add column if not exists plan text not null "
-        "default 'trial';",
-    ),
-    (
-        "reviews",
-        "gmail_message_id",
-        "reply dedupe falls back to matching the reply BODY, which collides on "
-        "two identical short replies, 414s on a long quoted chain, and cannot "
-        "carry a unique index -- so two processes detecting the same reply both "
-        "queue it and the prospect can be answered twice",
-        "alter table public.reviews add column if not exists gmail_message_id text; "
-        "create unique index if not exists reviews_thread_message_idx on "
-        "public.reviews (account_id, thread_id, gmail_message_id);",
-    ),
-    (
-        "outreach_drafts",
-        "original_body",
-        "every edit an operator makes before sending is destroyed at send time "
-        "-- mark_sent overwrites subject/body with the approved copy, so the "
-        "pair (what the model wrote, what this person actually says) is lost "
-        "and cannot be backfilled",
-        "alter table public.outreach_drafts add column if not exists "
-        "original_subject text; "
-        "alter table public.outreach_drafts add column if not exists "
-        "original_body text;",
-    ),
-    (
-        "reviews",
-        "original_draft_reply",
-        "the same loss on the reply path: mark_sent overwrites draft_reply with "
-        "what the operator sent, so what the model proposed is gone",
-        "alter table public.reviews add column if not exists "
-        "original_draft_reply text;",
-    ),
-    (
-        "reviews",
-        "validator_problems",
-        "a reply draft that failed validation twice is queued anyway (losing the "
-        "notification is worse), and without this column it looks identical to a "
-        "clean one -- the operator is never told which draft the validator "
-        "already objected to",
-        "alter table public.reviews add column if not exists "
-        "validator_problems text;",
-    ),
-    (
-        "reviews",
-        "degraded_classification",
-        "add_review's insert fails outright rather than degrading, so reply "
-        "detection stops entirely -- not just the degraded-lookup marker this "
-        "column exists to carry",
-        "alter table public.reviews add column if not exists "
-        "degraded_classification boolean not null default false;",
-    ),
-    (
-        ACCOUNTS_TABLE,
-        "worker_heartbeat_at",
-        "set_worker_heartbeat fails silently (it is best-effort by design), so "
-        "the background reply-watcher has no way to prove it is actually "
-        "running for this account -- a stale heartbeat and a missing column "
-        "look identical from here",
-        "alter table public.accounts add column if not exists "
-        "worker_heartbeat_at timestamptz; "
-        "alter table public.accounts add column if not exists last_error text;",
-    ),
-    (
-        "outreach_drafts",
-        "rewritten",
-        "mark_rewritten's best-effort write fails silently, so Phase 6's future "
-        "edit-diff corpus has no way to exclude a draft the model rewrote from "
-        "one the operator wrote by hand -- the send itself is unaffected either "
-        "way, since this write is deliberately separate from mark_sent",
-        "alter table public.outreach_drafts add column if not exists "
-        "rewritten boolean not null default false;",
-    ),
-    (
-        ACCOUNTS_TABLE,
-        "outreach_send_mode",
-        "the account cannot choose whether newly prepared outreach drafts wait for "
-        "review or are sent immediately",
-        "alter table public.accounts add column if not exists outreach_send_mode "
-        "text not null default 'manual' check (outreach_send_mode in ('manual', 'auto'));",
-    ),
-    (
-        ACCOUNTS_TABLE,
-        "follow_up_delay_days",
-        "follow-up due dates cannot be scheduled for newly sent outreach",
-        "alter table public.accounts add column if not exists follow_up_delay_days "
-        "integer not null default 3 check (follow_up_delay_days between 1 and 14);",
-    ),
-    (
-        "outreach_drafts",
-        "follow_up_status",
-        "sent outreach has no durable follow-up schedule or cancellation state",
-        "alter table public.outreach_drafts add column if not exists thread_id text; "
-        "alter table public.outreach_drafts add column if not exists follow_up_due_at timestamptz; "
-        "alter table public.outreach_drafts add column if not exists follow_up_status text; "
-        "alter table public.outreach_drafts add column if not exists follow_up_cancel_reason text; "
-        "alter table public.outreach_drafts add column if not exists follow_up_sent_at timestamptz; "
-        "alter table public.outreach_drafts add column if not exists follow_up_replied_at timestamptz; "
-        "create index if not exists outreach_follow_up_status_idx on public.outreach_drafts "
-        "(account_id, follow_up_status, follow_up_due_at);",
-    ),
-    (
-        "reviews",
-        "kind",
-        "the review queue cannot distinguish inbound replies from proactive follow-ups",
-        "alter table public.reviews add column if not exists kind text not null default 'reply'; "
-        "alter table public.reviews add column if not exists source_draft_id bigint "
-        "references public.outreach_drafts(id) on delete cascade; "
-        "create unique index if not exists reviews_one_follow_up_idx on public.reviews "
-        "(account_id, source_draft_id) where kind = 'follow_up';",
-    ),
-    (
-        "reviews",
-        "rewritten",
-        "the same gap on the reply path: mark_rewritten fails silently, and "
-        "Phase 6 loses the ability to tell a model-rewritten reply from the "
-        "operator's own voice -- again, never affects whether the reply sends",
-        "alter table public.reviews add column if not exists "
-        "rewritten boolean not null default false;",
-    ),
-)
 
 _client = None
+
+
+def _paged_rows(table_name, columns="*", *, filters=()):
+    """Read a PostgREST table without relying on its implicit row cap."""
+    rows = []
+    start = 0
+    while True:
+        query = _get_client().table(table_name).select(columns)
+        for column, value in filters:
+            query = query.eq(column, value)
+        try:
+            query = query.range(start, start + 499)
+        except AttributeError:
+            # Small query fakes used by unit tests do not implement range;
+            # production Supabase clients always do.
+            page = query.execute().data or []
+            rows.extend(page)
+            break
+        page = query.execute().data or []
+        if not page:
+            break
+        rows.extend(page)
+        start += len(page)
+        if len(page) < 500:
+            break
+    return rows
 
 
 def _get_client():
@@ -226,11 +110,25 @@ def link_or_create_google_account(email: str, google_id: str) -> dict:
 
     by_email = get_account_by_email(email)
     if by_email:
+        bound_id = (by_email.get("google_id") or "").strip()
+        if bound_id and bound_id != google_id:
+            raise GoogleIdentityConflict(
+                "This email is already linked to a different Google identity."
+            )
         result = (
             _get_client().table(ACCOUNTS_TABLE)
-            .update({"google_id": google_id}).eq("id", by_email["id"]).execute()
+            .update({"google_id": google_id}).eq("id", by_email["id"])
+            .is_("google_id", "null").execute()
         )
-        return result.data[0]
+        if result.data:
+            return result.data[0]
+        # A concurrent callback may have won the null-to-value transition.
+        current = get_account(by_email["id"])
+        if current and current.get("google_id") == google_id:
+            return current
+        raise GoogleIdentityConflict(
+            "This email was linked to a different Google identity while signing in."
+        )
 
     result = _get_client().table(ACCOUNTS_TABLE).insert({
         "email": email,
@@ -286,11 +184,55 @@ def list_accounts_with_a_sheet() -> list[dict]:
     indistinguishable from the worker itself being down. The caller checks
     google_token per account instead, and records why via
     set_worker_heartbeat rather than dropping the account from rotation."""
-    result = _get_client().table(ACCOUNTS_TABLE).select("*").execute()
-    return [a for a in result.data if (a.get("google_sheet_id") or "").strip()]
+    return [
+        a for a in _paged_rows(ACCOUNTS_TABLE)
+        if (a.get("google_sheet_id") or "").strip()
+    ]
 
 
-def set_worker_heartbeat(account_id: str, error: str | None = None):
+def list_accounts_for_worker() -> list[dict]:
+    """Return every account with work the Gmail watcher is responsible for.
+
+    A Sheet is one way to discover threads, not a prerequisite for watching a
+    thread already recorded in ``tracked_threads``. The fallback keeps legacy
+    deployments working while that table's migration is being applied; once the
+    durable table is enabled, accounts with only tracked Gmail threads remain in
+    rotation even after their Sheet is removed.
+    """
+    accounts = _paged_rows(ACCOUNTS_TABLE)
+    candidates = {
+        account.get("id")
+        for account in accounts
+        if (account.get("google_sheet_id") or "").strip()
+    }
+    tracking_enabled = os.environ.get("TRACKED_THREADS_ENABLED", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+    discovery_enabled = tracking_enabled and os.environ.get("GMAIL_THREAD_DISCOVERY_ENABLED", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+    if discovery_enabled:
+        # A connected Gmail inbox is itself a valid reply-desk source. The
+        # watcher performs a bounded in:sent discovery and persists the thread
+        # before it reads replies, so a Sheet is not a hidden prerequisite.
+        candidates.update(
+            account.get("id") for account in accounts if account.get("google_token")
+        )
+    if tracking_enabled:
+        try:
+            tracked = _paged_rows(
+                "tracked_threads", "account_id", filters=(("status", "active"),)
+            )
+            candidates.update(row.get("account_id") for row in tracked)
+        except Exception as e:
+            # A pre-migration deployment must retain the old Sheet-backed worker
+            # path instead of losing every account because the new table is absent.
+            print(f"Durable thread account discovery unavailable; using Sheet accounts: {e}")
+    return [account for account in accounts if account.get("id") in candidates]
+
+
+def set_worker_heartbeat(account_id: str, error: str | None = None,
+                         alert_disconnected: bool = False):
     """Records that the background reply-watcher looked at this account just
     now, and what (if anything) went wrong. The only way to tell "the worker
     is alive for this account" from "the worker is down" without reading
@@ -304,10 +246,21 @@ def set_worker_heartbeat(account_id: str, error: str | None = None):
     from datetime import datetime, timezone
 
     try:
-        _get_client().table(ACCOUNTS_TABLE).update({
-            "worker_heartbeat_at": datetime.now(timezone.utc).isoformat(),
-            "last_error": (error or "")[:500] or None,
-        }).eq("id", account_id).execute()
+        alert_disconnected = alert_disconnected or error == "Google disconnected — reconnect in Settings"
+        client = _get_client()
+        if hasattr(client, "rpc"):
+            client.rpc("record_account_monitoring_state", {
+                "p_account_id": account_id,
+                "p_error": (error or "")[:500] or None,
+                "p_alert_disconnected": alert_disconnected,
+            }).execute()
+        else:
+            # Table-only unit fakes exercise the heartbeat data shape without
+            # emulating PostgREST RPC dispatch.
+            client.table(ACCOUNTS_TABLE).update({
+                "worker_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "last_error": (error or "")[:500] or None,
+            }).eq("id", account_id).execute()
     except Exception as e:
         print(f"Could not record worker heartbeat for account {account_id}: {e}")
 
@@ -315,30 +268,9 @@ def set_worker_heartbeat(account_id: str, error: str | None = None):
 def check_schema() -> list[str]:
     """Warnings about this database versus what the code expects. Empty is good.
 
-    Run at startup, not lazily, because of when the gap would otherwise surface.
-    bounce_ack_count is only ever needed by an account that is *already* paused
-    for a bad bounce rate -- so the customers who hit a missing column are the
-    ones already having a bad day, and the only exit left to them is deleting
-    sheet rows, which is precisely the remediation bounces.pause_reason exists to
-    avoid recommending. A warning at boot costs one query and turns that into
-    something the operator fixes before anyone is stuck behind it."""
-    try:
-        _get_client().table(ACCOUNTS_TABLE).select("id").limit(1).execute()
-    except Exception as e:
-        # Unreachable database is a different problem with its own symptoms.
-        # Reported as unverified rather than as a missing column, so this never
-        # sends someone off to run a migration they may not need.
-        return [f"Could not verify the accounts table schema: {e}"]
-
-    warnings = []
-    for table, column, consequence, statement in _MIGRATED_COLUMNS:
-        try:
-            _get_client().table(table).select(column).limit(1).execute()
-        except Exception:
-            warnings.append(
-                f"{table}.{column} is missing, so {consequence}. Run: {statement}"
-            )
-    return warnings
+    The contract is fetched once from PostgREST's OpenAPI document. Production
+    treats any warning as a startup failure; local development prints it."""
+    return schema_contract.check()
 
 
 def set_bounce_ack(account_id: str, bounced_count: int):
@@ -355,12 +287,12 @@ def set_bounce_ack(account_id: str, bounced_count: int):
             .eq("id", account_id).execute()
         )
     except Exception as e:
-        # The column is a documented migration (see README). Say so, rather than
-        # surfacing a raw PostgREST error to someone clicking a button.
+        # Point at the versioned migration rather than teaching operators to
+        # mutate production with an untracked SQL snippet.
         raise RuntimeError(
             "Could not save the bounce acknowledgement. If this database has not "
-            "been migrated yet, run: alter table public.accounts add column "
-            f"bounce_ack_count integer not null default 0; ({e})"
+            "been migrated, deploy Supabase migration "
+            f"{schema_contract.BASELINE_MIGRATION}. ({e})"
         ) from e
 
 
@@ -397,15 +329,29 @@ def usage_quantity_since(account_id: str, kind: str, since_iso: str | None = Non
     caller concludes the account has used nothing and lets the work through.
     That turns a transient database blip into free unlimited service, so the
     quota check fails closed by raising instead."""
-    query = (
-        _get_client().table(USAGE_TABLE)
-        .select("quantity")
-        .eq("account_id", account_id)
-        .eq("kind", kind)
-    )
-    if since_iso:
-        query = query.gte("created_at", since_iso)
-    return sum(row["quantity"] for row in query.execute().data)
+    total = 0
+    start = 0
+    while True:
+        query = (
+            _get_client().table(USAGE_TABLE).select("quantity")
+            .eq("account_id", account_id).eq("kind", kind)
+        )
+        if since_iso:
+            query = query.gte("created_at", since_iso)
+        try:
+            query = query.range(start, start + 499)
+        except AttributeError:
+            page = query.execute().data or []
+            total += sum(row["quantity"] for row in page)
+            break
+        page = query.execute().data or []
+        if not page:
+            break
+        total += sum(row["quantity"] for row in page)
+        start += len(page)
+        if len(page) < 500:
+            break
+    return total
 
 
 def set_plan(account_id: str, plan_name: str) -> None:
@@ -423,21 +369,32 @@ def set_plan(account_id: str, plan_name: str) -> None:
     except Exception as e:
         raise RuntimeError(
             "Could not save the plan. If this database has not been migrated "
-            "yet, run: alter table public.accounts add column if not exists "
-            f"plan text not null default 'trial'; ({e})"
+            "yet, deploy Supabase migration "
+            f"{schema_contract.BASELINE_MIGRATION}. ({e})"
         ) from e
+
+
+def apply_billing_event(change: dict) -> str:
+    """Atomically apply one ordered, subscription-scoped Stripe event."""
+    result = _get_client().rpc("apply_stripe_plan_event", {
+        "p_account_id": change["account_id"],
+        "p_plan": change["plan"],
+        "p_subscription_id": change.get("subscription_id"),
+        "p_status": change.get("status") or "",
+        "p_event_created": int(change["event_created"]),
+        "p_event_id": change["event_id"],
+        "p_event_rank": int(change.get("event_rank") or 0),
+    }).execute()
+    return str(result.data or "")
 
 
 def usage_summary(account_id: str) -> dict:
     """Totals per kind, e.g. {"llm": {"events": 12, "quantity": 48211}, ...}."""
-    result = (
-        _get_client().table(USAGE_TABLE)
-        .select("kind, quantity")
-        .eq("account_id", account_id)
-        .execute()
+    rows = _paged_rows(
+        USAGE_TABLE, "kind, quantity", filters=(("account_id", account_id),)
     )
     summary: dict[str, dict] = {}
-    for row in result.data:
+    for row in rows:
         bucket = summary.setdefault(row["kind"], {"events": 0, "quantity": 0})
         bucket["events"] += 1
         bucket["quantity"] += row["quantity"]

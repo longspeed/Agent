@@ -1,12 +1,21 @@
 # Outreach Agent
 
-Reads customers from a Google Sheet, sends each a personalized outreach email
-via Gmail, notifies you when the batch is done, and watches for replies —
-drafting an AI response you review and send yourself.
+Sendkeep is a Gmail promise and follow-up memory layer. It discovers a bounded
+window of recent Sent threads, watches conversations continuously, extracts
+promised actions, and keeps one follow-up visible. Reply in Gmail or Gemini;
+the optional reply-draft lane is secondary. An optional Google Sheet supports
+the legacy first-touch lane; it is not required for Gmail monitoring.
+
+When `VOICE_FEEDBACK_ENABLED=1` (the production default), sent drafts that a
+human approved or edited are reduced to a bounded style hint for that same
+account's future drafts. Unchanged approvals are weak signals; edits are
+counted separately as stronger signals. AI-rewritten sends are excluded. The
+hint contains aggregate shape such as approximate length and opening style,
+never raw prospect text, examples, or a cross-account training corpus.
 
 The app is multi-tenant: each customer signs in with "Continue with Google",
-connects their own Gmail/Sheets via a separate in-browser "Connect Google"
-button, picks their own sheet, and sees only their own data. The steps below
+connects their own Gmail (and optionally Sheets) via a separate in-browser
+"Connect Google" button, and sees only their own data. The steps below
 set up the shared app once; individual customers onboard themselves through
 the web UI.
 
@@ -30,14 +39,18 @@ pip install -r requirements.txt
    list" picker in Settings.
 3. Go to APIs & Services > Credentials > Create Credentials > OAuth client ID.
    - Application type: **Web application**
-   - Add **both** `http://localhost:8000/api/google/callback` (Gmail/Sheets
-     connect) and `http://localhost:8000/auth/google/callback` ("Sign in
+   - Add **both** `http://localhost:8000/api/google/callback` (incremental
+     Gmail, sending, or optional Sheets grant) and `http://localhost:8000/auth/google/callback` ("Sign in
      with Google") as **Authorized redirect URIs** — plus your production
      callback URLs when you deploy; set `GOOGLE_OAUTH_REDIRECT_URI` and
      `GOOGLE_LOGIN_REDIRECT_URI` in `.env` to match.
    - If prompted, configure the OAuth consent screen first (External; while
      the consent screen is in "Testing" status, every customer's Google
      account must be added as a test user).
+   - In **Google Auth Platform → Data Access**, configure the scopes the app
+     may request incrementally: `openid`, `userinfo.email`, `gmail.readonly`,
+     `gmail.send`, `spreadsheets`, and `drive.metadata.readonly`. Do not add
+     `gmail.modify`: monitoring does not need edit or delete permission.
 4. Download the credentials JSON and save it as `credentials.json` in this
    folder. This is the *app's* identity with Google — customers each grant it
    access to their own account, and their tokens are stored encrypted in the
@@ -45,251 +58,34 @@ pip install -r requirements.txt
 
 ## 3. Supabase setup
 
-Create a project at https://supabase.com/ and run this in the SQL editor
-(skip if the migration `multi_tenant_schema` has already been applied):
+The database schema is versioned in `../supabase/migrations`. Those migration
+files are the only DDL source of truth; do not paste schema fragments into
+application code or this README.
 
-```sql
-create extension if not exists pgcrypto;
+For a new local database:
 
-create table public.accounts (
-    id uuid primary key default gen_random_uuid(),
-    email text not null unique,
-    -- Every account is Google-linked; used by get_account_by_google_id.
-    google_id text unique,
-    google_token text,
-    google_sheet_id text,
-    sender_name text not null default 'the team',
-    sender_company text not null default '',
-    meeting_purpose text not null default 'a quick intro call to see if there''s a fit to work together',
-    -- Free-form sender preferences injected into the writing prompt (tone,
-    -- length, things to always mention/avoid, language).
-    custom_instructions text not null default '',
-    -- Manual queues each draft for review. Auto sends only drafts made by the
-    -- current confirmed Prepare action, after all normal sending safeguards.
-    outreach_send_mode text not null default 'manual' check (outreach_send_mode in ('manual', 'auto')),
-    follow_up_delay_days integer not null default 3 check (follow_up_delay_days between 1 and 14),
-    calendar_booking_link text,
-    notify_email text,
-    -- How many hard bounces the operator has reviewed and chosen to continue
-    -- past (bounces.acknowledge). Lets a bounce pause be cleared without
-    -- deleting rows from the sheet; new bounces push the count above it and
-    -- pause again. Reads as 0 if absent, so an un-migrated database keeps the
-    -- pre-acknowledgement behaviour instead of erroring.
-    bounce_ack_count integer not null default 0,
-    -- Set by the background reply-watcher (watch_replies.py) once per
-    -- account per cycle, success or failure -- the only way to tell "the
-    -- worker is alive for this account" from "the worker is down" without
-    -- reading process logs. last_error is cleared (NULL) on a successful
-    -- check, so a set value always means "still true as of the heartbeat
-    -- above," not "happened once, ages ago."
-    worker_heartbeat_at timestamptz,
-    last_error text,
-    created_at timestamptz not null default now()
-);
-
-create table public.reviews (
-    id bigint generated always as identity primary key,
-    account_id uuid not null references public.accounts(id) on delete cascade,
-    row_index integer not null,
-    name text not null default '',
-    email text not null default '',
-    thread_id text not null default '',
-    customer_reply text not null default '',
-    draft_reply text not null default '',
-    -- Frozen copy of what the model proposed. draft_reply above is mutable:
-    -- mark_sent replaces it with what the operator actually sent. The diff
-    -- between the two is the only record of how this sender's voice differs
-    -- from the model's, and it cannot be reconstructed after the fact.
-    original_draft_reply text,
-    status text not null default 'pending',
-    gmail_message_id text,
-    -- True when the Send-As alias lookup behind sender classification failed
-    -- and fell back to just the primary address (see gmail.get_own_addresses).
-    -- A degraded lookup under-recognizes "ours", which can misclassify the
-    -- operator's own alias reply as a stranger -- this makes that visible on
-    -- the review card instead of only in a log.
-    degraded_classification boolean not null default false,
-    -- Set (via mark_rewritten, a separate best-effort write -- never part of
-    -- mark_sent's update) when an AI rewrite touched this reply before it
-    -- was sent. Without it, the diff between original_draft_reply and the
-    -- sent copy would look like a labelled human-preference pair when it's
-    -- really the model's own rewrite on both sides.
-    rewritten boolean not null default false,
-    kind text not null default 'reply' check (kind in ('reply', 'follow_up')),
-    source_draft_id bigint,
-    created_at timestamptz not null default now()
-);
-create index reviews_account_status_idx on public.reviews (account_id, status);
--- Dedupe guard. Keyed on Gmail's own message id, never the reply body: two
--- identical short replies collide, a long quoted chain 414s as a PostgREST GET
--- parameter, and btree caps index entries near 2704 bytes so a body column
--- could not carry this index at all. Nullable because rows written before the
--- column existed have no id -- Postgres treats NULLs as distinct in a unique
--- index, so legacy rows neither collide with each other nor block new inserts.
-create unique index if not exists reviews_thread_message_idx
-    on public.reviews (account_id, thread_id, gmail_message_id);
-
-create table public.usage_events (
-    id bigint generated always as identity primary key,
-    account_id uuid not null references public.accounts(id) on delete cascade,
-    kind text not null,
-    detail text not null default '',
-    quantity integer not null default 1,
-    created_at timestamptz not null default now()
-);
-create index usage_events_account_idx on public.usage_events (account_id, created_at);
-
--- Outreach emails awaiting human approval. Nothing is emailed from here until
--- someone presses Send on the /outreach page.
-create table public.outreach_drafts (
-    id bigint generated always as identity primary key,
-    account_id uuid not null references public.accounts(id) on delete cascade,
-    row_index integer not null,
-    name text not null default '',
-    email text not null default '',
-    company text not null default '',
-    subject text not null default '',
-    body text not null default '',
-    -- Frozen copies of what the model wrote. subject/body above are mutable:
-    -- mark_sent replaces them with the copy the operator approved. Keeping both
-    -- is what makes an edit a labelled example rather than a deletion.
-    original_subject text,
-    original_body text,
-    -- Same "AI touched this before send" flag as reviews.rewritten, and the
-    -- same reason: without it the diff against original_subject/original_body
-    -- would look like the operator's voice when it's the model's own rewrite.
-    rewritten boolean not null default false,
-    status text not null default 'pending',  -- pending | sent | discarded
-    sent_at timestamptz,
-    thread_id text,
-    follow_up_due_at timestamptz,
-    follow_up_status text,
-    follow_up_cancel_reason text,
-    follow_up_sent_at timestamptz,
-    follow_up_replied_at timestamptz,
-    created_at timestamptz not null default now()
-);
-create index outreach_drafts_account_status_idx on public.outreach_drafts (account_id, status);
--- Dedupe guard: preparing drafts twice (double-click, overlapping jobs) must
--- never queue the same sheet row twice. Partial, so a row can be drafted again
--- after an earlier draft was sent or discarded.
-create unique index outreach_drafts_pending_row_idx
-    on public.outreach_drafts (account_id, row_index) where status = 'pending';
-
--- Addresses that asked to stop. Checked when building a batch AND again
--- immediately before each send.
-create table public.suppressions (
-    id bigint generated always as identity primary key,
-    account_id uuid not null references public.accounts(id) on delete cascade,
-    email text not null,
-    source text not null default 'unsubscribe_link',
-    created_at timestamptz not null default now(),
-    unique (account_id, email)
-);
-
-alter table public.accounts enable row level security;
-alter table public.reviews enable row level security;
-alter table public.usage_events enable row level security;
-alter table public.outreach_drafts enable row level security;
-alter table public.suppressions enable row level security;
+```powershell
+supabase start
+supabase db reset --local --no-seed
+supabase test db --local
 ```
 
-Upgrading an existing project (the tables above are new as of 2026-07-24):
+The reset reapplies every migration and the final command runs the pgTAP schema
+contract in `../supabase/tests`. Never run `db reset` against a linked
+production project.
 
-```sql
-alter table public.accounts add column if not exists sender_company text not null default '';
-alter table public.accounts add column if not exists custom_instructions text not null default '';
-alter table public.accounts add column if not exists outreach_send_mode text not null default 'manual' check (outreach_send_mode in ('manual', 'auto'));
--- then run the two create table statements above, their indexes, and their
--- `enable row level security` lines.
-```
+For the existing hosted project, use the manual **Deploy database migrations**
+GitHub Actions workflow. Configure its protected `production` environment with
+`SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD`, and
+`SUPABASE_PROJECT_ID`. The workflow links the project, previews the pending
+DDL, and then runs `supabase db push`. The baseline migration is intentionally
+idempotent so the first push reconciles the previously hand-maintained schema
+without dropping customer tables or rows. Every later schema change must be a
+new forward-only timestamped migration.
 
-For the bounce-pause acknowledgement (new as of 2026-07-26). Until this runs,
-everything works as before except the "Acknowledge and keep sending" button,
-which returns a 409 naming this statement:
-
-```sql
-alter table public.accounts add column if not exists bounce_ack_count integer not null default 0;
-```
-
-For the daily-cap send log (also 2026-07-26). The cap used to be counted from the
-sheet's SentAt column, which the operator can edit — deleting the Sent rows,
-clearing that column, or changing its date format all reset the allowance. It is
-now counted from `outreach_drafts`, which needs a send timestamp. **Run this
-before the next batch:** without it every send raises, because `mark_sent` writes
-the column.
-
-```sql
-alter table public.outreach_drafts add column if not exists sent_at timestamptz;
-update public.outreach_drafts set sent_at = created_at where status = 'sent' and sent_at is null;
-create index if not exists outreach_drafts_sent_at_idx
-    on public.outreach_drafts (account_id, status, sent_at);
-```
-
-For the single manual follow-up loop, run the idempotent migration
-`migrations/20260813_add_follow_up_workflow.sql` before starting the updated
-worker. It adds the business-day delay, durable thread/due/cancellation state,
-the manual/auto first-touch mode when an older project still lacks it, and the
-unique review link that prevents a second follow-up for one outreach draft.
-Until it runs, the older reply watcher keeps working but scheduling is
-unavailable.
-
-For edit-diff capture on existing projects, apply the idempotent migration in
-`migrations/20260812_add_original_draft_columns.sql`. Draft creation writes both
-columns, so an upgraded app cannot prepare outreach until this migration has
-run:
-
-```sql
-alter table public.outreach_drafts add column if not exists original_subject text;
-alter table public.outreach_drafts add column if not exists original_body text;
-notify pgrst, 'reload schema';
-```
-
-For plans and billing (new as of 2026-07-26). Until this runs, `check_schema()`
-warns at boot and every account is treated as the free trial: paid customers
-silently get trial quotas, and the Stripe webhook has nowhere to write the plan
-it just collected money for.
-
-The default is `'trial'`, which is deliberate and is the whole decision in this
-migration. `not null default 'trial'` backfills every existing row to the free
-tier, so the day this lands, current accounts drop to trial quotas (100 drafts
-and 50 sourced leads) and are refused past them. That is truthful to billing --
-nobody has paid -- but it is a downgrade for people mid-campaign, so either
-send them to checkout first or backfill the ones you intend to grandfather:
-
-```sql
-alter table public.accounts add column if not exists plan text not null default 'trial';
-
--- Optional: grandfather specific existing accounts instead of dropping them to
--- the trial. Run this BEFORE announcing the change, not after the first refusal.
--- update public.accounts set plan = 'pilot' where email in ('someone@example.com');
-```
-
-`plan` is a plain text column rather than an enum on purpose: adding a tier
-should not require a migration, and `plans.get()` already falls back to the
-trial for any value it does not recognize, so an unknown string fails toward
-the smallest entitlement rather than toward free unlimited service.
-
-If your project predates "Sign in with Google", also bring the accounts table
-in line with the code (harmless if the column already exists):
-
-```sql
-alter table public.accounts add column if not exists google_id text;
-create unique index if not exists accounts_google_id_key on public.accounts (google_id);
-```
-
-If your project predates the removal of password auth, `password_hash` is no
-longer read or written by any code path — clear it and drop it once every row
-has a `google_id` (see PLAN-WEEK-2026-08-05.md, D3 for the pre-drop account
-cleanup):
-
-```sql
-alter table public.accounts drop column if exists password_hash;
-```
-
-RLS is enabled with no policies: the publishable/anon key can read nothing,
-and the backend (which uses the secret key and bypasses RLS) scopes every
-query by `account_id`.
+Production starts with strict schema enforcement automatically
+(`APP_ENV=production`). Local development reports drift as warnings; set
+`SCHEMA_ENFORCEMENT=strict` locally to reproduce the production gate.
 
 ## 4. Language model API key
 
@@ -363,13 +159,15 @@ python -m uvicorn server:app --port 8000
 Each customer then onboards themselves at `http://localhost:8000/login`:
 
 1. Sign in with **Continue with Google** (creates the account on first use)
-2. On the Settings page, click **Connect Google** and grant Gmail + Sheets +
-   Drive (read-only) access
-3. Click **Choose sheet** to pick their lead sheet from a list of their
+2. On the Settings page, click **Connect Gmail**. This first grant is Gmail
+   read-only access for bounded Sent monitoring.
+3. Enable Gmail sending only if they want Sendkeep to send approved messages.
+   Connect Sheets & Drive separately only for the optional first-touch lane.
+4. Click **Choose sheet** to pick their lead sheet from a list of their
    Google Sheets (a manual ID/URL paste is still available as a fallback)
-4. Fill in sender name, calendar booking link, meeting purpose, and
+5. Fill in sender name, calendar booking link, meeting purpose, and
    notification email
-5. Use the Outreach and Leads pages as before — everything they see and send
+6. Use the Outreach and Leads pages as before — everything they see and send
    is scoped to their own account
 
 The sheet needs this header row in its **first tab**:
@@ -387,8 +185,8 @@ python send_outreach.py you@company.com
 
 ### Background reply watcher
 
-`watch_replies.py` polls **every account with a configured sheet** in one
-process, sequentially, every 5 minutes:
+`watch_replies.py` polls **every account with a configured sheet or an active
+durable Gmail thread** in one process, sequentially, every 5 minutes:
 
 ```
 python watch_replies.py --once   # one cycle across all accounts, then exit
@@ -416,6 +214,45 @@ reconnect in Settings", since Testing-mode OAuth tokens expire every 7 days).
 
 Reviewing a drafted reply still happens in the dashboard — this tool never
 sends replies automatically.
+
+### Durable thread tracking and reply commitments
+
+The Sheet is a customer-facing mirror, not the worker's source of truth. New
+sends and Sheet backfills register Gmail thread IDs in `tracked_threads`, and
+the watcher continues checking those threads if the Sheet row is moved,
+deleted, or temporarily unavailable.
+
+When a contact reply contains a clear first-person promise such as “I'll send
+the deck by Friday”, the worker stores a conservative candidate in
+`commitments`. The Outreach page shows the evidence and detected date. The
+operator must confirm or dismiss it. Once confirmed, the worker moves the
+promise into the due queue at its detected date and sends a notification for a
+manual check; detection never sends outbound mail or schedules outreach by
+itself. The optional operator-entered value-at-stake field supports the
+explicit promise-completed outcome handoff; values are never inferred from
+email text. A dismissal reason records
+whether an operator rejected an extraction as incorrect or merely cleared a
+real due item. Only explicit incorrect detections count against the promise
+precision metric; above 20%, new Gmail-monitor onboarding is paused.
+
+Worker liveness is recorded in `worker_runs` and `worker_events` by the
+continuous process. Configure `WORKER_HEALTH_TOKEN` so an external monitor can poll
+`/internal/health/worker`.
+
+All columns, indexes, RLS settings, and nullability rules described above are
+owned by the canonical Supabase baseline in section 3. Durable Gmail tracking
+can discover a reply after its Sheet row was deleted, or for an account that
+does not use a Sheet at all, so `reviews.row_index` is deliberately nullable.
+The web and worker use the Supabase service role; browser clients must not query
+these tables directly. A production boot with schema drift fails before serving
+traffic instead of silently running with weaker guarantees.
+
+The promise graph also uses the account-scoped `worker_events` history for
+operator-confirmed sales outcomes. The pipeline view can record
+`meeting_booked`, `deal_won`, or `deal_lost` only after a human clicks the
+corresponding action. A reply, a promise, or a calendar URL is never treated
+as a booked meeting automatically. This keeps the evidence dashboard useful
+without turning an unverified inference into a sales claim.
 
 ## Notes
 

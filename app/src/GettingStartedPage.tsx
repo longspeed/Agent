@@ -12,8 +12,8 @@ interface Plan {
 const SECTIONS = [
   { id: 'overview', label: 'What it does' },
   { id: 'step-1', label: '1. Create your account' },
-  { id: 'step-2', label: '2. Connect Google' },
-  { id: 'step-3', label: '3. Set up your lead sheet' },
+  { id: 'step-2', label: '2. Connect Gmail' },
+  { id: 'step-3', label: '3. Optional first-touch sheet' },
   { id: 'step-4', label: '4. Outreach settings' },
   { id: 'step-5', label: '5. Add leads' },
   { id: 'step-6', label: '6. Review and approve' },
@@ -130,7 +130,7 @@ export function GettingStartedPage() {
 
   return (
     <>
-      <NavBar breadcrumb="Getting started" />
+              <NavBar breadcrumb="Getting started" publicPage />
 
       <main className="relative max-w-5xl mx-auto px-6 py-10">
         <div className="mb-10">
@@ -138,11 +138,10 @@ export function GettingStartedPage() {
             Getting started with Sendkeep
           </h1>
           <p className="text-sm leading-relaxed text-sand max-w-2xl">
-            Sendkeep emails a list of leads from your own Gmail and handles the replies. Bring a
-            list you already have, or let it find one for you. Setup takes about ten minutes: you
-            need a Google account, and optionally a call-to-action link (a booking page like
-            Cal.com or Calendly, a signup, a demo, a resource) if you want to drive people
-            somewhere specific. Without one, each email just asks for a reply.
+            Sendkeep is the promise and follow-up memory layer attached to your Gmail. Connect
+            Gmail, let it find the conversations you already started, and keep promised actions
+            visible without moving replies into a second inbox. A Google Sheet is optional for the
+            separate first-touch lane.
           </p>
         </div>
 
@@ -168,39 +167,39 @@ export function GettingStartedPage() {
 
           <div className="min-w-0 flex-1">
             <Section id="overview" title="What Sendkeep does">
-              <p>Sendkeep runs two agents against one Google Sheet of leads.</p>
+              <p>Sendkeep is Gmail-first: the core desk begins after a message is sent. It watches recent Sent threads, including threads sent by Gmail, another tool, or a VA; a Google Sheet is optional for first-touch sending.</p>
               <div className="grid sm:grid-cols-2 gap-3">
                 <div className="rounded-lg p-4 bg-elevated border border-line">
                   <div className="flex items-baseline justify-between gap-2 mb-1.5">
-                    <h3 className="text-cream font-medium text-sm">Outreach agent</h3>
+                    <h3 className="text-cream font-medium text-sm">Promise & follow-up memory</h3>
                     <span className="text-[10px] uppercase tracking-wider text-mute">Core</span>
                   </div>
                   <p className="text-xs leading-relaxed">
-                    Emails the leads you approved, from your own Gmail, then watches for replies and
-                    drafts responses for you.
+                    Discovers Gmail Sent threads, extracts promised actions, and shows one next
+                    follow-up. Reply in Gmail or Gemini; Sendkeep keeps the commitment visible.
                   </p>
                 </div>
                 <div className="rounded-lg p-4 bg-elevated border border-line">
                   <div className="flex items-baseline justify-between gap-2 mb-1.5">
-                    <h3 className="text-cream font-medium text-sm">Lead sourcing agent</h3>
+                    <h3 className="text-cream font-medium text-sm">First-touch sending</h3>
                     <span className="text-[10px] uppercase tracking-wider text-mute">Optional</span>
                   </div>
                   <p className="text-xs leading-relaxed">
-                    Finds people matching a description you write, and adds them to your sheet for
-                    review. Skip it entirely if you already know who you want to reach.
+                    Uses a Sheet for approved contacts when you want Sendkeep to draft first-touch
+                    emails. Skip it if another tool already handles sending.
                   </p>
                 </div>
               </div>
               <Callout>
-                <strong className="text-cream">You do not need the lead sourcing agent.</strong> If
-                you already have a list, whether that is a CSV export, a spreadsheet a colleague sent
-                you, or a sheet you built by hand, the outreach agent works on its own. Point it at
-                your prepared sheet and never open the Leads page. Everything from step 5 onwards
-                applies exactly the same either way.
+                <strong className="text-cream">Start with Gmail.</strong> You do not need a Google
+                Sheet to use the core workflow. Connect the inbox where conversations happen and
+                Sendkeep will discover recent Sent threads, keep promised actions visible, and show
+                one follow-up reminder. Add a Sheet only if you want the optional first-touch lane.
               </Callout>
               <p>
-                You stay in the loop at both points that matter: no lead gets emailed until you
-                approve it, and no reply gets sent until you read it.
+                The core workflow reads Gmail Sent and never sends. Reply in Gmail or Gemini; confirm
+                or dismiss promises and follow-up reminders in Sendkeep. Optional first-touch delivery
+                is separate and manual by default.
               </p>
             </Section>
 
@@ -217,12 +216,12 @@ export function GettingStartedPage() {
               </Callout>
             </Section>
 
-            <Section id="step-2" title="2. Connect your Google account">
+            <Section id="step-2" title="2. Connect Gmail">
               <p>
                 Open <strong className="text-cream">Settings</strong> and click{' '}
-                <strong className="text-cream">Connect Google</strong>. You grant two things: Gmail,
-                so outreach sends from your own address and replies land in your own inbox; and
-                Sheets, so the agents can read your lead sheet and write statuses back.
+                <strong className="text-cream">Connect Gmail</strong>. The first grant is read-only
+                Gmail access for Sent monitoring. Gmail sending and optional Sheets/Drive access are
+                requested separately only when you enable those capabilities.
               </p>
               <p>Your token is encrypted before it is stored, and never written to disk.</p>
               <Callout tone="warn">
@@ -234,7 +233,7 @@ export function GettingStartedPage() {
               </Callout>
             </Section>
 
-            <Section id="step-3" title="3. Set up your lead sheet">
+            <Section id="step-3" title="3. Optional first-touch sheet">
               <p>
                 Sendkeep reads and writes one Google Sheet. It has to be laid out a specific way,
                 because every column is addressed by position.
@@ -457,13 +456,15 @@ export function GettingStartedPage() {
                 Go to <strong className="text-cream">Outreach</strong>. Before anything sends you get
                 a preview: how many contacts are eligible right now, how many already went out in the
                 last 24 hours, and how many are held back by the daily cap. Sending requires an
-                explicit confirmation, so nothing goes out on a stray click.
+                explicit confirmation. Manual review is required in the standard deployment. Replies
+                and follow-ups always wait for individual review.
               </p>
               <p>
-                For each contact the agent writes the email, sends it from your Gmail, and
-                immediately marks the row <Code>Sent</Code> with the thread ID, timestamp, and the
-                body it used. It sends four at a time, and emails you a summary when the batch
-                finishes.
+                For each contact the agent writes the email and marks the row <Code>Sent</Code> with
+                the thread ID, timestamp, and the body it used when the message is sent. In manual
+                review mode, you approve each draft first. A controlled pilot may enable automatic
+                first-touch delivery separately. It sends four at a time, and emails you a summary
+                when the batch finishes.
               </p>
               <Callout>
                 <strong className="text-cream">The cap is {dailyCap} per 24 hours.</strong> This is a
@@ -475,17 +476,18 @@ export function GettingStartedPage() {
             <Section id="step-8" title="8. Handle replies">
               <p>
                 Click <strong className="text-cream">Check replies</strong> on the Outreach page. The
-                agent looks at every thread it has sent, finds new responses, strips out the quoted
-                history, and drafts a reply for each.
+                worker watches tracked conversations, including recent Gmail Sent threads discovered
+                even when another tool sent them, strips quoted history, and drafts a reply for each.
               </p>
               <p>
                 Drafts land in a review queue. You can edit the text and send, or dismiss without
                 sending. Sent replies go out in the original thread, so the conversation stays intact
-                for the person receiving it. Nothing reaches a prospect without you reading it first.
+                for the person receiving it. Replies and follow-ups never send until you read them;
+                first-touch drafts are a separate optional lane and are manual in the standard deployment.
               </p>
               <p>
                 If a contact stays silent, Sendkeep queues one follow-up after the business-day delay
-                in Settings. It never auto-sends that follow-up. A reply, bounce, opt-out, or dismissal
+                in Settings. It never auto-sends that follow-up. A Gmail reply, bounce, opt-out, or dismissal
                 cancels it, and Outreach shows how many follow-ups are due.
               </p>
             </Section>

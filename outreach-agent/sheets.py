@@ -3,6 +3,7 @@ from googleapiclient.discovery import build
 import plans
 from config import DAILY_SEND_LIMIT, SHEET_RANGE
 from google_auth import get_credentials
+from lead_schema import EXPECTED_HEADER
 
 # Column order: Name, Email, Company, Status, ThreadID, SentAt, EmailBody, LeadReason, EmailConfidence
 (
@@ -14,7 +15,7 @@ from google_auth import get_credentials
 def _get_service(account):
     # Not cached: credentials differ per account, and the underlying
     # httplib2.Http connection isn't safe to share across threads.
-    return build("sheets", "v4", credentials=get_credentials(account))
+    return build("sheets", "v4", credentials=get_credentials(account, "sheets"))
 
 
 def _sheet_id(account):
@@ -22,12 +23,6 @@ def _sheet_id(account):
     if not sheet_id:
         raise RuntimeError("This account hasn't connected a Google Sheet yet")
     return sheet_id
-
-
-EXPECTED_HEADER = [
-    "Name", "Email", "Company", "Status", "ThreadID", "SentAt", "EmailBody",
-    "LeadReason", "EmailConfidence",
-]
 
 
 def _validate_header(values):
@@ -318,6 +313,7 @@ def _verify_row_index(account, row_index, expect_email):
 
 
 def update_row(account, row_index, status=None, thread_id=None, sent_at=None, email_body=None, email_confidence=None, expect_email=None):
+    require_full_header(account)
     if expect_email:
         row_index = _verify_row_index(account, row_index, expect_email)
     cells = _row_update_cells(row_index, status, thread_id, sent_at, email_body, email_confidence)
@@ -331,6 +327,59 @@ def update_row(account, row_index, status=None, thread_id=None, sent_at=None, em
             "data": [{"range": cell_range, "values": [[value]]} for cell_range, value in cells],
         },
     ).execute()
+
+
+def delete_contact_rows(account, email):
+    """Delete every data row for ``email`` from the connected spreadsheet.
+
+    The sheet is read immediately before deletion and matching rows are removed
+    from bottom to top. That avoids stale stored row numbers and prevents one
+    deletion from shifting the index used by the next. The header is never a
+    candidate. Returning zero makes retries safe when the Sheet side completed
+    but the caller did not receive the response.
+    """
+    wanted = (email or "").strip().lower()
+    if not wanted:
+        return 0
+
+    rows = get_all_rows(account)
+    matching_indexes = [
+        row_index for row_index, row in rows
+        if cell(row, COL_EMAIL).strip().lower() == wanted
+    ]
+    if not matching_indexes:
+        return 0
+
+    service = _get_service(account)
+    spreadsheet = service.spreadsheets().get(
+        spreadsheetId=_sheet_id(account),
+        fields="sheets.properties(sheetId,index)",
+    ).execute()
+    sheet_properties = [
+        item.get("properties") or {} for item in spreadsheet.get("sheets", [])
+    ]
+    if not sheet_properties:
+        raise RuntimeError("The connected spreadsheet has no worksheet to delete from.")
+    # SHEET_RANGE currently addresses A:I, so Google resolves it against the
+    # first worksheet. Keep deletion on that same worksheet.
+    worksheet_id = min(sheet_properties, key=lambda item: item.get("index", 0)).get("sheetId")
+    if worksheet_id is None:
+        raise RuntimeError("The connected worksheet has no numeric sheet id.")
+
+    requests = [{
+        "deleteDimension": {
+            "range": {
+                "sheetId": worksheet_id,
+                "dimension": "ROWS",
+                "startIndex": row_index - 1,
+                "endIndex": row_index,
+            }
+        }
+    } for row_index in sorted(matching_indexes, reverse=True)]
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=_sheet_id(account), body={"requests": requests},
+    ).execute()
+    return len(matching_indexes)
 
 
 def mark_unsubscribed(account, email):
@@ -355,6 +404,7 @@ def append_rows(account, rows):
     """rows: list of 9-value lists, in COL_* order. Appended after the last row."""
     if not rows:
         return
+    require_full_header(account)
     service = _get_service(account)
     service.spreadsheets().values().append(
         spreadsheetId=_sheet_id(account),

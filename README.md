@@ -1,10 +1,15 @@
 # Sendkeep
 
-The reply queue for Gmail outbound. Sendkeep drafts first-touch emails, watches
-the threads, queues one follow-up when a contact stays silent, and drafts
-replies when prospects write back. Manual review is the default; auto-send can
-be enabled for first-touch outreach once the sender trusts the list and
-settings. Follow-ups and replies always stay in the review queue.
+The Gmail promise and follow-up memory layer for people sending 15–50 emails a
+day who already have a sending workflow. Sendkeep reads a bounded set of recent
+Gmail Sent threads, extracts promised actions, and keeps one follow-up visible.
+Reply in Gmail or Gemini; Sendkeep is not a second reply inbox. A Google Sheet
+is optional for first-touch sending and is not the source of truth.
+
+The core workflow is read-only against Gmail Sent. Optional first-touch sending
+is capped on purpose and remains manual by default. If a follow-up send result
+is ambiguous, the worker verifies the exact message in Gmail before closing it;
+it never silently retries a possibly-sent message.
 
 Multi-tenant: one running instance serves any number of customers, each
 with their own login, their own connected Gmail/Sheets, and their own
@@ -15,13 +20,13 @@ data.
 
 ```
                     ┌─────────────────────────────────────────┐
-                    │              Google Sheet                │
-                    │   (customer-owned lead list + status)     │
+                    │          Google Sheet (optional)          │
+                    │     (first-touch list + status mirror)    │
                     └──────────────────┬────────────────────────┘
                                         │ read / write (per-row status)
                                         ▼
 ┌──────────────┐   drafts   ┌─────────────────────┐   sends via   ┌──────────┐
-│  Lead Agent   │──────────▶│   server.py (FastAPI) │──────────────▶│  Gmail   │
+│ Lead Agent   │ (optional) │   server.py (FastAPI) │──────────────▶│  Gmail   │
 │ (web search,  │            │   outreach-agent/*    │◀──────────────│ (OAuth,  │
 │  qualifies    │            │   review queue, plans, │   watches    │  per-    │
 │  contacts)    │            │   suppressions, usage   │   for reply  │  account)│
@@ -58,11 +63,33 @@ data.
                               └───────────────────┘
 ```
 
-First-touch outreach can use manual or auto mode. Follow-ups and replies always
-require a human click, and a queued follow-up is cancelled if a reply, bounce,
-opt-out, or operator dismissal appears before send.
+The core layer does not depend on how a message was sent. A follow-up is
+cancelled if a reply, bounce, opt-out, or operator dismissal appears before
+send. Reply composition stays in Gmail; the optional draft lane is secondary.
 
 ## Quickstart
+
+### Local demo, no credentials required
+
+Use this path first when you are changing the UI, queue states, or developer
+workflow. It does not connect to Google, Supabase, an LLM provider, or any real
+mailbox:
+
+```bash
+pip install -r outreach-agent/requirements.txt
+python dev_server.py
+```
+
+Open `http://127.0.0.1:8000/demo`. The page contains seeded warm replies,
+promised follow-ups, a reset action, and a protected-send test that must return
+`409`. The local API contract is available at
+`http://127.0.0.1:8000/api/docs` and `/api/openapi.json`.
+
+Restarting the demo restores the seed data. The demo is a separate app from
+`server.py`, so it cannot accidentally inherit production credentials or Gmail
+tokens.
+
+### Production-shaped app
 
 Full setup (Google Cloud OAuth client, Supabase schema, `.env`) is in
 [`outreach-agent/README.md`](outreach-agent/README.md) — it's the
@@ -88,9 +115,9 @@ python check_build_freshness.py   # confirms both match current source
 ## Tests
 
 ```bash
-python tests/test_outreach_agent.py          # 347 cases, no network, no real credentials
-python tests/test_build_freshness.py         # 6 cases
-cd outreach-agent && python -m unittest discover tests   # 18 cases, run from this dir
+python tests/test_outreach_agent.py          # network-free main suite
+python tests/test_build_freshness.py         # generated-bundle checks
+cd outreach-agent && python -m unittest discover tests   # outreach-agent suite
 ```
 
 All three pass with sockets blocked:
@@ -110,15 +137,55 @@ Tunnel in front (not a quick tunnel — see `VALIDATION-WEEK.md`), since
 `server.py` trusts `CF-Connecting-IP` for rate limiting and binds
 `127.0.0.1` only.
 
+The watcher is an independent process and must be running continuously for
+reply detection to work when nobody has `/outreach` open. Set
+`WORKER_TELEMETRY_ENABLED=1` and a long random `WORKER_HEALTH_TOKEN` in the
+shared `.env`. The worker records each cycle in `worker_runs` and each account
+outcome in `worker_events`; `GET /internal/health/worker` accepts the token in
+`X-Worker-Health-Token` and is intended for an external uptime monitor. A
+fresh worker heartbeat with an account error means the worker is alive but that
+Gmail connection needs attention. A stale health response means the worker
+process or host needs attention.
+
+The database schema is versioned in `supabase/migrations/`; that directory is
+the only DDL source of truth. Rebuild a local database with `supabase db reset
+--local --no-seed`, then run `supabase test db --local`. For the hosted project,
+use the protected **Deploy database migrations** workflow on `main`; it previews
+pending DDL and requires an explicit production confirmation plus environment
+approval. Never paste migration fragments into application code or run a local
+reset against production. `tracked_threads` is the durable Gmail-thread watch
+list, so a deleted or unavailable Sheet row no longer removes a sent
+conversation from reply coverage. `commitments` stores conservative,
+reviewable promises found in replies; detected dates and actions appear in the
+Outreach desk and require confirmation before they become confirmed work. The
+optional `estimated_value` field turns confirmed promises into account-scoped
+pipeline at stake; it is operator-entered and never inferred from message text.
+
 ## Project docs
 
-- [`outreach-agent/README.md`](outreach-agent/README.md) — full setup, one
-  migration explained per step, what degrades until it runs
+- [`docs/development.md`](docs/development.md) — credential-free local demo,
+  runtime boundaries, CLI smoke checks, and verification commands
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — safe local workflow and verification
+  expectations
+- [`SECURITY.md`](SECURITY.md) — sensitive surfaces and vulnerability reporting
+- [`CHANGELOG.md`](CHANGELOG.md) — unreleased developer workflow changes
+- [`docs/operations.md`](docs/operations.md) — preflight, migrations, worker
+  health, deployment, and release verification
+- [`app/README.md`](app/README.md) and [`site/README.md`](site/README.md) —
+  frontend-specific development and build instructions
+- [`outreach-agent/README.md`](outreach-agent/README.md) — agent setup,
+  canonical Supabase schema workflow, and what degrades until it runs
 - [`TODOS.md`](TODOS.md) — deferred work, with the reasoning kept, not just
   a bullet
 - [`BUGS.md`](BUGS.md) — live bug log from manual QA passes
 - [`VALIDATION-WEEK.md`](VALIDATION-WEEK.md) — operational runbook for a
-  live demand-validation pass
+-  historical Sheet-first validation context
+- [`docs/pilot-validation.md`](docs/pilot-validation.md) — current Gmail-first
+  pilot, evidence, interview, and safety checklist
+- [`docs/founder-dogfood.md`](docs/founder-dogfood.md) — founder-owned
+  distribution loop, operator log, and agency expansion criteria
+- [`docs/founder-dogfood-messages.md`](docs/founder-dogfood-messages.md) —
+  reviewed Gmail-native pilot message starting points
 - [`FUNCTIONS.md`](FUNCTIONS.md) — every backend function, one line each
 
 ## Sharing Sendkeep with another person

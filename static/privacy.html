@@ -28,9 +28,10 @@
     page will be updated and the date above will change with it.</p>
   </div>
 
-  <p>Sendkeep sends outreach email from your own Gmail account and tracks
-  replies in your own Google Sheet. This policy explains what we store, what we
-  send to other companies, and what we never do.</p>
+  <p>Sendkeep connects to your own Gmail account, monitors a bounded set of
+  Sent conversations, and tracks replies and follow-ups in its review queue.
+  Google Sheets are optional for first-touch sending. This policy explains
+  what we store, what we send to other companies, and what we never do.</p>
 
   <p>Two groups of people appear in this policy. <strong>You</strong> are the
   Sendkeep customer. <strong>Your prospects</strong> are the people you email.
@@ -44,26 +45,31 @@
     <thead><tr><th>Data</th><th>Why</th><th>How it is held</th></tr></thead>
     <tbody>
       <tr><td>Email address</td><td>Identifies your account</td><td>Plain text</td></tr>
-      <tr><td>Google OAuth token</td><td>Sending mail and reading your sheet on your behalf</td><td>Encrypted at rest (Fernet, AES) before it reaches the database</td></tr>
+      <tr><td>Google OAuth token</td><td>Incremental grants: Gmail read-only monitoring first; sending and optional Sheets/Drive only when enabled</td><td>Encrypted at rest (Fernet, AES) before it reaches the database</td></tr>
       <tr><td>Your settings</td><td>Sender name, meeting purpose, calendar link, notification address, Sheet ID</td><td>Plain text</td></tr>
       <tr><td>Usage counters</td><td>Metering LLM tokens and searches</td><td>Event kind, quantity, and a short detail string capped at 200 characters</td></tr>
       <tr><td>Reply drafts</td><td>The review queue you approve before anything sends</td><td>Includes the prospect's reply text and the drafted response</td></tr>
+      <tr><td>Tracked Gmail threads</td><td>Durable reply monitoring independent of an optional Sheet</td><td>Includes thread ID, prospect email/name/company, timestamps, and worker status</td></tr>
+      <tr><td>Promise evidence</td><td>Reviewable dates, actions, and confirmation state</td><td>Includes extracted evidence, confidence, status, and any value you enter</td></tr>
     </tbody>
   </table>
   </div>
 
-  <p>Everything is stored in Supabase (PostgreSQL). Every table is scoped by
-  account and protected with row-level security, so one customer's queries
-  cannot return another customer's rows.</p>
+  <p>Sendkeep stores the records above in Supabase (PostgreSQL). Backend-only
+  durable queue tables are protected with row-level security and are not
+  exposed to browser API roles; application queries also scope every record
+  to your account.</p>
 
   <h2>What we do not store</h2>
   <ul>
-    <li><strong>Your lead list.</strong> It stays in your Google Sheet. We read
-    it when a job runs and write status back. We keep no copy.</li>
-    <li><strong>Your mailbox.</strong> We read only the threads Sendkeep
-    itself started, to detect replies. We do not scan the rest of your inbox.</li>
-    <li><strong>Payment card details.</strong> Billing is not implemented yet.
-    When it is, a payment provider will handle card data and we will not see it.</li>
+    <li><strong>A full copy of your lead list.</strong> The Sheet remains the
+    source for optional first-touch work. Sendkeep may retain the contact
+    metadata needed to monitor a tracked Gmail thread.</li>
+    <li><strong>Your unrelated mailbox.</strong> We do not scan unrelated inbox
+    folders. The worker reads bounded Sent-thread metadata to discover
+    conversations and then reads tracked threads for reply detection.</li>
+    <li><strong>Payment card details.</strong> Stripe handles payment details;
+    Sendkeep receives billing and subscription metadata, not the card number.</li>
   </ul>
 
   <h2>Who else receives data</h2>

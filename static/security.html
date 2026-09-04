@@ -20,7 +20,7 @@
 
 <main class="wrap">
   <h1 class="font-display">Security</h1>
-  <p class="updated">Last updated 23 July 2026</p>
+  <p class="updated">Last updated 20 August 2026</p>
 
   <div class="note warn">
     <p><strong>Written from the codebase, not from a certification.</strong>
@@ -47,8 +47,10 @@
     <li>The OAuth state parameter is signed and short-lived, so an attacker
     cannot attach their Google account to your session.</li>
     <li>Disconnecting from Settings erases the stored token immediately.</li>
-    <li>Mail access is used only to send your outreach and to read the threads
-    Sendkeep started. The rest of your mailbox is not scanned.</li>
+    <li>Google access is incremental. Monitoring requests Gmail read-only access.
+    Gmail sending is requested only when you enable sending. Sheets and Drive
+    metadata are a separate optional grant. Existing legacy tokens may retain
+    <code>gmail.modify</code> until the account reconnects.</li>
   </ul>
 
   <h2>Tenant isolation</h2>
@@ -60,9 +62,10 @@
 
   <h2>Guardrails on sending</h2>
   <ul>
-    <li>Manual review is the default. In auto mode, newly prepared first-touch
-    drafts send only after you explicitly confirm that batch. Replies and
-    follow-ups always wait for individual review.</li>
+    <li>Manual review is required in the standard deployment. Automatic
+    first-touch delivery is disabled unless a deployment owner explicitly
+    enables it for a controlled pilot. Replies and follow-ups always wait for
+    individual review.</li>
     <li>A row is only eligible when you have approved it by clearing its Status.</li>
     <li>Sending is capped per account per 24 hours, and to 5 batches per hour.</li>
     <li>Sendkeep refuses to write into your sheet at all until row 1 carries
@@ -71,11 +74,45 @@
     <li>No reply is sent to a prospect until you have read and approved it.</li>
   </ul>
 
+  <h2>The approval contract</h2>
+  <p>In plain language, Sendkeep's approval step is a safety gate, not a
+  deliverability guarantee. Before a Sendkeep send, the server re-checks the
+  account cap, recipient eligibility, suppression state, duplicate-send log,
+  and bounce pause. It records the approved copy, timestamp, and Gmail thread
+  after Google accepts the message.</p>
+  <p>Your click is still the final authorization. Review the recipient and
+  copy before sending. Sendkeep cannot govern messages sent directly in Gmail
+  or by another tool, cannot undo a human-approved mistake, and cannot promise
+  inbox placement, domain reputation, warmup, or rotation.</p>
+
+  <h2>Domain-reputation boundaries</h2>
+  <p>Sendkeep is designed for thoughtful, low-volume sending from the Gmail
+  inbox you already use — not for scaling around provider limits. Optional
+  first-touch sending is capped on purpose and paced; replies and follow-ups
+  always stay in manual review. Opt-outs are suppressed, hard-bounce signals
+  can pause sending, and the queue shows the current cap and bounce state. If
+  you need warmup, rotation, or inbox-placement management, that is a
+  different product category and Sendkeep does not claim to provide it.</p>
+  <p>For optional first-touch sending, missing SPF or DMARC, a revoked DKIM
+  key, or an unavailable DNS check pauses the send path. Reply monitoring still
+  works while you fix the domain. A DNS check is not a deliverability promise;
+  it is the minimum authentication gate before Sendkeep adds another message
+  to your domain's sending history.</p>
+
+  <h2>Your data and exit</h2>
+  <p>Settings includes a JSON export of Sendkeep's account, queue, tracked
+  threads, commitments, audit events, and usage records. OAuth credentials and
+  session secrets are excluded. Disconnecting Gmail erases the stored token
+  and stops monitoring and Sendkeep sends; mail already in Gmail stays in
+  Gmail. Self-service account deletion is not implemented yet — request it at
+  <a href="mailto:support@sendkeep.app?subject=Delete%20my%20Sendkeep%20data">support@sendkeep.app</a>.</p>
+
   <h2>Known gaps</h2>
   <p>Stated openly, because a security page that lists only strengths is not
   worth reading:</p>
   <ul>
-    <li>Self-service account deletion is not implemented yet.</li>
+    <li>Self-service account deletion is not implemented yet; export first,
+    then email support for deletion.</li>
     <li>Reply drafting sends prospect message text to a third-party language
     model provider. See the <a href="/privacy">privacy policy</a>.</li>
     <li>Sendkeep has not completed Google's OAuth verification review, so

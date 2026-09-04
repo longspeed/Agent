@@ -2,19 +2,19 @@
    /security, /acceptable-use, /dpa). Tokens match the app pages so a visitor
    who lands here from the marketing site does not feel handed off elsewhere. */
 :root {
-  --bg: #0f0e0c;
-  --bg-elevated: #17150f;
-  --bg-floating: #1e1b14;
-  --border: #2a2620;
-  --border-hover: #3a342a;
-  --text: #f5f1e8;
-  --text-secondary: #a69c8a;
-  --text-muted: #726b5a;
-  --accent: #e8622c;
-  --accent-hover: #f4753e;
-  --accent-dim: rgba(232, 98, 44, 0.12);
-  --steel: #4c86a8;
-  --gold: #d8a93b;
+  --bg: #f4f1e9;
+  --bg-elevated: #fcfaf5;
+  --bg-floating: #f0ede5;
+  --border: #ddd9cf;
+  --border-hover: #c9c3b7;
+  --text: #30322d;
+  --text-secondary: #666a62;
+  --text-muted: #6e7368;
+  --accent: #c2491d;
+  --accent-hover: #a93e17;
+  --accent-dim: rgba(194, 73, 29, 0.1);
+  --steel: #527184;
+  --gold: #8c6b24;
 }
 
 html { background: var(--bg); }

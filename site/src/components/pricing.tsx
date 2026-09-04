@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Check } from 'lucide-react'
 import { NoisePricingFilter } from './primitives'
 
+const PUBLIC_BOOKING_URL = (import.meta.env.VITE_PUBLIC_BOOKING_URL || '').trim()
+
 type Plan = {
   name: string
   monthly: string
@@ -9,6 +11,7 @@ type Plan = {
   blurb: string
   features: string[]
   cta: string
+  href: string
   featured?: boolean
 }
 
@@ -17,46 +20,49 @@ const PLANS: Plan[] = [
     name: 'Trial',
     monthly: 'Free',
     yearly: 'Free',
-    blurb: 'Send a small batch and see the reply queue work.',
+    blurb: 'Connect one Gmail inbox and see promises stay visible.',
     features: [
-      '50 sourced leads',
-      '25 approved sends per day',
-      'Manual reply queue',
-      'One manual follow-up per contact',
-      'Google Sheets sync',
+      'Recent Sent-thread discovery',
+      'Promise and follow-up memory',
+      'Promised-action tracking',
+      'One inbox, no Sheet required',
+      'Capped first-touch trial',
     ],
-    cta: 'Start free',
+    cta: 'Connect Gmail',
+    href: '/signup',
   },
   {
-    name: 'Pilot',
-    monthly: '$19/mo',
-    yearly: '$190/yr',
-    blurb: 'A reply and follow-up desk for one Gmail inbox.',
+    name: 'Inbox',
+    monthly: '$29/mo',
+    yearly: '$290/yr',
+    blurb: 'Promise memory for one Gmail inbox.',
     features: [
-      'Drafts first-touch outreach',
-      'Unlimited reply drafts',
-      'One manual follow-up per contact',
-      '500 sourced leads/mo',
-      '10 lead searches per hour',
-      'Caps, opt-outs, and bounce pauses',
+      'Gmail Sent-thread discovery',
+      'Promised dates, actions, and evidence',
+      'One follow-up reminder per contact',
+      'Opt-outs, duplicate, and bounce checks',
+      'Audit trail and export',
       'Priority email support',
     ],
-    cta: 'Start Pilot',
-    featured: true,
+    cta: 'See your promises',
+    href: '/outreach?tab=promises',
   },
   {
-    name: 'Team',
-    monthly: '$149/mo',
-    yearly: '$1,490/yr',
-    blurb: 'For teams after the single-inbox loop proves useful.',
+    name: 'Agency pilot',
+    monthly: '$49/inbox/mo',
+    yearly: '$490/inbox/yr',
+    blurb: 'Concierge onboarding for agencies managing client Gmail inboxes.',
     features: [
-      'Everything in Pilot',
-      '100 sends per day',
-      '3,000 drafts per month',
-      '2,000 sourced leads/mo',
-      '30 lead searches per hour',
+      'Everything in Inbox',
+      'Proof ledger: approvals, edits, and reconciliations',
+      'Operator-confirmed meetings and deals',
+      'Exportable account evidence',
+      'Worker health and recovery alerts',
+      'No warmup, rotation, or volume claims',
     ],
-    cta: 'Start Team',
+    cta: PUBLIC_BOOKING_URL ? 'Book agency pilot' : 'Connect Gmail',
+    href: PUBLIC_BOOKING_URL || '/signup',
+    featured: true,
   },
 ]
 
@@ -104,12 +110,16 @@ export function Pricing() {
                 </li>
               ))}
             </ul>
-            <a href="/signup" className="ab-btn inline-flex items-center justify-center">
+            <a href={plan.href} className="ab-btn inline-flex items-center justify-center">
               {plan.cta}
             </a>
           </div>
         ))}
       </div>
+      <p className="mt-6 max-w-2xl text-center text-sm leading-relaxed text-sand">
+        Inbox is $29/mo per Gmail inbox. Agency pilot is $49/mo per managed Gmail inbox with
+        concierge onboarding. Both prices are validation offers, not volume-sending plans.
+      </p>
     </section>
   )
 }

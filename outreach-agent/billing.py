@@ -20,7 +20,7 @@ load-bearing:
      when creating the Checkout session against an already-authenticated
      account. It is never read from customer-controlled fields on the event.
      Stripe will happily echo back an email a customer typed into the payment
-     form; trusting it would let anyone pay $49 and have someone else's account
+     form; trusting it would let anyone pay for Solo and have someone else's account
      upgraded, or their own upgraded on a stranger's card.
 
 WHAT IT DOES NOT DO
@@ -187,8 +187,8 @@ def verify_webhook(payload: bytes, signature_header: str | None, now: float | No
         raise WebhookRejected(f"Webhook body was not valid JSON: {e}") from e
 
 
-def plan_change_from_event(event: dict) -> tuple[str, str] | None:
-    """Maps a verified Stripe event to (account_id, plan_name), or None when the
+def plan_change_from_event(event: dict) -> dict | None:
+    """Maps a verified Stripe event to an ordered, subscription-bound change, or None when the
     event is not one that changes a plan.
 
     Unknown event types return None rather than raising: Stripe sends whatever
@@ -198,6 +198,12 @@ def plan_change_from_event(event: dict) -> tuple[str, str] | None:
     something we are deliberately ignoring."""
     kind = event.get("type", "")
     obj = (event.get("data") or {}).get("object") or {}
+    event_id = str(event.get("id") or "")
+    event_created = event.get("created")
+    # Ordering cannot be enforced without Stripe's event identity and clock.
+    # Fail closed instead of applying an unorderable plan mutation.
+    if not event_id or not isinstance(event_created, int):
+        return None
 
     if kind == "checkout.session.completed":
         # Only a paid session grants anything. An unpaid session reaching here
@@ -208,15 +214,32 @@ def plan_change_from_event(event: dict) -> tuple[str, str] | None:
         account_id = obj.get("client_reference_id") or (obj.get("metadata") or {}).get("account_id")
         plan_name = (obj.get("metadata") or {}).get("plan", "")
         if account_id and plan_name in plans.PLANS:
-            return str(account_id), plan_name
+            return {
+                "account_id": str(account_id), "plan": plan_name,
+                "subscription_id": obj.get("subscription"), "status": "active",
+                "event_created": event_created, "event_id": event_id,
+                "event_rank": 20,
+            }
         return None
 
-    if kind in ("customer.subscription.deleted", "customer.subscription.paused"):
+    if kind in (
+        "customer.subscription.deleted", "customer.subscription.paused",
+        "customer.subscription.updated",
+    ):
         account_id = (obj.get("metadata") or {}).get("account_id")
-        # Back to the free tier, not to nothing: the account keeps working at
-        # trial quotas rather than being locked out of data it still owns.
-        if account_id:
-            return str(account_id), plans.DEFAULT_PLAN
-        return None
+        if not account_id:
+            return None
+        status = str(obj.get("status") or ("canceled" if kind.endswith("deleted") else "paused"))
+        active = status in ("active", "trialing")
+        plan_name = (obj.get("metadata") or {}).get("plan", "") if active else plans.DEFAULT_PLAN
+        if active and plan_name not in plans.PLANS:
+            return None
+        return {
+            "account_id": str(account_id), "plan": plan_name,
+            "subscription_id": obj.get("id"), "status": status,
+            "event_created": event_created, "event_id": event_id,
+            # Terminal events win if Stripe emits two changes in one second.
+            "event_rank": 10 if active else 30,
+        }
 
     return None

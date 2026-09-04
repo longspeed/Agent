@@ -10,11 +10,11 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0F0E0C; --bg-elevated:#17150F; --bg-floating:#1E1B14;
-    --border:#2A2620; --border-hover:#3A342A;
-    --text:#F5F1E8; --text-secondary:#A69C8A; --text-muted:#726B5A;
-    --accent:#E8622C; --accent-hover:#F4753E; --accent-dim:rgba(232,98,44,0.12);
-    --gold:#D8A93B; --green:#4C9A6A; --steel:#4C86A8;
+    --bg:#F4F1E9; --bg-elevated:#FCFAF5; --bg-floating:#F0EDE5;
+    --border:#DDD9CF; --border-hover:#C9C3B7;
+    --text:#30322D; --text-secondary:#666A62; --text-muted:#6E7368;
+    --accent:#C2491D; --accent-hover:#A93E17; --accent-dim:rgba(194,73,29,0.10);
+    --gold:#8C6B24; --green:#397152; --green-dim:#E7F0E9; --steel:#527184;
   }
   html{background:var(--bg);}
   body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);}
@@ -24,11 +24,12 @@
   .ease-spring{transition-timing-function:cubic-bezier(.22,1,.36,1);}
   .noise{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");opacity:0.035;}
 </style>
+<link rel="stylesheet" href="/static/product-theme.css?v=20260827">
 </head>
 <body class="min-h-screen antialiased">
 
 <div class="fixed inset-0 noise pointer-events-none"></div>
-<div class="fixed inset-0 pointer-events-none" style="background:radial-gradient(ellipse 800px 500px at 15% -10%, rgba(232,98,44,0.10), transparent), radial-gradient(ellipse 600px 400px at 90% 10%, rgba(76,134,168,0.08), transparent);"></div>
+<div class="fixed inset-0 pointer-events-none" style="background:radial-gradient(ellipse 800px 500px at 15% -10%, rgba(194,73,29,0.08), transparent), radial-gradient(ellipse 600px 400px at 90% 10%, rgba(82,113,132,0.07), transparent);"></div>
 
 <div id="app-nav"></div>
 
@@ -37,15 +38,15 @@
   <section class="pt-20 pb-10 max-w-2xl">
     <div class="inline-flex items-center gap-2 text-xs font-medium px-2.5 py-1 rounded-full mb-6" style="background:var(--accent-dim); color:var(--accent);">
       <span class="w-1.5 h-1.5 rounded-full" style="background:var(--accent);"></span>
-      Human-approved sending
+      Gmail follow-through memory
     </div>
     <h1 class="font-display text-5xl leading-[1.05] mb-5" style="letter-spacing:-0.03em;">
-      Cold outreach<br>you approve.
+      Never lose a warm<br>reply or promise.
     </h1>
     <p class="text-base leading-[1.7] mb-8" style="color:var(--text-secondary);">
-      Sendkeep drafts a personalized email for every contact and queues it for your
-      review. Once you approve, it sends and watches the thread — then drafts your
-      reply the moment someone writes back, for you to approve too.
+      Sendkeep connects to Gmail, watches the conversations you already sent, and keeps
+      replies and promised follow-ups visible. First-touch sending is optional; the desk
+      works without a Sheet.
     </p>
     <div id="hero-stats" class="flex flex-wrap items-center gap-x-8 gap-y-3 text-sm" style="color:var(--text-muted);">
       <span>Loading live stats…</span>
@@ -57,25 +58,54 @@
       <div class="flex gap-3.5">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">1</div>
         <div>
-          <h3 class="text-sm font-medium mb-1">It writes the email</h3>
-          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">A personalized note per contact — no templates to babysit, no fill-in-the-blank filler.</p>
+          <h3 class="text-sm font-medium mb-1">It finds the thread</h3>
+          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Recent Gmail Sent conversations are discovered even when another tool or a VA sent them.</p>
         </div>
       </div>
       <div class="flex gap-3.5">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">2</div>
         <div>
-          <h3 class="text-sm font-medium mb-1">You approve it</h3>
-          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Nothing goes out until you say so — read it, edit it, or send it as drafted.</p>
+          <h3 class="text-sm font-medium mb-1">It finds the next action</h3>
+          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Replies, dates, and promised actions become a queue instead of another inbox search.</p>
         </div>
       </div>
       <div class="flex gap-3.5">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">3</div>
         <div>
-          <h3 class="text-sm font-medium mb-1">It sends & drafts the reply</h3>
-          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Once approved, it sends and quietly watches the thread — then drafts your response the moment someone writes back.</p>
+          <h3 class="text-sm font-medium mb-1">You close the loop</h3>
+          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Review, edit, send, or dismiss. The worker keeps watching after the Sheet is gone.</p>
         </div>
       </div>
     </div>
+  </section>
+
+  <section class="pb-14 max-w-4xl" aria-labelledby="pipeline-title">
+    <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
+      <div>
+        <h2 id="pipeline-title" class="font-display text-2xl" style="letter-spacing:-0.02em;">Conversation pipeline</h2>
+        <p class="text-sm mt-1" style="color:var(--text-secondary);">The work after the send: replies, promises, meetings, and deals.</p>
+      </div>
+      <a href="/outreach" class="text-sm font-medium" style="color:var(--accent);">Open queue →</a>
+    </div>
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <a href="/outreach#reviews-list" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
+        <div id="pipeline-replies" class="font-display text-2xl">Loading…</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">Needs your reply</div>
+      </a>
+      <a href="/outreach#commitments-list" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
+        <div id="pipeline-promises" class="font-display text-2xl">Loading…</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">Promises to handle</div>
+      </a>
+      <a href="/outreach#deal-view" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
+        <div id="pipeline-meetings" class="font-display text-2xl" style="color:var(--steel);">Not tracked</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">Meetings confirmed</div>
+      </a>
+      <a href="/outreach#deal-view" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
+        <div id="pipeline-deals" class="font-display text-2xl" style="color:var(--green);">Not tracked</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">Deals won</div>
+      </a>
+    </div>
+    <p class="text-xs mt-3" style="color:var(--text-muted);">Meetings and deals appear only after you confirm them in the queue.</p>
   </section>
 
   <section class="pb-24">
@@ -90,60 +120,27 @@
               <path d="M3 6l9 6 9-6M4 5h16a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1z"/>
             </svg>
           </div>
-          <span class="text-xs font-medium px-2 py-0.5 rounded-full" style="background:rgba(76,154,106,0.14); color:var(--green);">Active</span>
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full" style="background:var(--green-dim); color:var(--green);">Active</span>
         </div>
-        <h2 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Outreach Agent</h2>
+        <h2 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Reply &amp; follow-up desk</h2>
         <p class="text-sm leading-relaxed mb-5" style="color:var(--text-secondary);">
-          Never write another cold email by hand. It drafts, sends, watches for replies,
-          and queues up a response for you to approve.
+          Find the Gmail conversations that need attention, draft the next reply,
+          and keep every promised follow-up visible.
         </p>
         <div id="outreach-stats" class="flex items-center gap-4 text-xs mb-5 pb-5 border-b" style="border-color:var(--border); color:var(--text-muted);">
           <span>Loading…</span>
         </div>
         <div class="flex items-center gap-1.5 text-sm font-medium ease-spring transition-transform duration-200 group-hover:translate-x-1" style="color:var(--accent);">
-          Open agent
+          Open queue
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </div>
       </a>
-
-      <a href="/leads" class="group block rounded-2xl p-6 card-shadow card-shadow-hover ease-spring transition-transform duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2"
-         style="background:var(--bg-elevated); border:1px solid var(--border); --tw-ring-color:var(--accent);">
-        <div class="flex items-start justify-between mb-5">
-          <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:var(--accent-dim);">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          </div>
-          <span class="text-xs font-medium px-2 py-0.5 rounded-full" style="background:rgba(76,154,106,0.14); color:var(--green);">Active</span>
-        </div>
-        <h2 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Lead Sourcing Agent</h2>
-        <p class="text-sm leading-relaxed mb-5" style="color:var(--text-secondary);">
-          Describe who you're targeting — it searches the web, qualifies matches, and
-          queues them up in your outreach sheet for you to approve.
-        </p>
-        <div id="leads-stats" class="flex items-center gap-4 text-xs mb-5 pb-5 border-b" style="border-color:var(--border); color:var(--text-muted);">
-          <span>Loading…</span>
-        </div>
-        <div class="flex items-center gap-1.5 text-sm font-medium ease-spring transition-transform duration-200 group-hover:translate-x-1" style="color:var(--accent);">
-          Open agent
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-        </div>
-      </a>
-
-      <div class="rounded-2xl p-6 border border-dashed" style="border-color:var(--border); opacity:0.55;">
-        <div class="flex items-start justify-between mb-5">
-          <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:var(--bg-floating);">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/></svg>
-          </div>
-          <span class="text-xs font-medium px-2 py-0.5 rounded-full" style="background:var(--bg-floating); color:var(--text-muted);">Coming soon</span>
-        </div>
-        <h2 class="font-display text-xl mb-1.5" style="color:var(--text-secondary); letter-spacing:-0.01em;">Another agent</h2>
-        <p class="text-sm leading-relaxed" style="color:var(--text-muted);">A slot for whatever you build next.</p>
-      </div>
 
     </div>
   </section>
 </main>
 
-<script src="/static/nav.js"></script>
+<script src="/static/nav.js?v=20260820"></script>
 <script>
   renderNav();
 
@@ -153,60 +150,60 @@
     try {
       const campaignsRes = await fetch('/api/outreach/campaigns');
       if (campaignsRes.status === 409) {
-        const notConnected = `<span>Connect your Google account in <a href="/settings" style="color:var(--accent);">Settings</a> to get started.</span>`;
+        const notConnected = `<span>Connect Gmail in <a href="/settings" style="color:var(--accent);">Settings</a> to get started.</span>`;
         cardEl.innerHTML = notConnected;
         heroEl.innerHTML = notConnected;
         return;
       }
-      const [campaigns, replies] = await Promise.all([
+      const [campaigns, replies, commitments, evidence] = await Promise.all([
         campaignsRes.json(),
         fetch('/api/outreach/replies').then(r => r.json()),
+        fetch('/api/outreach/commitments').then(r => r.ok ? r.json() : []),
+        fetch('/api/outreach/evidence').then(r => r.ok ? r.json() : null),
       ]);
       const pending = campaigns.filter(c => c.status === 'Pending').length;
       const sentOrReplied = campaigns.filter(c => c.status === 'Sent' || c.status === 'Replied').length;
       const repliedCount = campaigns.filter(c => c.status === 'Replied').length;
       const needsReview = replies.length;
+      document.getElementById('pipeline-replies').textContent = String(needsReview);
+      document.getElementById('pipeline-promises').textContent = String(Array.isArray(commitments) ? commitments.length : 0);
+      const outcomes = evidence && evidence.outcomes;
+      const confirmedMeetings = Number(outcomes && outcomes.meeting_booked || 0);
+      const confirmedDeals = Number(outcomes && outcomes.deal_won || 0);
+      document.getElementById('pipeline-meetings').textContent = confirmedMeetings > 0
+        ? confirmedMeetings.toLocaleString('en-US')
+        : 'Not tracked';
+      document.getElementById('pipeline-deals').textContent = confirmedDeals > 0
+        ? confirmedDeals.toLocaleString('en-US')
+        : 'Not tracked';
 
       cardEl.innerHTML = `
-        <span><strong style="color:var(--text)">${pending}</strong> pending</span>
-        <span><strong style="color:var(--text)">${sentOrReplied}</strong> sent</span>
         <span><strong style="color:var(--accent)">${needsReview}</strong> awaiting review</span>
+        <span><strong style="color:var(--text)">${repliedCount}</strong> replies received</span>
+        <span><strong style="color:var(--text)">${pending}</strong> pending</span>
       `;
 
       if (sentOrReplied === 0) {
-        heroEl.innerHTML = `<span>No campaigns sent yet — add a contact to get started.</span>`;
+        heroEl.innerHTML = `<span>No Gmail threads monitored yet — connect Gmail to start.</span>`;
       } else {
         const replyRate = Math.round((repliedCount / sentOrReplied) * 100);
         heroEl.innerHTML = `
-          <span><strong class="font-display text-lg" style="color:var(--text);">${sentOrReplied}</strong> emails sent</span>
           <span><strong class="font-display text-lg" style="color:var(--text);">${repliedCount}</strong> replies received</span>
           <span><strong class="font-display text-lg" style="color:var(--accent);">${replyRate}%</strong> reply rate</span>
+          <span><strong class="font-display text-lg" style="color:var(--text);">${sentOrReplied}</strong> threads monitored</span>
         `;
       }
     } catch (e) {
       cardEl.innerHTML = '<span>Stats unavailable</span>';
       heroEl.innerHTML = '<span>Live stats unavailable right now.</span>';
+      document.getElementById('pipeline-replies').textContent = 'Unavailable';
+      document.getElementById('pipeline-promises').textContent = 'Unavailable';
+      document.getElementById('pipeline-meetings').textContent = 'Unavailable';
+      document.getElementById('pipeline-deals').textContent = 'Unavailable';
     }
   }
   loadOutreachStats();
 
-  async function loadLeadsStats() {
-    const el = document.getElementById('leads-stats');
-    try {
-      const res = await fetch('/api/leads');
-      if (res.status === 409) {
-        el.innerHTML = `<span>Connect your Google account in <a href="/settings" style="color:var(--accent);">Settings</a> to get started.</span>`;
-        return;
-      }
-      const leadsData = await res.json();
-      el.innerHTML = leadsData.length
-        ? `<span><strong style="color:var(--accent)">${leadsData.length}</strong> new lead${leadsData.length === 1 ? '' : 's'} to review</span>`
-        : `<span>No leads waiting — run a search to find some.</span>`;
-    } catch (e) {
-      el.innerHTML = '<span>Stats unavailable</span>';
-    }
-  }
-  loadLeadsStats();
 </script>
 
 </body>

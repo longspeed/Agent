@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sendkeep · Reply &amp; follow-up desk (redesign mockup)</title>
+<!--
+  Standalone redesign mockup for /outreach. Not wired to any backend.
+  Sample data is fictional except contact names reused from the dogfood inbox.
+  Product logic embodied (from the RESHAPE verdict, 2026-08):
+    - One operator question first: "What needs you right now?"
+    - Follow-up discipline + promise ledger are the headline queues
+    - Reply drafting demoted below the fold, collapsed by default
+    - Counts + names + days-overdue, never inferred dollar figures
+    - Worker heartbeat replaces evidence/dogfood/pipeline vanity panels
+-->
+<style>
+  :root {
+    --bg: #0c0d0f;
+    --surface: #131518;
+    --surface-2: #191c20;
+    --line: #23262b;
+    --line-strong: #33373e;
+    --text: #e8eaed;
+    --text-2: #9ba1a9;
+    --text-3: #6b7178;
+    --accent: #34d399;
+    --accent-dim: rgba(52, 211, 153, 0.12);
+    --warn: #fbbf24;
+    --warn-dim: rgba(251, 191, 36, 0.10);
+    --info: #93b4f8;
+    --info-dim: rgba(147, 180, 248, 0.10);
+    --danger: #f28b82;
+    --danger-dim: rgba(242, 139, 130, 0.10);
+    --radius: 10px;
+    --font: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+  /* ---------- nav ---------- */
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(12, 13, 15, 0.88);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 56px;
+  }
+  .mark { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -0.01em; }
+  .mark-dot {
+    width: 18px; height: 18px; border-radius: 5px;
+    background: var(--accent);
+    display: grid; place-items: center;
+  }
+  .mark-dot span { width: 6px; height: 6px; border-radius: 50%; background: var(--bg); }
+  .nav-right { display: flex; align-items: center; gap: 14px; color: var(--text-3); font-size: 12.5px; }
+  .inbox-chip {
+    padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--text-2); font-size: 12px;
+  }
+
+  /* ---------- the question ---------- */
+  header.desk { padding: 44px 0 8px; }
+  h1 {
+    font-size: clamp(26px, 4vw, 34px);
+    font-weight: 650; letter-spacing: -0.02em; line-height: 1.1;
+  }
+  .desk-sub { margin-top: 8px; color: var(--text-2); max-width: 60ch; }
+  .desk-sub b { color: var(--text); font-weight: 550; }
+
+  /* ---------- need tiles ---------- */
+  .needs {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+    margin-top: 26px;
+  }
+  a.need {
+    text-decoration: none; color: inherit;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 18px 16px;
+    display: block;
+    transition: border-color .18s ease, transform .12s ease, background .18s ease;
+  }
+  a.need:hover { border-color: var(--line-strong); background: var(--surface-2); }
+  a.need:active { transform: translateY(1px); }
+  .need-num {
+    font-family: var(--mono); font-size: 34px; font-weight: 600;
+    line-height: 1; letter-spacing: -0.02em;
+  }
+  .need-label { margin-top: 6px; color: var(--text-2); font-size: 13px; }
+  .need-meta { margin-top: 10px; font-size: 12px; color: var(--text-3); }
+  .need.fu .need-num { color: var(--accent); }
+  .need.pr .need-num { color: var(--warn); }
+  .need.rp .need-num { color: var(--info); }
+  .need.is-zero .need-num { color: var(--text-3); }
+  .need.is-zero { opacity: .75; }
+  .oldest { font-family: var(--mono); font-size: 11.5px; }
+
+  /* ---------- sections ---------- */
+  section { padding: 34px 0 6px; }
+  .sec-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 14px;
+  }
+  .sec-head h2 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+  .sec-head .count {
+    font-family: var(--mono); font-size: 12px; color: var(--text-3);
+    padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px;
+  }
+  .sec-note { color: var(--text-3); font-size: 12.5px; margin: -8px 0 14px; max-width: 68ch; }
+
+  /* ---------- cards ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+  }
+  .stack { display: grid; gap: 10px; }
+
+  .card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .who { font-weight: 600; font-size: 13.5px; }
+  .who .at { color: var(--text-3); font-weight: 400; }
+  .due {
+    font-family: var(--mono); font-size: 11.5px; white-space: nowrap;
+  }
+  .due.ok { color: var(--accent); }
+  .due.late { color: var(--warn); }
+  .due.late b { color: var(--warn); font-weight: 700; }
+
+  .thread-quote {
+    margin-top: 10px;
+    padding: 9px 12px;
+    background: var(--surface-2);
+    border-left: 2px solid var(--line-strong);
+    border-radius: 6px;
+    color: var(--text-2); font-size: 13px;
+  }
+  .thread-quote .q-from { color: var(--text-3); font-size: 11px; display: block; margin-bottom: 3px; }
+
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 13px; }
+
+  /* ---------- buttons ---------- */
+  button {
+    font: inherit; cursor: pointer;
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: 13px; font-weight: 550;
+    border: 1px solid transparent;
+    transition: transform .1s ease, background .15s ease, border-color .15s ease, opacity .15s ease;
+  }
+  button:active { transform: translateY(1px) scale(.99); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn-primary { background: var(--accent); color: #06281c; }
+  .btn-primary:hover { filter: brightness(1.06); }
+  .btn-ghost { background: transparent; color: var(--text-2); border-color: var(--line); }
+  .btn-ghost:hover { color: var(--text); border-color: var(--line-strong); }
+  .btn-mini { padding: 5px 11px; font-size: 12px; }
+
+  /* ---------- badges ---------- */
+  .badge {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
+    padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+  }
+  .badge-warn { background: var(--warn-dim); color: var(--warn); }
+  .badge-accent { background: var(--accent-dim); color: var(--accent); }
+  .badge-info { background: var(--info-dim); color: var(--info); }
+  .badge-danger { background: var(--danger-dim); color: var(--danger); }
+
+  /* ---------- promise rows ---------- */
+  .promise { display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; align-items: start; }
+  .p-action { font-size: 13.5px; }
+  .p-evidence { grid-column: 1 / -1; color: var(--text-3); font-size: 12.5px; font-style: italic; }
+  .promise .actions { grid-column: 1 / -1; }
+
+  /* ---------- demoted replies ---------- */
+  details.demoted summary {
+    list-style: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    color: var(--text-2);
+    transition: border-color .18s ease;
+  }
+  details.demoted summary:hover { border-color: var(--line-strong); }
+  details.demoted summary::-webkit-details-marker { display: none; }
+  .demoted-title { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text); font-weight: 550; }
+  .demoted-hint { font-size: 12px; color: var(--text-3); }
+  details.demoted[open] summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .demoted-body { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); padding: 12px 14px; background: var(--bg); }
+
+  /* ---------- draft card (inside demoted area) ---------- */
+  .draft-body {
+    width: 100%; min-height: 84px; resize: vertical;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; font: inherit; font-size: 13px;
+  }
+  .draft-body:focus { outline: none; border-color: var(--line-strong); }
+
+  /* ---------- heartbeat footer ---------- */
+  .heartbeat {
+    margin: 40px 0 46px;
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+    display: flex; flex-wrap: wrap; gap: 8px 22px;
+    color: var(--text-3); font-size: 12px;
+  }
+  .hb-item { display: flex; align-items: center; gap: 7px; }
+  .pulse {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  /* ---------- empty-state demo ---------- */
+  .empty {
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius);
+    padding: 26px; text-align: center; color: var(--text-3);
+  }
+  .empty b { color: var(--text-2); font-weight: 550; display: block; margin-bottom: 3px; }
+
+  @media (max-width: 760px) {
+    .needs { grid-template-columns: 1fr; }
+    .promise { grid-template-columns: 1fr; }
+    .nav-right .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-inner">
+    <div class="mark">
+      <span class="mark-dot"><span></span></span>
+      Sendkeep
+      <span class="inbox-chip">founder inbox</span>
+    </div>
+    <div class="nav-right">
+      <span class="hide-sm">Digest sent 8:04 am</span>
+      <span class="hide-sm">Settings</span>
+      <button class="btn-ghost btn-mini">Check Gmail now</button>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+
+  <header class="desk">
+    <h1>What needs you right now?</h1>
+    <p class="desk-sub">
+      Two jobs today: <b>keep every follow-up on schedule</b> and <b>keep every promise you made</b>.
+      Everything else can wait.
+    </p>
+
+    <div class="needs">
+      <a class="need fu" href="#followups">
+        <div class="need-num">2</div>
+        <div class="need-label">Follow-ups due</div>
+        <div class="need-meta">oldest waits since <span class="oldest">Tue</span> · one per contact, ever</div>
+      </a>
+      <a class="need pr" href="#promises">
+        <div class="need-num">3</div>
+        <div class="need-label">Promises overdue</div>
+        <div class="need-meta">oldest <span class="oldest">12 days</span> · Sarah @ Acme</div>
+      </a>
+      <a class="need rp is-zero" href="#replies">
+        <div class="need-num">0</div>
+        <div class="need-label">Replies waiting</div>
+        <div class="need-meta">worker checked 4 min ago</div>
+      </a>
+    </div>
+  </header>
+
+  <!-- ==================== FOLLOW-UPS ==================== -->
+  <section id="followups">
+    <div class="sec-head">
+      <h2>Follow-ups due</h2>
+      <span class="count">2 due</span>
+    </div>
+    <p class="sec-note">
+      No reply arrived before the date. Exactly one follow-up per contact is allowed,
+      and any inbound reply cancels it automatically.
+    </p>
+
+    <div class="stack">
+      <article class="card">
+        <div class="card-top">
+          <div class="who">Ethan <span class="at">· longspeed2828@gmail.com</span></div>
+          <span class="due late">due <b>2 days</b> ago</span>
+        </div>
+        <div class="thread-quote">
+          <span class="q-from">Last message in thread · yours, Jul 18</span>
+          Grab a slot that works for you here: https://cal.com/oanh/15min
+        </div>
+        <div class="actions">
+          <button class="btn-ghost">Dismiss</button>
+          <button class="btn-ghost">Edit</button>
+          <button class="btn-primary">Send follow-up</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-top">
+          <div class="who">client1 <span class="at">· meatyspeed1@gmail.com</span></div>
+          <span class="due ok">due today</span>
+        </div>
+        <div class="thread-quote">
+          <span class="q-from">Their last message, Jul 16</span>
+          alright man lets hop in
+        </div>
+        <div class="actions">
+          <button class="btn-ghost">Dismiss</button>
+          <button class="btn-ghost">Edit</button>
+          <button class="btn-primary">Send follow-up</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ==================== PROMISES ==================== -->
+  <section id="promises">
+    <div class="sec-head">
+      <h2>Promises</h2>
+      <span class="count">3 overdue · 1 due soon</span>
+    </div>
+    <p class="sec-note">
+      Extracted from your sent replies, confirmed by you before they count.
+      Overdue counts names and days, never invented deal values.
+    </p>
+
+    <div class="stack">
+      <article class="card promise">
+        <div class="card-top" style="grid-column:1/-1;">
+          <div class="who">Sarah <span class="at">· Acme</span></div>
+          <span class="badge badge-warn">overdue 12 days</span>
+        </div>
+        <div class="p-action">Send revised scope document</div>
+        <div class="p-evidence">"I'll send the revised scope Wednesday." · Jul 30</div>
+        <div class="actions">
+          <button class="btn-ghost btn-mini">Dismiss</button>
+          <button class="btn-primary btn-mini">Draft the send</button>
+        </div>
+      </article>
+
+      <article class="card promise">
+        <div class="card-top" style="grid-column:1/-1;">
+          <div class="who">Priya <span class="at">· Northwind</span></div>
+          <span class="badge badge-warn">overdue 4 days</span>
+        </div>
+        <div class="p-action">Reply with pricing tiers</div>
+        <div class="p-evidence">"Love it, send pricing by Thursday." · Aug 6</div>
+        <div class="actions">
+          <button class="btn-ghost btn-mini">Dismiss</button>
+          <button class="btn-primary btn-mini">Draft the send</button>
+        </div>
+      </article>
+
+      <article class="card promise">
+        <div class="card-top" style="grid-column:1/-1;">
+          <div class="who">Marcus <span class="at">· Brightloop</span></div>
+          <span class="badge badge-danger">awaiting them 3 days</span>
+        </div>
+        <div class="p-action">They owe you: budget approval confirmation</div>
+        <div class="p-evidence">"I'll get budget approval by next week." · Aug 5</div>
+        <div class="actions">
+          <button class="btn-ghost btn-mini">Dismiss</button>
+          <button class="btn-primary btn-mini">Nudge them</button>
+        </div>
+      </article>
+
+      <article class="card promise">
+        <div class="card-top" style="grid-column:1/-1;">
+          <div class="who">Ethan <span class="at">· longspeed2828@gmail.com</span></div>
+          <span class="badge badge-info">due tomorrow</span>
+        </div>
+        <div class="p-action">Send calendar recap after intro call</div>
+        <div class="p-evidence">"On the 19th I will send." · Jul 18</div>
+        <div class="actions">
+          <button class="btn-ghost btn-mini">Dismiss</button>
+          <button class="btn-primary btn-mini">Mark done</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ==================== REPLIES (demoted) ==================== -->
+  <section id="replies">
+    <details class="demoted" open>
+      <summary>
+        <span class="demoted-title">
+          Replies to review
+          <span class="badge badge-info">1 waiting</span>
+        </span>
+        <span class="demoted-hint">drafting is optional help, never the job</span>
+      </summary>
+      <div class="demoted-body">
+        <article class="card">
+          <div class="card-top">
+            <div class="who">Jonh <span class="at">· pessiskibi@gmail.com</span></div>
+            <span class="badge badge-accent">new reply</span>
+          </div>
+          <div class="thread-quote">
+            <span class="q-from">They wrote, 09:22</span>
+            Yes, I am interested.
+          </div>
+          <textarea class="draft-body" aria-label="Your reply draft">Great to hear. Pick whatever time suits you here: https://cal.com/oanh/15min
+
+Oanh</textarea>
+          <div class="actions">
+            <button class="btn-ghost">Dismiss</button>
+            <button class="btn-primary">Send reply</button>
+          </div>
+        </article>
+      </div>
+    </details>
+  </section>
+
+  <!-- ==================== EMPTY STATE DEMO ====================
+       (shown when all three counts hit zero)
+  <section id="allclear">
+    <div class="empty">
+      <b>All clear.</b>
+      Nothing needs you. The worker sweeps again around :30.
+    </div>
+  </section>
+  -->
+
+  <footer class="heartbeat">
+    <span class="hb-item"><span class="pulse"></span> Worker healthy · checked 4 min ago</span>
+    <span class="hb-item">4 threads monitored</span>
+    <span class="hb-item">Daily cap 25 · used 6</span>
+    <span class="hb-item">Every send re-checks opt-outs and caps at send time</span>
+  </footer>
+
+</div>
+
+</body>
+</html>

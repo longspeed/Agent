@@ -155,3 +155,29 @@ def check_domain(domain):
     else:
         summary = "SPF, DKIM and DMARC all look correct."
     return {"domain": domain, "managed": False, "findings": findings, "summary": summary}
+
+
+def safety_blockers(report):
+    """Return concrete DNS failures that must stop optional first-touch sends.
+
+    A missing SPF/DMARC record means the receiving server cannot authenticate
+    the domain we are about to use. A revoked DKIM key is equally explicit: it
+    tells receivers that the key is invalid. A DKIM ``warning`` is not a hard
+    block because Google Workspace customers can publish a custom selector that
+    this small pre-flight check cannot discover safely.
+
+    DNS outages are handled by the send orchestration layer as an unknown
+    result, rather than being mislabeled as a missing record here.
+    """
+    if not report or report.get("managed"):
+        return []
+    blockers = []
+    for finding in report.get("findings") or []:
+        name = finding.get("name")
+        status = finding.get("status")
+        required = (
+            name in {"SPF", "DMARC"} and status in {"missing", "warning"}
+        ) or (name == "DKIM" and status == "missing")
+        if required:
+            blockers.append(f"{name}: {finding.get('detail') or 'check failed.'}")
+    return blockers

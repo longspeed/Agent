@@ -1,32 +1,48 @@
-# React + TypeScript + Vite
+# Sendkeep marketing site
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+This React/Vite project builds the logged-out Sendkeep landing page into
+`../static/landing/`. The backend serves that compiled output at `/` for
+anonymous visitors.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+From this directory:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm ci
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Use the local demo server from the repository root when you need to see the
+landing page beside a safe seeded queue:
+
+```bash
+cd ..
+python dev_server.py
+```
+
+## Verification and build
+
+```bash
+npm run lint
+npm run build
+```
+
+The build writes `static/landing/index.html`, the bundle under
+`static/landing/assets/`, and a source freshness stamp. Run
+`python check_build_freshness.py` from the repository root after building both
+frontend projects.
+
+Do not open the compiled HTML with `file://`. Its `/static/...` asset paths need
+an HTTP server. Do not edit generated files by hand; change `site/src/` and
+rebuild.
+
+Before an agency pilot, provide a real booking destination at build time:
+
+```bash
+$env:VITE_PUBLIC_BOOKING_URL = 'https://cal.com/your-team/sendkeep'
+npm run build
+```
+
+When the variable is absent, the public site fails closed to `Connect Gmail` or
+`See your queue`; it never renders a placeholder or a mailto booking CTA.

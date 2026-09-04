@@ -35,10 +35,9 @@ Deliverability controls are guardrails, not the product promise.
    do not replace separate sending domains, warmup, multi-inbox rotation, or
    inbox placement testing. Never imply they do.
 
-4. Price Pilot against GMass, not against agency platforms.
-   The current realistic anchor is $15-25/mo for one Gmail inbox. $79+ only
-   makes sense after the reply loop proves time saved or after multi-account
-   agency features exist.
+4. Price the utility against recovered pipeline, not against volume tools.
+   Validate the Solo offer at $19/mo. Do not infer an agency price from that result;
+   interview agencies about inbox count, onboarding work, and proof requirements first.
 
 5. Do not build multi-inbox infrastructure before validation.
    High-volume agency users want it, but building it now changes the product
@@ -48,7 +47,7 @@ Deliverability controls are guardrails, not the product promise.
 
 - Ship the single-follow-up queue to 3-5 Reddit prospects. Keep it only if at
   least 3 approve drafts with minimal editing, the follow-ups generate replies,
-  and those users would pay $19/mo.
+  and solo users would pay $19/mo when the product proves reliable follow-through.
 - Treat an empty or ignored queue as a failed test; do not answer it with more
   sequence steps.
 - Keep A/B tests, multi-step sequences, and multi-inbox sending blocked until

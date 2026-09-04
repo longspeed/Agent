@@ -5,20 +5,20 @@
    inline in every static/*.html page's own <style><:root> block. Values
    match those pages exactly (see static/settings.html, outreach.html, etc). */
 @theme {
-  --color-bg: #0f0e0c;
-  --color-elevated: #17150f;
-  --color-floating: #1e1b14;
-  --color-line: #2a2620;
-  --color-line-hover: #3a342a;
-  --color-cream: #f5f1e8;
-  --color-sand: #a69c8a;
-  --color-mute: #726b5a;
-  --color-accent: #e8622c;
-  --color-accent-hover: #f4753e;
-  --color-gold: #d8a93b;
-  --color-grass: #4c9a6a;
-  --color-ok: #7bb662;
-  --color-steel: #4c86a8;
+  --color-bg: #f4f1e9;
+  --color-elevated: #fcfaf5;
+  --color-floating: #f0ede5;
+  --color-line: #ddd9cf;
+  --color-line-hover: #c9c3b7;
+  --color-cream: #30322d;
+  --color-sand: #666a62;
+  --color-mute: #6e7368;
+  --color-accent: #c2491d;
+  --color-accent-hover: #a93e17;
+  --color-gold: #8c6b24;
+  --color-grass: #397152;
+  --color-ok: #397152;
+  --color-steel: #527184;
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-display: 'Fraunces', Georgia, serif;
   /* The spring curve the static pages applied via a hand-written .ease-spring
@@ -38,14 +38,14 @@ body {
 }
 
 ::selection {
-  background: rgba(232, 98, 44, 0.3);
+  background: rgba(194, 73, 29, 0.22);
 }
 
 .btn-primary {
-  background: linear-gradient(115deg, #e8622c 35%, #f4753e 50%, #e8622c 65%);
+  background: linear-gradient(115deg, #c2491d 35%, #a93e17 50%, #c2491d 65%);
   background-size: 250% 100%;
   background-position: 100% 0;
-  color: #0f0e0c;
+  color: #ffffff;
   transition:
     background-position 650ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.2s;
@@ -68,9 +68,8 @@ body {
 
 .card-shadow {
   box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.5),
-    0 8px 24px -8px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(255, 255, 255, 0.02);
+    0 1px 2px rgba(48, 50, 45, 0.06),
+    0 16px 36px -28px rgba(48, 50, 45, 0.45);
 }
 
 .noise {

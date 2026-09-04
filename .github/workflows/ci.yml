@@ -7,6 +7,25 @@ on:
     branches: [main]
 
 jobs:
+  database-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v3
+        with:
+          # Pin the CLI used to rebuild and lint the schema. Upgrade this
+          # deliberately after validating the new CLI in a pull request.
+          version: 2.101.0
+      - name: Start local Supabase and apply migrations
+        run: supabase start
+      - name: Prove the schema can be rebuilt from zero
+        run: supabase db reset --local --no-seed
+      - name: Run pgTAP database contract
+        run: supabase test db --local
+      - name: Lint the rebuilt database
+        run: supabase db lint --local --level error --fail-on error
+
   python-tests:
     runs-on: ubuntu-latest
     steps:
@@ -15,14 +34,20 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install dependencies
-        run: pip install -r outreach-agent/requirements.txt
+        run: pip install -r outreach-agent/requirements.txt pytest
       - name: Syntax check
-        run: python -m py_compile server.py outreach-agent/*.py check_build_freshness.py
-      - name: Main test suite (334 cases, no network, no real credentials)
+        run: python -m py_compile server.py dev_server.py check_env.py outreach-agent/*.py check_build_freshness.py
+      - name: Main test suite (no network, no real credentials)
         run: python tests/test_outreach_agent.py
+      - name: Full Python regression suite
+        run: python -m pytest -q
       - name: Build-freshness script tests
         run: python tests/test_build_freshness.py
-      - name: Second suite (leads dedup, rate limiting, usage metering)
+      - name: Local developer workflow smoke tests
+        run: python tests/test_devex_tools.py
+      - name: QA regression contracts
+        run: python -m pytest -q tests/test_qa_regressions.py
+      - name: Outreach-agent suite (leads dedup, rate limiting, usage metering)
         working-directory: outreach-agent
         run: python -m unittest discover tests
       - name: Same suite, with sockets blocked (the actual invariant)
@@ -46,6 +71,20 @@ jobs:
       - name: Typecheck
         working-directory: ${{ matrix.project }}
         run: npx tsc -b
+
+  outreach-composer-browser-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install browser test dependencies
+        run: npm ci
+      - name: Run composer race and failure tests
+        run: node tests/browser/outreach-composer.spec.mjs
 
   build-freshness:
     runs-on: ubuntu-latest

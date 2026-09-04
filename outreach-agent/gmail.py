@@ -1,28 +1,38 @@
 import base64
+import hashlib
 import re
+from datetime import datetime, timezone
 from email import message_from_string
 from email.mime.text import MIMEText
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 
 from googleapiclient.discovery import build
 
 from google_auth import get_credentials
 
-def _get_service(account):
+def _get_service(account, capability="monitor"):
     # Deliberately not cached: credentials differ per account, and
     # send_outreach.py calls this concurrently from a thread pool where the
     # underlying httplib2.Http connection isn't safe to share across threads.
-    return build("gmail", "v1", credentials=get_credentials(account))
+    return build("gmail", "v1", credentials=get_credentials(account, capability))
 
 
-def send_email(account, to, subject, body, unsubscribe_url=""):
+def deterministic_message_id(account_id, operation_key):
+    """Stable RFC Message-ID used only to prove an ambiguous send outcome."""
+    digest = hashlib.sha256(
+        f"{account_id}:{operation_key}".encode("utf-8")
+    ).hexdigest()
+    return f"sendkeep.{digest}@sendkeep.local"
+
+
+def send_email(account, to, subject, body, unsubscribe_url="", message_id=""):
     """Sends a new email from the account's connected Gmail. Returns the thread id.
 
     When unsubscribe_url is given, adds the RFC 2369 / RFC 8058 headers so Gmail
     and other clients render their own native "Unsubscribe" control and honour a
     one-click POST -- both of which materially help deliverability for cold mail.
     """
-    service = _get_service(account)
+    service = _get_service(account, "send")
     message = MIMEText(body)
     message["to"] = to
     message["subject"] = subject
@@ -35,12 +45,18 @@ def send_email(account, to, subject, body, unsubscribe_url=""):
     return sent["threadId"]
 
 
-def get_sending_address(account):
+def get_sending_address(account, capability="monitor"):
     """The Gmail address this account actually sends from. The connected
     mailbox is the sending identity, and it is not necessarily the address the
     customer logged into Sendkeep with -- the deliverability check has to
-    inspect the domain that mail will really leave from."""
-    service = _get_service(account)
+    inspect the domain that mail will really leave from.
+
+    capability defaults to "monitor" for read paths; the send gate passes
+    "send" because checking the domain mail will leave from must not demand a
+    permission wider than sending itself (a send-only grant has no
+    gmail.readonly, and demanding monitor here 409-blocked every first-touch
+    send from such accounts)."""
+    service = _get_service(account, capability)
     profile = service.users().getProfile(userId="me").execute()
     return (profile.get("emailAddress") or "").strip()
 
@@ -54,7 +70,7 @@ def _header(headers, name):
 
 def send_reply(account, thread_id, to, body, unsubscribe_url=""):
     """Sends body as a reply within thread_id, threaded via In-Reply-To/References."""
-    service = _get_service(account)
+    service = _get_service(account, "send")
     thread = service.users().threads().get(userId="me", id=thread_id, format="metadata",
                                              metadataHeaders=["Subject", "Message-ID"]).execute()
     messages = thread.get("messages", [])
@@ -69,6 +85,8 @@ def send_reply(account, thread_id, to, body, unsubscribe_url=""):
     message = MIMEText(body)
     message["to"] = to
     message["subject"] = subject
+    if message_id:
+        message["Message-ID"] = f"<{message_id.strip('<>')}>"
     if unsubscribe_url:
         message["List-Unsubscribe"] = f"<{unsubscribe_url}>"
         message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
@@ -81,6 +99,39 @@ def send_reply(account, thread_id, to, body, unsubscribe_url=""):
         userId="me", body={"raw": raw, "threadId": thread_id}
     ).execute()
     return sent["threadId"]
+
+
+def find_sent_email(account, to, subject, body, message_id):
+    """Return exact Gmail proof for an ambiguous first-touch send."""
+    service = _get_service(account)
+    target_id = (message_id or "").strip("<>")
+    if not target_id:
+        return None
+    listed = service.users().messages().list(
+        userId="me", q=f"in:sent rfc822msgid:{target_id}", maxResults=5
+    ).execute()
+    target = (to or "").strip().lower()
+    expected_subject = (subject or "").strip().lower()
+    expected_body = " ".join((body or "").split())
+    for item in listed.get("messages", []):
+        message = service.users().messages().get(
+            userId="me", id=item["id"], format="full"
+        ).execute()
+        payload = message.get("payload", {})
+        headers = payload.get("headers", [])
+        recipients = {
+            address.strip().lower()
+            for _, address in getaddresses([_header(headers, "To"), _header(headers, "Cc")])
+            if address.strip()
+        }
+        if target not in recipients:
+            continue
+        if (_header(headers, "Subject") or "").strip().lower() != expected_subject:
+            continue
+        if " ".join(_extract_body(payload).split()) != expected_body:
+            continue
+        return message
+    return None
 
 
 def _extract_body(payload):
@@ -161,6 +212,125 @@ def get_thread(account, thread_id):
     return service.users().threads().get(userId="me", id=thread_id, format="full").execute()
 
 
+def _reply_subject(thread):
+    """Return the subject Gmail uses for a reply in ``thread``."""
+    messages = thread.get("messages", [])
+    if not messages:
+        return "Re:"
+    headers = messages[0].get("payload", {}).get("headers", [])
+    subject = _header(headers, "Subject") or "Re:"
+    return subject if subject.lower().startswith("re:") else f"Re: {subject}"
+
+
+def get_reply_subject(thread):
+    """Public, presentation-safe wrapper for the subject of a Gmail reply."""
+    return _reply_subject(thread)
+
+
+def find_sent_reply(account, thread_id, to, body, thread=None):
+    """Find an exact reply that Gmail accepted in ``thread_id``.
+
+    Gmail and the database cannot commit atomically. If ``messages.send`` times
+    out after Gmail accepts the request, retrying would risk a duplicate. This
+    read is the safe recovery primitive: only a message labelled ``SENT`` in
+    the same thread, addressed to the intended recipient, with the exact
+    normalized body and reply subject counts as proof. A matching message may
+    have been sent in the current attempt or immediately before an operator
+    re-opened the page; in both cases recording it as sent is safer than
+    dispatching a second identical follow-up.
+
+    ``thread`` can be supplied by a caller that already fetched the thread so
+    the worker and the send endpoint do not pay for a second full read.
+    """
+    thread = thread if thread is not None else get_thread(account, thread_id)
+    target = (to or "").strip().lower()
+    expected_body = " ".join((body or "").split())
+    expected_subject = _reply_subject(thread).strip().lower()
+    if not target or not expected_body:
+        return None
+
+    for message in reversed(thread.get("messages", [])):
+        if "SENT" not in (message.get("labelIds") or []):
+            continue
+        payload = message.get("payload", {})
+        headers = payload.get("headers", [])
+        recipients = {
+            address.strip().lower()
+            for _, address in getaddresses([
+                _header(headers, "To"),
+                _header(headers, "Cc"),
+            ])
+            if address.strip()
+        }
+        if target not in recipients:
+            continue
+        subject = (_header(headers, "Subject") or "").strip().lower()
+        if subject != expected_subject:
+            continue
+        if " ".join(_extract_body(payload).split()) != expected_body:
+            continue
+        return message
+    return None
+
+
+def list_recent_sent_threads(account, own_addresses=None, *, days=30, max_threads=50):
+    """Discover recent Gmail conversations that were sent outside Sendkeep.
+
+    Sheets are an optional mirror, not the definition of what the reply desk
+    watches. Gmail returns message ids for ``in:sent``; we read bounded
+    metadata for the first message seen in each thread, extract the first
+    external recipient, and let the durable tracker deduplicate the result.
+    Bodies are never fetched here. A failed discovery should be visible to the
+    worker as an account error rather than silently making the desk look empty.
+    """
+    if not days or not max_threads:
+        return []
+    service = _get_service(account)
+    own = {value.strip().lower() for value in (own_addresses or set()) if value}
+    listed = service.users().messages().list(
+        userId="me",
+        q=f"in:sent newer_than:{int(days)}d",
+        maxResults=int(max_threads),
+    ).execute()
+
+    discovered = []
+    seen_threads = set()
+    for message in listed.get("messages", []):
+        thread_id = (message.get("threadId") or "").strip()
+        message_id = (message.get("id") or "").strip()
+        if not thread_id or not message_id or thread_id in seen_threads:
+            continue
+        seen_threads.add(thread_id)
+        metadata = service.users().messages().get(
+            userId="me",
+            id=message_id,
+            format="metadata",
+            metadataHeaders=["To", "Cc", "Subject"],
+        ).execute()
+        headers = metadata.get("payload", {}).get("headers", [])
+        recipients = getaddresses([
+            _header(headers, "To"),
+            _header(headers, "Cc"),
+        ])
+        external = next(
+            ((name.strip(), address.strip().lower()) for name, address in recipients
+             if address.strip() and address.strip().lower() not in own),
+            None,
+        )
+        if not external:
+            continue
+        name, email = external
+        discovered.append({
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "email": email,
+            "name": name,
+            "subject": _header(headers, "Subject"),
+            "source": "gmail_discovery",
+        })
+    return discovered
+
+
 _warned_degraded_own_addresses = False
 
 
@@ -233,82 +403,88 @@ def _classify_message(headers, own_addresses, target_email):
     return "other"
 
 
-def get_latest_reply_with_history(account, thread_id, contact_email, own_addresses, thread=None):
-    """Returns None, or a dict describing the newest message on this thread
-    that might be new information from the contact:
+def get_reply_candidates_with_history(account, thread_id, contact_email, own_addresses, thread=None):
+    """Return every inbound candidate in chronological order.
 
-        {"text", "history", "message_id", "kind", "answered_elsewhere", "from_addr"}
-
-    kind is "on_sheet" (From matches contact_email) or "off_sheet" (anyone
-    else -- an assistant, an alias, a stranger). text is the message body.
-    history covers every earlier message, oldest first, as (from_contact,
-    body) pairs -- from_contact is only True for "on_sheet" messages, so an
-    off-sheet stranger is never silently relabeled as "the contact" in what
-    the LLM sees. message_id is Gmail's own id for the message text came
-    from -- the dedupe key the review queue is built on (see
-    reviews_db.find_review_id). from_addr is the observed sender's address.
-
-    answered_elsewhere is True when a message from one of our own addresses
-    (own_addresses, see get_own_addresses) postdates the candidate -- the
-    operator already replied from Gmail directly before this poll ran, so the
-    contact's message is surfaced for visibility rather than drafted again.
-
-    Messages are classified in precedence order (see _classify_message):
-    our own messages and bounce/delivery-status daemons are never candidates
-    (a daemon message must stay invisible here or find_bounce, gated on "no
-    reply found", never runs and bounce suppression dies silently); RFC 3834
-    auto-responders are skipped entirely -- no review, no draft, no
-    sheet-status change. The newest remaining message (scanning newest to
-    oldest) is the candidate; "ours" messages are skipped over rather than
-    treated as a stop condition, since a genuine reply can sit behind a later
-    message we sent.
-
-    thread accepts an already-fetched thread (see get_thread) so the caller can
-    share one read with find_bounce."""
+    Processing only the newest message loses an earlier reply when a contact
+    sends twice between worker cycles. Each result keeps its own message ID,
+    history, timestamp, and direct-answer marker for safe queueing.
+    """
     thread = thread if thread is not None else get_thread(account, thread_id)
     messages = thread.get("messages", [])
     if len(messages) < 2:
-        return None
+        return []
 
     kinds = [
         _classify_message(m["payload"]["headers"], own_addresses, contact_email)
         for m in messages
     ]
 
-    candidate_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if kinds[i] in ("match", "other"):
-            candidate_idx = i
-            break
-    if candidate_idx is None:
-        return None
+    candidates = []
+    for candidate_idx, kind in enumerate(kinds):
+        if kind not in ("match", "other"):
+            continue
+        candidate = messages[candidate_idx]
+        from_addr = parseaddr(
+            _header(candidate["payload"]["headers"], "From")
+        )[1].strip().lower()
+        history = [
+            (
+                parseaddr(_header(messages[i]["payload"]["headers"], "From"))[1].strip().lower() == from_addr,
+                _extract_body(messages[i]["payload"]).strip(),
+            )
+            for i in range(candidate_idx)
+        ]
+        timestamp = None
+        if candidate.get("internalDate"):
+            try:
+                timestamp = datetime.fromtimestamp(
+                    int(candidate["internalDate"]) / 1000, tz=timezone.utc
+                ).isoformat()
+            except (TypeError, ValueError, OSError):
+                pass
+        candidates.append({
+            "text": _extract_body(candidate["payload"]).strip(),
+            "history": history,
+            "message_id": candidate.get("id"),
+            "kind": "on_sheet" if kind == "match" else "off_sheet",
+            "answered_elsewhere": any(k == "ours" for k in kinds[candidate_idx + 1:]),
+            "from_addr": from_addr,
+            "timestamp": timestamp,
+        })
+    return candidates
 
-    answered_elsewhere = any(k == "ours" for k in kinds[candidate_idx + 1:])
-    candidate = messages[candidate_idx]
-    from_addr = parseaddr(_header(candidate["payload"]["headers"], "From"))[1].strip().lower()
-    # Labelled against the CANDIDATE's own address, not contact_email: for an
-    # on_sheet candidate these are the same thing, but for an off_sheet one
-    # they are not, and get_history_before -- called later at confirm time
-    # with review["email"] (the observed sender) as its target -- has to
-    # agree with what was built here. Labelling against contact_email instead
-    # would mark an off-sheet sender's own earlier messages on the thread as
-    # "not from them," which is wrong on its own terms and would silently
-    # diverge from the history get_history_before rebuilds after confirmation.
-    history = [
-        (
-            parseaddr(_header(messages[i]["payload"]["headers"], "From"))[1].strip().lower() == from_addr,
-            _extract_body(messages[i]["payload"]).strip(),
-        )
-        for i in range(candidate_idx)
-    ]
-    return {
-        "text": _extract_body(candidate["payload"]).strip(),
-        "history": history,
-        "message_id": candidate.get("id"),
-        "kind": "on_sheet" if kinds[candidate_idx] == "match" else "off_sheet",
-        "answered_elsewhere": answered_elsewhere,
-        "from_addr": from_addr,
-    }
+
+def get_latest_reply_with_history(account, thread_id, contact_email, own_addresses, thread=None):
+    """Return the newest candidate, retaining the legacy single-result API."""
+    candidates = get_reply_candidates_with_history(
+        account, thread_id, contact_email, own_addresses, thread=thread
+    )
+    return candidates[-1] if candidates else None
+
+
+def get_operator_messages(thread, own_addresses):
+    """Return operator-authored messages for promise extraction."""
+    result = []
+    for message in thread.get("messages", []):
+        headers = message.get("payload", {}).get("headers", [])
+        if _classify_message(headers, own_addresses, "") != "ours":
+            continue
+        timestamp = None
+        if message.get("internalDate"):
+            try:
+                timestamp = datetime.fromtimestamp(
+                    int(message["internalDate"]) / 1000, tz=timezone.utc
+                ).isoformat()
+            except (TypeError, ValueError, OSError):
+                pass
+        result.append({
+            "message_id": message.get("id"),
+            "text": _extract_body(message.get("payload", {})).strip(),
+            "timestamp": timestamp,
+            "kind": "operator",
+        })
+    return result
 
 
 def get_history_before(account, thread_id, message_id, contact_email, own_addresses, thread=None):

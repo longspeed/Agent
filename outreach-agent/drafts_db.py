@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SECRET_KEY
+import schema_contract
 
 TABLE = "outreach_drafts"
 
@@ -101,26 +102,43 @@ def require_send_log():
         raise RuntimeError(
             "Sending is blocked: outreach_drafts.sent_at is missing or the "
             "follow-up workflow is incomplete, so the authoritative send record "
-            "cannot be guaranteed. Apply outreach-agent/migrations/"
-            "20260812_add_original_draft_columns.sql and "
-            "20260813_add_follow_up_workflow.sql before sending. Run at minimum: "
-            "alter table public.outreach_drafts add column if not exists sent_at "
-            f"timestamptz; ({e})"
+            "cannot be guaranteed. Deploy Supabase migration "
+            f"{schema_contract.BASELINE_MIGRATION}. ({e})"
         ) from e
     _send_log_verified = True
 
 
 def has_pending_for_row(account_id, row_index):
+    return get_pending_for_row(account_id, row_index) is not None
+
+
+def get_pending_for_row(account_id, row_index):
+    """Return the operator-visible pending draft for one Sheet row, if any."""
     existing = (
         _get_client().table(TABLE)
-        .select("id")
+        .select("*")
         .eq("account_id", account_id)
         .eq("row_index", row_index)
         .eq("status", "pending")
         .limit(1)
         .execute()
     )
-    return bool(existing.data)
+    return existing.data[0] if existing.data else None
+
+
+def has_first_touch_conflict(account_id, email, exclude_draft_id=None):
+    """Return whether this account already owns a durable first-touch record.
+
+    The RPC intentionally mirrors the database unique-index predicate. A local
+    select with an ``ilike`` filter would not provide the same trim/case rules
+    and would make the application check weaker than the database backstop.
+    """
+    result = _get_client().rpc("has_first_touch_conflict", {
+        "p_account_id": account_id,
+        "p_email": (email or "").strip().lower(),
+        "p_exclude_draft_id": exclude_draft_id,
+    }).execute()
+    return result.data is True
 
 
 def add_draft(account_id, row_index, name, email, company, subject, body):
@@ -128,27 +146,46 @@ def add_draft(account_id, row_index, name, email, company, subject, body):
     The dedupe both guards a double-clicked "Prepare" and complements the
     partial unique index in the schema, which is the true backstop against two
     overlapping prepare jobs inserting the same row twice."""
-    if has_pending_for_row(account_id, row_index):
+    normalized_email = (email or "").strip().lower()
+    if has_pending_for_row(account_id, row_index) or has_first_touch_conflict(
+        account_id, normalized_email
+    ):
         return None
-    result = _get_client().table(TABLE).insert({
-        "account_id": account_id,
-        "row_index": row_index,
-        "name": name,
-        "email": email,
-        "company": company,
-        "subject": subject,
-        "body": body,
-        # What the model wrote, frozen. subject/body are mutable -- mark_sent
-        # replaces them with whatever the operator actually approved -- so
-        # without these two columns the pair (what we generated, what a human
-        # sent) is destroyed at send time rather than merely uncollected, and
-        # it cannot be reconstructed afterwards. Written once here, never
-        # updated anywhere.
-        "original_subject": subject,
-        "original_body": body,
-        "status": "pending",
-    }).execute()
+    try:
+        result = _get_client().table(TABLE).insert({
+            "account_id": account_id,
+            "row_index": row_index,
+            "name": name,
+            "email": normalized_email,
+            "company": company,
+            "subject": subject,
+            "body": body,
+            # What the model wrote, frozen. subject/body are mutable -- mark_sent
+            # replaces them with whatever the operator actually approved -- so
+            # without these two columns the pair (what we generated, what a human
+            # sent) is destroyed at send time rather than merely uncollected, and
+            # it cannot be reconstructed afterwards. Written once here, never
+            # updated anywhere.
+            "original_subject": subject,
+            "original_body": body,
+            "status": "pending",
+        }).execute()
+    except Exception as exc:
+        # The pre-read is for a friendly fast path; only the unique index closes
+        # the concurrent-insert race. Treat that one constraint as an existing
+        # draft while allowing every unrelated database failure to surface.
+        message = str(exc).lower()
+        if (
+            "23505" in message
+            or "outreach_drafts_first_touch_email_unique_idx" in message
+            or "outreach_drafts_active_row_idx" in message
+        ):
+            return None
+        raise
     return result.data[0]["id"]
+
+
+VISIBLE_STATUSES = ("pending", "sending", "send_uncertain")
 
 
 def list_pending_drafts(account_id):
@@ -161,6 +198,17 @@ def list_pending_drafts(account_id):
         .execute()
     )
     return result.data
+
+
+def list_visible_drafts(account_id):
+    """Operator-visible drafts, including permanently fenced uncertain sends."""
+    result = (
+        _get_client().table(TABLE).select("*")
+        .eq("account_id", account_id)
+        .in_("status", list(VISIBLE_STATUSES))
+        .order("created_at").execute()
+    )
+    return result.data or []
 
 
 def get_draft(account_id, draft_id):
@@ -185,6 +233,43 @@ def _follow_up_due(sent_at, delay_days):
     return due
 
 
+def claim_send(account_id, draft_id, sent_subject, sent_body):
+    """Own a first-touch send and freeze the exact copy reconciliation expects."""
+    result = (
+        _get_client().table(TABLE).update({
+            "status": "sending", "subject": sent_subject, "body": sent_body,
+        }).eq("account_id", account_id).eq("id", draft_id)
+        .eq("status", "pending").execute()
+    )
+    return bool(result.data)
+
+
+def release_send_claim(account_id, draft_id):
+    result = (
+        _get_client().table(TABLE).update({"status": "pending"})
+        .eq("account_id", account_id).eq("id", draft_id)
+        .eq("status", "sending").execute()
+    )
+    return bool(result.data)
+
+
+def mark_send_uncertain(account_id, draft_id):
+    result = (
+        _get_client().table(TABLE).update({"status": "send_uncertain"})
+        .eq("account_id", account_id).eq("id", draft_id)
+        .eq("status", "sending").execute()
+    )
+    return bool(result.data)
+
+
+def list_sends_needing_reconciliation(account_id):
+    return (
+        _get_client().table(TABLE).select("*")
+        .eq("account_id", account_id).eq("status", "sending")
+        .order("created_at").execute().data or []
+    )
+
+
 def mark_sent(account_id, draft_id, sent_subject, sent_body, thread_id="", follow_up_delay_days=3):
     """Records the copy that actually went out (the operator may have edited it
     in the UI before approving), and moves the row out of the pending set.
@@ -200,7 +285,7 @@ def mark_sent(account_id, draft_id, sent_subject, sent_body, thread_id="", follo
     of (what the model wrote, what this person actually says). The diff between
     the two columns is the whole training signal, and it cannot be backfilled."""
     sent_at = datetime.now(timezone.utc)
-    _get_client().table(TABLE).update({
+    result = _get_client().table(TABLE).update({
         "status": "sent",
         "subject": sent_subject,
         "body": sent_body,
@@ -209,7 +294,8 @@ def mark_sent(account_id, draft_id, sent_subject, sent_body, thread_id="", follo
         "follow_up_due_at": _follow_up_due(sent_at, follow_up_delay_days).isoformat(),
         "follow_up_status": "waiting",
         "follow_up_cancel_reason": None,
-    }).eq("account_id", account_id).eq("id", draft_id).execute()
+    }).eq("account_id", account_id).eq("id", draft_id).eq("status", "sending").execute()
+    return bool(result.data)
 
 
 ACTIVE_FOLLOW_UP_STATUSES = ("waiting", "queued", "sent")
@@ -240,6 +326,31 @@ def list_active_follow_ups(account_id):
         rows.extend(page)
         start += len(page)
     return rows
+
+
+def list_follow_ups_needing_reconciliation(account_id):
+    """Return follow-ups whose Gmail result still needs durable closure.
+
+    A send claim must never be put back into the queue just because the HTTP
+    request timed out: Gmail may already have accepted it. The worker uses this
+    narrow query to reconcile those rows from the authoritative Sent thread,
+    keeping the operator out of a manual "go inspect Gmail" guessing loop.
+    """
+    return (
+        _get_client().table(TABLE).select("*")
+        .eq("account_id", account_id)
+        .in_("follow_up_status", ["sending", "sent"])
+        .order("id")
+        .execute().data or []
+    )
+
+
+def list_uncertain_follow_ups(account_id):
+    """Compatibility alias for callers interested only in in-flight sends."""
+    return [
+        row for row in list_follow_ups_needing_reconciliation(account_id)
+        if row.get("follow_up_status") == "sending"
+    ]
 
 
 def is_follow_up_due(draft, now=None):
@@ -280,6 +391,60 @@ def follow_up_outcomes(account_id):
     }
 
 
+def edit_metrics(account_id):
+    """Summarize the review signal captured by first-touch approvals.
+
+    The original copy is frozen at generation time while ``subject`` and
+    ``body`` become the exact approved copy. Keep model rewrites separate from
+    human edits so this metric never pretends an AI rewrite is a founder
+    preference signal.
+    """
+    result = _get_client().table(TABLE).select(
+        "status,subject,body,original_subject,original_body,rewritten"
+    ).eq("account_id", account_id).execute()
+    rows = result.data or []
+    sent = [row for row in rows if row.get("status") == "sent"]
+    human_edited = 0
+    model_rewritten = 0
+    untouched = 0
+    for row in sent:
+        original = "\n".join([
+            (row.get("original_subject") or "").strip(),
+            (row.get("original_body") or "").strip(),
+        ]).strip()
+        approved = "\n".join([
+            (row.get("subject") or "").strip(),
+            (row.get("body") or "").strip(),
+        ]).strip()
+        if row.get("rewritten"):
+            model_rewritten += 1
+        elif original and original != approved:
+            human_edited += 1
+        else:
+            untouched += 1
+    return {
+        "drafted": len(rows),
+        "approved": len(sent),
+        "human_edited": human_edited,
+        "model_rewritten": model_rewritten,
+        "untouched": untouched,
+    }
+
+
+def list_sent_edit_pairs(account_id, limit=100):
+    """Return bounded first-touch edit pairs for account-scoped style signals."""
+    result = (
+        _get_client().table(TABLE)
+        .select("body,original_body,rewritten")
+        .eq("account_id", account_id)
+        .eq("status", "sent")
+        .order("sent_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
 def _set_follow_up(account_id, draft_id, status, from_statuses=None, **fields):
     """Transitions one follow-up row, returning True only if a row actually
     matched the from-status guard.
@@ -308,10 +473,15 @@ def mark_follow_up_queued(account_id, draft_id):
 
 
 def claim_follow_up_send(account_id, draft_id):
-    """Atomically owns the one irreversible send; False means lost race."""
-    return _set_follow_up(
-        account_id, draft_id, "sending", from_statuses=("queued",)
-    )
+    """Own the irreversible send and its delayed uncertainty alert atomically."""
+    client = _get_client()
+    if hasattr(client, "rpc"):
+        result = client.rpc("claim_follow_up_send_with_alert", {
+            "p_account_id": account_id,
+            "p_draft_id": draft_id,
+        }).execute()
+        return bool(result.data)
+    return _set_follow_up(account_id, draft_id, "sending", from_statuses=("queued",))
 
 
 def release_follow_up_send(account_id, draft_id):
@@ -332,6 +502,14 @@ def mark_follow_up_replied(account_id, draft_id):
     return _set_follow_up(
         account_id, draft_id, "replied",
         follow_up_replied_at=datetime.now(timezone.utc).isoformat()
+    )
+
+
+def snooze_follow_up(account_id, draft_id, due_at):
+    """Return a queued reminder to waiting with a new human-selected due time."""
+    return _set_follow_up(
+        account_id, draft_id, "waiting", from_statuses=("queued",),
+        follow_up_due_at=due_at,
     )
 
 
@@ -413,10 +591,14 @@ def count_sent_since(account_id, since):
 
 
 def count_sent_last_24_hours(account_id):
-    """The daily send cap's denominator. See count_sent_since."""
+    """The rolling cap denominator across first-touch, reply, and follow-up sends."""
     from datetime import datetime, timedelta, timezone
 
-    return count_sent_since(account_id, datetime.now(timezone.utc) - timedelta(days=1))
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    total = count_sent_since(account_id, since)
+    # Imported lazily to avoid the reviews_db -> drafts_db import cycle.
+    import reviews_db
+    return total + reviews_db.count_sent_last_24_hours(account_id)
 
 
 def discard(account_id, draft_id):

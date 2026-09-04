@@ -9,7 +9,7 @@ def list_spreadsheets(account):
     """Returns [{"id": ..., "name": ...}] for spreadsheets the account's
     connected Google user can see (owned or shared with them), most recently
     modified first. Read-only — no file contents are ever fetched."""
-    service = build("drive", "v3", credentials=get_credentials(account))
+    service = build("drive", "v3", credentials=get_credentials(account, "sheets"))
     files = []
     page_token = None
     while True:

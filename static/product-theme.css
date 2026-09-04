@@ -1,0 +1,95 @@
+/* Sendkeep product theme
+   Brand/action = ember. State colors never invite action. This file loads
+   after legacy page-local styles so every hand-written product page inherits
+   the same visual language as the outreach desk. */
+:root {
+  --bg: #f4f1e9;
+  --bg-elevated: #fcfaf5;
+  --bg-floating: #f0ede5;
+  --border: #ddd9cf;
+  --border-hover: #c9c3b7;
+  --text: #30322d;
+  --text-primary: #30322d;
+  --text-secondary: #666a62;
+  --text-muted: #6e7368;
+  --accent: #c2491d;
+  --accent-hover: #a93e17;
+  --accent-dim: rgba(194, 73, 29, 0.1);
+  --green: #397152;
+  --green-dim: #e7f0e9;
+  --success: #397152;
+  --success-dim: #e7f0e9;
+  --gold: #8c6b24;
+  --gold-dim: #f4ecd8;
+  --warning: #8c6b24;
+  --warning-dim: #f4ecd8;
+  --danger: #a83232;
+  --danger-dim: #f5e3e1;
+  --steel: #527184;
+  --steel-dim: #e6edf0;
+  --info: #527184;
+  --info-dim: #e6edf0;
+  --focus-ring: 0 0 0 3px rgba(194, 73, 29, 0.38);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+::selection {
+  background: rgba(194, 73, 29, 0.22);
+}
+
+.card-shadow {
+  box-shadow:
+    0 1px 2px rgba(48, 50, 45, 0.06),
+    0 16px 36px -28px rgba(48, 50, 45, 0.45);
+}
+
+.card-shadow-hover:hover {
+  box-shadow:
+    0 1px 2px rgba(48, 50, 45, 0.08),
+    0 18px 40px -26px rgba(48, 50, 45, 0.52),
+    0 0 0 1px var(--border-hover);
+}
+
+.btn-primary {
+  color: #fff;
+}
+
+.btn-ghost:hover {
+  background: var(--bg-elevated);
+}
+
+.field {
+  background: var(--bg-elevated);
+}
+
+.login-card,
+.card {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+.login-google {
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.login-google:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-hover);
+}
+
+.noise {
+  opacity: 0.018;
+  mix-blend-mode: multiply;
+}
+
+:where(a, button, input, textarea, select, summary):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}

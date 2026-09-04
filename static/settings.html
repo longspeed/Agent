@@ -43,6 +43,7 @@
   .field:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);}
   .card{background:var(--bg-elevated); border:1px solid var(--border);}
 </style>
+<link rel="stylesheet" href="/static/product-theme.css?v=20260827">
 </head>
 <body class="min-h-screen antialiased">
 
@@ -61,7 +62,7 @@
   <section id="onboarding" class="hidden card rounded-2xl p-6 card-shadow mb-6">
     <h2 class="font-display text-lg mb-4" style="letter-spacing:-0.01em;">Finish setting up</h2>
     <ol class="space-y-2 text-sm" style="color:var(--text-secondary);">
-      <li id="step-google" class="flex items-center gap-2.5"><span class="step-dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0F0E0C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>Connect your Google account (Gmail + Sheets)</li>
+      <li id="step-google" class="flex items-center gap-2.5"><span class="step-dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0F0E0C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>Connect Gmail monitoring (sending and Sheets are optional grants)</li>
       <li id="step-sheet" class="flex items-center gap-2.5"><span class="step-dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0F0E0C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>Pick the Google Sheet that holds your leads</li>
       <li id="step-calendar" class="flex items-center gap-2.5"><span class="step-dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0F0E0C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>Add your calendar booking link</li>
     </ol>
@@ -163,11 +164,10 @@
   <section class="card rounded-2xl p-6 card-shadow mt-6">
     <h2 class="font-display text-lg mb-1" style="letter-spacing:-0.01em;">Pilot plan</h2>
     <p id="plan-summary" class="text-sm" style="color:var(--text-secondary);">Loading plan details…</p>
-    <p class="text-xs mt-3" style="color:var(--text-muted);">This is a pricing placeholder while checkout is being validated with early customers.</p>
   </section>
 </main>
 
-<script src="/static/nav.js"></script>
+<script src="/static/nav.js?v=20260820"></script>
 <script>
   renderNav('Settings');
 

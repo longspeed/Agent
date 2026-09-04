@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sendkeep / Outreach Desk / Today home — Variant B</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Outfit:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 1360px;
+    height: 900px;
+    background: #F4F1E9;
+    font-family: 'Geist', sans-serif;
+    color: #30322D;
+    display: flex;
+    flex-direction: column;
+    padding: 26px 36px 30px;
+    gap: 18px;
+    overflow: hidden;
+  }
+
+  .outfit { font-family: 'Outfit', sans-serif; }
+
+  /* ---------- Top bar ---------- */
+  .topbar { display: flex; align-items: center; justify-content: space-between; }
+  .brand-group { display: flex; align-items: center; gap: 12px; }
+  .brand-name { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 16px; color: #30322D; }
+  .brand-divider { width: 1px; height: 14px; background: #DDD9CF; }
+  .brand-section { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 10px; letter-spacing: 0.08em; color: #92968D; }
+  .topbar-right { display: flex; align-items: center; gap: 8px; }
+  .sync-pill {
+    display: flex; align-items: center; gap: 7px;
+    background: #FCFAF5; border: 1px solid #DDD9CF; border-radius: 999px;
+    padding: 6px 12px; font-size: 11px; font-weight: 400; color: #666A62;
+  }
+  .sync-dot { width: 7px; height: 7px; border-radius: 999px; background: #2E5E48; }
+  .btn-ghost-top {
+    background: #F7F4EC; border: 1px solid #D8D4CA; border-radius: 8px;
+    padding: 7px 13px; font-size: 12px; font-weight: 500; color: #343731;
+  }
+
+  /* ---------- Page header ---------- */
+  .page-header { display: flex; justify-content: space-between; align-items: center; }
+  .header-copy { display: flex; flex-direction: column; gap: 5px; }
+  .eyebrow { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 11px; letter-spacing: 0.05em; color: #73776E; }
+  .page-title { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 27px; color: #30322D; line-height: 1.4em; }
+  .page-sub { font-size: 13px; font-weight: 400; color: #666A62; line-height: 1.4em; }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
+  .btn-ghost {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: #F7F4EC; border: 1px solid #D8D4CA; border-radius: 9px;
+    padding: 10px 15px; font-size: 13px; font-weight: 600; color: #343731;
+  }
+  .btn-primary {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: #2E5E48; border: 1px solid #2E5E48; border-radius: 9px;
+    padding: 10px 16px; font-size: 13px; font-weight: 600; color: #FFFFFF;
+  }
+
+  /* ---------- Main grid ---------- */
+  .main { display: flex; gap: 18px; flex: 1; min-height: 0; }
+
+  /* Left rail */
+  .rail {
+    width: 196px; flex-shrink: 0;
+    background: #FCFAF5; border: 1px solid #DDD9CF; border-radius: 14px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 14px 12px;
+  }
+  .rail-label { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 10px; letter-spacing: 0.05em; color: #92968D; padding-left: 8px; }
+  .rail-nav { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+  .rail-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 8px; }
+  .rail-item span { font-size: 12.5px; font-weight: 500; color: #3C3F39; }
+  .rail-item .mini-count { font-size: 10.5px; font-weight: 500; color: #767A71; }
+  .rail-item.active { background: #2E5E48; }
+  .rail-item.active span { color: #FFFFFF; font-weight: 600; }
+  .rail-footer { border-top: 1px solid #E3DFD6; padding-top: 12px; margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .monitor-row { display: flex; align-items: center; gap: 6px; padding-left: 4px; }
+  .monitor-dot { width: 6px; height: 6px; border-radius: 999px; background: #397152; }
+  .monitor-label { font-size: 11px; font-weight: 500; color: #3C3F39; }
+  .monitor-meta { font-size: 10px; font-weight: 400; color: #92968D; padding-left: 4px; }
+  .rail-settings-link { font-size: 11px; font-weight: 500; color: #666A62; padding-left: 4px; margin-top: 4px; }
+
+  /* Content column */
+  .content { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+  /* Snapshot cards */
+  .snapshot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .snapshot-card {
+    background: #FCFAF5; border: 1px solid #DDD9CF; border-radius: 12px;
+    padding: 13px 16px; display: flex; flex-direction: column; gap: 5px;
+  }
+  .snapshot-label { font-size: 11px; font-weight: 500; color: #73776E; }
+  .snapshot-value { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 26px; color: #30322D; line-height: 1.1em; }
+  .snapshot-value.due { color: #AD4E2C; }
+  .snapshot-value.replies { color: #397152; }
+  .snapshot-hint { font-size: 10.5px; font-weight: 400; color: #92968D; }
+
+  /* Decision list card */
+  .decision-card {
+    flex: 1; min-height: 0;
+    background: #FCFAF5; border: 1px solid #DDD9CF; border-radius: 14px;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .decision-header { display: flex; justify-content: space-between; align-items: center; padding: 15px 18px 12px; }
+  .decision-title-group { display: flex; align-items: center; gap: 8px; }
+  .decision-title { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 16px; color: #30322D; }
+  .count-badge {
+    background: #F3E2DA; border-radius: 6px; padding: 4px 8px;
+    font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 10px; color: #AD4E2C;
+  }
+  .filter-chips { display: flex; gap: 6px; }
+  .chip {
+    background: #F0EDE5; border-radius: 6px; padding: 4px 8px;
+    font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 10px; color: #767A71;
+  }
+  .chip.active { background: #2E5E48; color: #FFFFFF; }
+
+  .review-item { display: flex; flex-direction: column; gap: 7px; padding: 13px 18px; border-top: 1px solid #E3DFD6; }
+  .review-item.highlighted { background: #F0F5EF; border-top: 1px solid #AFC5B7; }
+  .item-meta { display: flex; align-items: center; gap: 7px; }
+  .type-badge { border-radius: 6px; padding: 4px 8px; font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 10px; }
+  .badge-reply { background: #E7F0E9; color: #397152; }
+  .badge-promise { background: #F4ECD8; color: #8C6B24; }
+  .badge-due { background: #F4E2DB; color: #A35234; }
+  .item-sender { font-size: 13px; font-weight: 500; color: #3C3F39; }
+  .item-time { margin-left: auto; font-size: 10px; font-weight: 400; color: #92968D; }
+  .item-task { font-size: 13px; font-weight: 500; color: #666A62; line-height: 1.4em; }
+  .review-item.highlighted .item-task { color: #2B4B3B; }
+
+  .decision-footer {
+    margin-top: auto; background: #F3F0E8; border-top: 1px solid #E3DFD6;
+    display: flex; justify-content: space-between; align-items: center; padding: 12px 18px;
+  }
+  .decision-hint { display: flex; flex-direction: column; gap: 2px; }
+  .hint-title { font-size: 12px; font-weight: 600; color: #40433D; }
+  .hint-sub { font-size: 10px; font-weight: 400; color: #7F837A; }
+
+  /* Bottom row */
+  .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .bottom-card {
+    background: #FCFAF5; border: 1px solid #DDD9CF; border-radius: 14px;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .bottom-card-title { font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 13px; color: #30322D; padding: 13px 16px 9px; }
+  .action-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 16px; border-top: 1px solid #EFECE4; }
+  .action-name { font-size: 12px; font-weight: 500; color: #3C3F39; }
+  .action-hint { display: flex; align-items: center; gap: 8px; }
+  .action-note { font-size: 10.5px; font-weight: 400; color: #92968D; }
+  .action-chevron { font-size: 13px; color: #92968D; }
+  .guardrail-note {
+    margin: 10px 16px 14px; background: #FFF8E8; border: 1px solid #E8D5A3; border-radius: 9px;
+    padding: 9px 11px; font-size: 10.5px; font-weight: 400; color: #514A36; line-height: 1.45em;
+  }
+  .monitor-stats { display: flex; flex-direction: column; gap: 6px; padding: 2px 16px 4px; }
+  .monitor-stat-line { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 500; color: #3C3F39; }
+  .monitor-stat-sub { font-size: 10.5px; font-weight: 400; color: #92968D; padding-left: 13px; }
+</style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="brand-group">
+      <div class="brand-name">Sendkeep</div>
+      <div class="brand-divider"></div>
+      <div class="brand-section">OUTREACH DESK</div>
+    </div>
+    <div class="topbar-right">
+      <div class="sync-pill"><div class="sync-dot"></div>Gmail monitoring · synced 4 min ago</div>
+      <div class="btn-ghost-top">Guide</div>
+      <div class="btn-ghost-top">Settings</div>
+    </div>
+  </div>
+
+  <div class="page-header">
+    <div class="header-copy">
+      <div class="eyebrow">TUESDAY · AUGUST 25</div>
+      <div class="page-title">Good morning, Nam.</div>
+      <div class="page-sub">Your desk has 8 decisions waiting — about 12 minutes to clear.</div>
+    </div>
+    <div class="header-actions">
+      <div class="btn-ghost">View threads</div>
+      <div class="btn-primary">Start guided review</div>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <div class="rail">
+      <div>
+        <div class="rail-label">FOLLOW-THROUGH</div>
+        <div class="rail-nav">
+          <div class="rail-item active"><span>Inbox</span></div>
+          <div class="rail-item"><span>Promises</span><span class="mini-count">3</span></div>
+          <div class="rail-item"><span>Follow-ups</span><span class="mini-count">3</span></div>
+          <div class="rail-item"><span>Threads</span></div>
+          <div class="rail-item"><span>More</span></div>
+        </div>
+      </div>
+      <div class="rail-footer">
+        <div class="monitor-row"><div class="monitor-dot"></div><div class="monitor-label">Monitoring on</div></div>
+        <div class="monitor-meta">9 threads watched</div>
+        <div class="rail-settings-link">Settings</div>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <div class="snapshot-grid">
+        <div class="snapshot-card">
+          <div class="snapshot-label">Promises due today</div>
+          <div class="snapshot-value due">2</div>
+          <div class="snapshot-hint">1 overdue since yesterday</div>
+        </div>
+        <div class="snapshot-card">
+          <div class="snapshot-label">Replies to review</div>
+          <div class="snapshot-value replies">3</div>
+          <div class="snapshot-hint">2 new since yesterday</div>
+        </div>
+        <div class="snapshot-card">
+          <div class="snapshot-label">Awaiting reply</div>
+          <div class="snapshot-value">4</div>
+          <div class="snapshot-hint">Avg wait 2.1 days</div>
+        </div>
+        <div class="snapshot-card">
+          <div class="snapshot-label">Threads watched</div>
+          <div class="snapshot-value">9</div>
+          <div class="snapshot-hint">Auto-checks every hour</div>
+        </div>
+      </div>
+
+      <div class="decision-card">
+        <div class="decision-header">
+          <div class="decision-title-group">
+            <div class="decision-title">Needs your decision</div>
+            <div class="count-badge">8</div>
+          </div>
+          <div class="filter-chips">
+            <div class="chip active">All</div>
+            <div class="chip">Replies 3</div>
+            <div class="chip">Promises 3</div>
+            <div class="chip">Due 2</div>
+          </div>
+        </div>
+
+        <div class="review-item highlighted">
+          <div class="item-meta">
+            <div class="type-badge badge-reply">REPLY</div>
+            <div class="item-sender">Maya Chen</div>
+            <div class="item-time">12 min</div>
+          </div>
+          <div class="item-task">Send revised scope by Thursday</div>
+        </div>
+        <div class="review-item">
+          <div class="item-meta">
+            <div class="type-badge badge-promise">PROMISE</div>
+            <div class="item-sender">Jon Bell</div>
+            <div class="item-time">38 min</div>
+          </div>
+          <div class="item-task">Send the calendar invite</div>
+        </div>
+        <div class="review-item">
+          <div class="item-meta">
+            <div class="type-badge badge-due">DUE</div>
+            <div class="item-sender">Priya Shah</div>
+            <div class="item-time">2 hr</div>
+          </div>
+          <div class="item-task">Proposal follow-up is due</div>
+        </div>
+        <div class="review-item">
+          <div class="item-meta">
+            <div class="type-badge badge-reply">REPLY</div>
+            <div class="item-sender">Owen Brooks</div>
+            <div class="item-time">4 hr</div>
+          </div>
+          <div class="item-task">Northstar pilot update</div>
+        </div>
+
+        <div class="decision-footer">
+          <div class="decision-hint">
+            <div class="hint-title">Ready when you are</div>
+            <div class="hint-sub">Sending clears this item and opens the next.</div>
+          </div>
+          <div class="btn-ghost">Open guided review</div>
+        </div>
+      </div>
+
+      <div class="bottom-grid">
+        <div class="bottom-card">
+          <div class="bottom-card-title">Next actions</div>
+          <div class="action-row">
+            <div class="action-name">Prepare first-touch drafts</div>
+            <div class="action-hint"><div class="action-note">2 leads waiting</div><div class="action-chevron">›</div></div>
+          </div>
+          <div class="action-row">
+            <div class="action-name">Record promise outcomes</div>
+            <div class="action-hint"><div class="action-note">3 resolved this week</div><div class="action-chevron">›</div></div>
+          </div>
+          <div class="action-row">
+            <div class="action-name">Copy proof summary</div>
+            <div class="action-hint"><div class="action-note">6 proofs collected</div><div class="action-chevron">›</div></div>
+          </div>
+        </div>
+
+        <div class="bottom-card">
+          <div class="bottom-card-title">Gmail monitor</div>
+          <div class="monitor-stats">
+            <div class="monitor-stat-line"><div class="monitor-dot"></div>Active — polling while the desk is open</div>
+            <div class="monitor-stat-sub">Watching 9 threads · Last sync 4 min ago</div>
+          </div>
+          <div class="guardrail-note">Guardrail: nothing sends without your approval. Every draft waits in the review queue until you say so.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</body>
+</html>

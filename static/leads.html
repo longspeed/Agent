@@ -3,20 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lead Sourcing Agent — Sendkeep</title>
+<title>Optional lead sourcing — Sendkeep</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0F0E0C; --bg-elevated:#17150F; --bg-floating:#1E1B14;
-    --border:#2A2620; --border-hover:#3A342A;
-    --text:#F5F1E8; --text-secondary:#A69C8A; --text-muted:#726B5A;
-    --accent:#E8622C; --accent-hover:#F4753E; --accent-dim:rgba(232,98,44,0.12);
-    --gold:#D8A93B; --gold-dim:rgba(216,169,59,0.14);
-    --green:#4C9A6A; --green-dim:rgba(76,154,106,0.14);
-    --steel:#4C86A8; --steel-dim:rgba(76,134,168,0.14);
+    --bg:#F4F1E9; --bg-elevated:#FCFAF5; --bg-floating:#F0EDE5;
+    --border:#DDD9CF; --border-hover:#C9C3B7;
+    --text:#30322D; --text-secondary:#666A62; --text-muted:#6E7368;
+    --accent:#C2491D; --accent-hover:#A93E17; --accent-dim:rgba(194,73,29,0.10);
+    --gold:#8C6B24; --gold-dim:#F4ECD8;
+    --green:#397152; --green-dim:#E7F0E9;
+    --steel:#527184; --steel-dim:#E6EDF0;
   }
   html{background:var(--bg);}
   body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);}
@@ -27,19 +27,20 @@
   textarea, input{font-family:'Inter',sans-serif;}
   .field{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
   .field:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);}
-  .btn-primary{background:linear-gradient(115deg, var(--accent) 35%, var(--accent-hover) 50%, var(--accent) 65%); background-size:250% 100%; background-position:100% 0; color:#0F0E0C; transition:background-position 650ms cubic-bezier(.22,1,.36,1);}
+  .btn-primary{background:linear-gradient(115deg, var(--accent) 35%, var(--accent-hover) 50%, var(--accent) 65%); background-size:250% 100%; background-position:100% 0; color:#FFFFFF; transition:background-position 650ms cubic-bezier(.22,1,.36,1);}
   .btn-primary:hover{background-position:0% 0;}
   .btn-primary:active{transform:scale(0.98);}
   .btn-primary:disabled{opacity:0.5; cursor:not-allowed;}
   @media (prefers-reduced-motion: reduce){.btn-primary{transition:none;}}
   .btn-ghost{background:var(--bg-floating); color:var(--text); border:1px solid var(--border);}
-  .btn-ghost:hover{border-color:var(--border-hover); background:#221F17;}
+  .btn-ghost:hover{border-color:var(--border-hover); background:var(--bg-elevated);}
   .btn-ghost:active{transform:scale(0.98);}
   .btn-ghost:disabled{opacity:0.5; cursor:not-allowed;}
   .spin{animation:spin 0.7s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
   .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;}
 </style>
+<link rel="stylesheet" href="/static/product-theme.css?v=20260827">
 </head>
 <body class="min-h-screen antialiased">
 
@@ -111,9 +112,9 @@
   </div>
 </template>
 
-<script src="/static/nav.js"></script>
+<script src="/static/nav.js?v=20260820"></script>
 <script>
-  renderNav('Lead Agent');
+  renderNav('Optional lead sourcing');
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -127,6 +128,14 @@
       if (job.status !== 'running') return job;
       await new Promise((r) => setTimeout(r, intervalMs));
     }
+  }
+
+  async function startJob(endpoint, options) {
+    const res = await fetch(endpoint, options);
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.detail || 'Could not start the job');
+    if (!payload.job_id) throw new Error('The server did not return a job id');
+    return payload.job_id;
   }
 
   function setLoading(btn, loading, loadingText) {
@@ -235,11 +244,11 @@
     setLoading(btn, true, 'Searching…');
     resultEl.classList.add('hidden');
     try {
-      const { job_id } = await fetch('/api/leads/search', {
+      const job_id = await startJob('/api/leads/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, limit }),
-      }).then(r => r.json());
+      });
       const job = await pollJob(job_id);
       if (job.status === 'error') throw new Error(job.error);
       const data = job.result;

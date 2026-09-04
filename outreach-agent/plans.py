@@ -1,13 +1,9 @@
 """What each plan entitles an account to, and the gate that enforces it.
 
-Three tiers, and the numbers here are not free-floating: every one of them is a
-promise already made on the pricing page (site/src/components/pricing.tsx). That
-file is the customer-facing contract and this one is its implementation, so they
-have to be read together. Where the page states a number ("50 sourced leads",
-"25 approved sends per day", "500 sourced leads/mo") this module uses exactly
-that number. Where the page says "Unlimited reply drafts", the quota here is
-None -- deliberately, because a cap we enforce against a word the site prints is
-the same class of untrue claim the verification copy already had to be fixed for.
+Three tiers support the promise-and-follow-up memory layer and the optional
+legacy first-touch workflow. The pricing page is the customer-facing contract
+for the product promise; operational quotas below remain enforcement details
+and are not the positioning center.
 
 WHAT GETS COUNTED, AND WHY IT ISN'T THE COST BUCKETS
 usage.py already meters every LLM call into "cost:<purpose>" buckets, and the
@@ -69,12 +65,9 @@ class Plan:
     price_yearly_usd: int
     # Emails this account may send in a rolling 24 hours. Per-plan rather than
     # the single global DAILY_SEND_LIMIT it replaces, but note the values are
-    # equal for trial and pilot: the pricing page promises "25 approved sends
-    # per day" on the free trial, so raising pilot above it would be an upsell
-    # the page does not offer. Team is higher because its monthly draft
-    # allowance is otherwise unreachable -- 3000 drafts against a 25/day cap is
-    # 750 sends a month, and selling an allowance the daily cap forbids
-    # spending is a broken promise on the more expensive plan.
+    # Trial stays deliberately conservative at 25; every paid inbox is capped
+    # at 50 because Sendkeep is a human follow-through desk, not a volume-
+    # sending or warmup console.
     daily_send_limit: int
     # Drafts queued for review per calendar month. None means uncapped.
     monthly_drafts: int | None
@@ -82,11 +75,11 @@ class Plan:
     lead_allowance: int | None
     # "month" resets on the 1st; "lifetime" never resets. The trial's 50 leads
     # are a lifetime figure because the pricing page writes them without a
-    # "/mo" suffix, unlike Pilot's "500 sourced leads/mo" -- a free tier that
+    # "/mo" suffix, unlike the paid Inbox plan's "500 sourced leads/mo" -- a free tier that
     # silently refills every month is a free tier forever.
     lead_window: str
-    # Reply drafts are uncapped on every plan: the page sells "Unlimited reply
-    # drafts" on Pilot, and neither Trial nor Team contradicts it.
+    # Reply drafts remain uncapped for compatibility with the optional
+    # secondary lane; they are not the core pricing unit.
     monthly_replies: int | None
     lead_searches_per_hour: int
     # Which env var holds this tier's Stripe price id. Free plans have none --
@@ -110,10 +103,10 @@ PLANS: dict[str, Plan] = {
     ),
     "pilot": Plan(
         name="pilot",
-        label="Pilot",
-        price_monthly_usd=19,
-        price_yearly_usd=190,
-        daily_send_limit=25,
+        label="Inbox",
+        price_monthly_usd=29,
+        price_yearly_usd=290,
+        daily_send_limit=50,
         monthly_drafts=750,
         lead_allowance=500,
         lead_window="month",
@@ -123,10 +116,10 @@ PLANS: dict[str, Plan] = {
     ),
     "team": Plan(
         name="team",
-        label="Team",
-        price_monthly_usd=149,
-        price_yearly_usd=1490,
-        daily_send_limit=100,
+        label="Agency pilot",
+        price_monthly_usd=49,
+        price_yearly_usd=490,
+        daily_send_limit=50,
         monthly_drafts=3000,
         lead_allowance=2000,
         lead_window="month",
@@ -162,13 +155,17 @@ def daily_send_limit_for(account: dict) -> int:
     database call, which is what lets sheets.py use it without acquiring the
     database dependency that module is deliberately built without.
 
-    A deployment-wide DAILY_SEND_LIMIT still wins when it is explicitly set, for
-    self-hosted single-tenant installs that have no plans at all."""
+    A deployment-wide DAILY_SEND_LIMIT may lower a plan's cap for self-hosted
+    installs, but it can never raise the paid-inbox ceiling above 50. The
+    product promise is a hard safety ceiling, not a suggestion that deployment
+    configuration can accidentally override.
+    """
     from config import DAILY_SEND_LIMIT_OVERRIDE
 
+    plan_limit = for_account(account).daily_send_limit
     if DAILY_SEND_LIMIT_OVERRIDE is not None:
-        return DAILY_SEND_LIMIT_OVERRIDE
-    return for_account(account).daily_send_limit
+        return min(plan_limit, DAILY_SEND_LIMIT_OVERRIDE)
+    return plan_limit
 
 
 def month_start_iso() -> str:
@@ -248,9 +245,9 @@ def _refusal_message(plan: Plan, bucket: str, used: int, limit: int, window: str
     noun, _ = _BUCKET_NOUNS.get(bucket, ("units", ""))
     period = "so far" if window == "lifetime" else "this month"
     upgrade = {
-        "trial": " Upgrade to Pilot for 750 drafts and 500 sourced leads a month.",
-        "pilot": " Upgrade to Team for 3,000 drafts and 2,000 sourced leads a month.",
-        "team": " Email support@sendkeep.app if you need a higher limit.",
+        "trial": " Upgrade to Inbox for the full promise and follow-up memory layer.",
+        "pilot": " Upgrade to Proof for the human-authorized evidence ledger.",
+        "team": " Contact support@sendkeep.app about an agency rollout.",
     }.get(plan.name, "")
     return (
         f"Your {plan.label} plan includes {limit:,} {noun} {period}, and you have "
@@ -278,7 +275,7 @@ def describe(account: dict) -> dict:
         # billing.py landed, and there is a test asserting this string never
         # claims addresses are verified -- because they are not.
         "note": (
-            "Human-approved leads, human-reviewed emails and replies, one-click "
-            "opt-out, and a daily send cap set by your plan."
+            "Gmail Sent monitoring, promise detection, one follow-up per contact, "
+            "and a daily send cap set by your plan."
         ),
     }

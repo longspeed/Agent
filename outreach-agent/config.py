@@ -216,6 +216,39 @@ DAILY_SEND_LIMIT_OVERRIDE = int(_DAILY_SEND_LIMIT_ENV) if _DAILY_SEND_LIMIT_ENV 
 # (and for the trial default, which the pricing page prints as 25/day).
 DAILY_SEND_LIMIT = DAILY_SEND_LIMIT_OVERRIDE if DAILY_SEND_LIMIT_OVERRIDE is not None else 25
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Sendkeep is a reply/follow-up desk first. First-touch sending remains an
+# explicit, human-reviewed capability, while automatic first-touch delivery is
+# off unless a deployment owner has deliberately enabled it for a controlled
+# cohort. This is a runtime safety boundary, not marketing copy.
+AUTO_SEND_ENABLED = _env_flag("AUTO_SEND_ENABLED", False)
+
+# Human-approved edit pairs may produce a bounded, account-scoped style hint
+# for future drafts. The hint contains aggregate shape only; it is never a
+# shared cross-account prompt corpus and never overrides safety or truth rules.
+VOICE_FEEDBACK_ENABLED = _env_flag("VOICE_FEEDBACK_ENABLED", True)
+
+# Gmail discovery lets the reply desk cover conversations sent by another
+# tool, a VA, or Gmail itself. It is bounded to keep API usage predictable and
+# can be disabled while a deployment applies the tracked-thread migration.
+GMAIL_THREAD_DISCOVERY_ENABLED = _env_flag("GMAIL_THREAD_DISCOVERY_ENABLED", True)
+GMAIL_THREAD_DISCOVERY_DAYS = max(
+    1, min(int(os.environ.get("GMAIL_THREAD_DISCOVERY_DAYS", "30")), 90)
+)
+GMAIL_THREAD_DISCOVERY_MAX_THREADS = max(
+    1, min(int(os.environ.get("GMAIL_THREAD_DISCOVERY_MAX_THREADS", "50")), 200)
+)
+GMAIL_THREAD_DISCOVERY_INTERVAL_MINUTES = max(
+    5, min(int(os.environ.get("GMAIL_THREAD_DISCOVERY_INTERVAL_MINUTES", "30")), 1440)
+)
+
 # Must stay byte-identical to the `meeting_purpose` column default in the
 # accounts table (see README). An account still carrying this string has never
 # told us what the meeting is actually for, and the model cannot write "what's
@@ -262,11 +295,10 @@ SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
 # send_outreach.py. NeverBounce-style automated verification was removed
 # 2026-07-18 (see TODOS.md); confirmation is manual by design.
 SHEET_RANGE = "A:I"
-SCOPES = [
+GMAIL_MONITOR_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+GMAIL_SEND_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/gmail.modify",
-    # Read-only file listing (name + id only, no file contents) — lets
-    # customers pick their lead sheet from a list instead of pasting an ID.
     "https://www.googleapis.com/auth/drive.metadata.readonly",
 ]
 # The OAuth *client* (this app's identity with Google) is shared; each
@@ -276,8 +308,8 @@ GOOGLE_OAUTH_REDIRECT_URI = os.environ.get(
     "GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8000/api/google/callback"
 )
 # Separate, lower-privilege flow used for "Sign in with Google" (identity
-# only) — distinct from GOOGLE_OAUTH_REDIRECT_URI above, which is the
-# post-login "connect Gmail + Sheets" flow. Both must be registered as
+# only) — distinct from GOOGLE_OAUTH_REDIRECT_URI above, which handles
+# incremental Gmail monitoring, sending, and optional Sheets grants. Both must be registered as
 # authorized redirect URIs on the same OAuth client.
 GOOGLE_LOGIN_REDIRECT_URI = os.environ.get(
     "GOOGLE_LOGIN_REDIRECT_URI", "http://localhost:8000/auth/google/callback"
