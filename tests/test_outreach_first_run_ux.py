@@ -27,9 +27,10 @@ def test_outreach_first_run_explains_discovery_and_keeps_queue_hooks():
         assert f'id="{element_id}"' in source
 
 
-def test_outreach_motion_has_reduced_motion_fallback():
+def test_outreach_motion_uses_native_reduced_motion_without_runtime_dependency():
     source = (Path(__file__).resolve().parents[1] / "static" / "outreach.html").read_text(encoding="utf-8")
 
-    assert "gsap" in source
+    assert "gsap" not in source.lower()
     assert "prefers-reduced-motion: reduce" in source
-    assert "initOutreachMotion" in source
+    assert "initOutreachMotion" not in source
+    assert 'href="/static/legacy-tailwind.css?v=20260904"' in source
