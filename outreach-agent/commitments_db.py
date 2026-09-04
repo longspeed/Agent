@@ -102,6 +102,31 @@ def list_active(account_id):
     )
 
 
+def repair_missing_due_date(account_id, commitment_id, due_at, due_text, confidence=None):
+    """Fill a date missed by an older extractor without changing workflow state.
+
+    The compare-and-set filters make this safe to run while a worker or operator
+    is acting on the same promise: only an active row whose date is still NULL
+    can be repaired. Confirmation remains a separate human action.
+    """
+    if not due_at:
+        return None
+    fields = {
+        "due_at": due_at,
+        "due_text": due_text or "",
+        "updated_at": _now(),
+    }
+    if confidence is not None:
+        fields["confidence"] = float(confidence)
+    result = (
+        _get_client().table(TABLE).update(fields)
+        .eq("account_id", account_id).eq("id", commitment_id)
+        .in_("status", list(ACTIVE_STATUSES))
+        .is_("due_at", "null").execute()
+    )
+    return result.data[0] if result.data else None
+
+
 def list_due(account_id, now=None):
     """Return confirmed promises whose reminder time has arrived."""
     if not enabled():

@@ -30,6 +30,7 @@ import agent
 import auth
 import billing
 import bounces
+import commitments
 import commitments_db
 import config
 import dns_check
@@ -1700,15 +1701,37 @@ def list_replies(request: Request):
 @app.get("/api/outreach/commitments")
 def list_commitments(request: Request):
     """Returns promises needing confirmation or a due-date check."""
-    commitments = commitments_db.list_active(request.state.account_id)
-    if not commitments:
+    active_commitments = commitments_db.list_active(request.state.account_id)
+    if not active_commitments:
         return []
-    for commitment in commitments:
+    for commitment in active_commitments:
+        # Repair dates missed by older extractor versions from the durable,
+        # user-visible evidence. This is deliberately conservative: the row
+        # must still have no date, the parser must recover an explicit one, and
+        # the compare-and-set update cannot confirm or otherwise advance it.
+        if not commitment.get("due_at"):
+            candidates = commitments.extract_commitments(
+                commitment.get("evidence") or commitment.get("action_text") or "",
+                reference_at=commitment.get("created_at"),
+                actor=commitment.get("actor") or "contact",
+            )
+            dated = [candidate for candidate in candidates if candidate.get("due_at")]
+            if len(dated) == 1:
+                candidate = dated[0]
+                repaired = commitments_db.repair_missing_due_date(
+                    request.state.account_id,
+                    commitment.get("id"),
+                    candidate["due_at"],
+                    candidate.get("due_text") or "",
+                    candidate.get("confidence"),
+                )
+                if repaired:
+                    commitment.update(repaired)
         contact = _tracked_contact(request.state.account_id, commitment.get("thread_id"))
         if contact:
             commitment.setdefault("contact_name", contact.get("name") or "")
             commitment.setdefault("contact_email", contact.get("email") or "")
-    return commitments
+    return active_commitments
 
 
 @app.get("/api/outreach/commitments/resolved")
