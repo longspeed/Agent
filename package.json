@@ -4,5 +4,8 @@
   },
   "dependencies": {
     "puppeteer": "^25.3.0"
+  },
+  "scripts": {
+    "build:legacy-css": "npm --prefix app run build:legacy-css"
   }
 }

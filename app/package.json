@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:legacy-css": "vite build --config vite.legacy-css.config.ts",
     "lint": "oxlint",
     "preview": "vite preview"
   },

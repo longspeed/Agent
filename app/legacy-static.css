@@ -1,0 +1,9 @@
+@import 'tailwindcss';
+
+/* The authenticated dashboard and reply desk are still server-rendered HTML.
+   Compile the utility classes they use at build time so production never
+   depends on Tailwind's browser CDN runtime. */
+@source '../static/index.html';
+@source '../static/outreach.html';
+@source '../static/outreach-desk.js';
+@source '../static/outreach-desk-renderers.js';
