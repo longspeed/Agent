@@ -385,6 +385,16 @@ def home():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Serve the existing brand mark at the conventional browser URL."""
+    return FileResponse(
+        STATIC_DIR / "landing" / "favicon.svg",
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @app.get("/outreach")
 def outreach_page():
     return FileResponse(STATIC_DIR / "outreach.html")
