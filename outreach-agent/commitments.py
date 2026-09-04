@@ -24,7 +24,12 @@ _DUE_RE = re.compile(
     r"(?:on|by)\s+\d{1,2}(?:st|nd|rd|th)?\s+"
     r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
-    r"nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?)\b",
+    r"nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|"
+    r"(?:(?:on|by|for)\s+)?"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?"
+    r"(?:(?:,\s*|\s+)\d{4})?)\b",
     re.IGNORECASE,
 )
 _WEEKDAYS = {name.lower(): index for index, name in enumerate(calendar.day_name)}
@@ -110,6 +115,28 @@ def _parse_due(text, reference):
         year = int(date_match.group(3) or reference.year)
         if month:
             if not date_match.group(3) and (year, month, day) < (
+                reference.year, reference.month, reference.day
+            ):
+                year += 1
+            try:
+                return base.replace(year=year, month=month, day=day), phrase, 0.94
+            except ValueError:
+                pass
+
+    month_first_match = re.search(
+        r"(?:(?:on|by|for)\s+)?"
+        r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+        r"nov(?:ember)?|dec(?:ember)?)\s+"
+        r"(\d{1,2})(?:st|nd|rd|th)?(?:(?:,\s*|\s+)(\d{4}))?",
+        lower,
+    )
+    if month_first_match:
+        month = _MONTHS.get(month_first_match.group(1)[:3])
+        day = int(month_first_match.group(2))
+        year = int(month_first_match.group(3) or reference.year)
+        if month:
+            if not month_first_match.group(3) and (year, month, day) < (
                 reference.year, reference.month, reference.day
             ):
                 year += 1
