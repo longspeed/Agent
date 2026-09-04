@@ -449,9 +449,11 @@ def lane(review=None):
 #                                                the sheet. Must be visible or
 #                                                the confirm-sender question has
 #                                                nowhere to be asked.
-#   answered_elsewhere  visible, NOT sendable -- the operator already answered
-#                                                from Gmail. Worth knowing,
-#                                                nothing to send. Dismissible.
+#   answered_elsewhere  HIDDEN                -- the operator already answered
+#                                                from Gmail. The durable row is
+#                                                retained for audit, but it is
+#                                                resolved work and must not
+#                                                inflate the open queue.
 #   superseded          HIDDEN                -- a newer message on the thread
 #                                                replaced it.
 #   sent / dismissed    HIDDEN                -- handled.
@@ -463,7 +465,7 @@ def lane(review=None):
 # a newer one on the same thread today). Listed above so their eventual
 # arrival is a data change, not a redesign of every query and endpoint that
 # touches a review.
-VISIBLE_STATUSES = ("pending", "flagged", "answered_elsewhere", "send_uncertain")
+VISIBLE_STATUSES = ("pending", "flagged", "send_uncertain")
 SENDABLE_STATUSES = ("pending",)
 
 
