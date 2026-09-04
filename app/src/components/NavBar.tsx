@@ -1,7 +1,32 @@
+import { useEffect, useState } from 'react'
+
 // React port of static/nav.js's renderNav(). Same two variants: a plain
 // home-page header, or a breadcrumb variant for reply-desk/settings pages.
 // Public pages must not imply that an anonymous visitor is already signed in.
 export function NavBar({ breadcrumb, publicPage = false }: { breadcrumb?: string; publicPage?: boolean }) {
+  const [publicSession, setPublicSession] = useState<'checking' | 'signed-in' | 'signed-out'>(
+    publicPage ? 'checking' : 'signed-in',
+  )
+
+  useEffect(() => {
+    if (!publicPage) {
+      setPublicSession('signed-in')
+      return
+    }
+
+    let cancelled = false
+    fetch('/api/me', { credentials: 'same-origin' })
+      .then((response) => {
+        if (!cancelled) setPublicSession(response.ok ? 'signed-in' : 'signed-out')
+      })
+      .catch(() => {
+        if (!cancelled) setPublicSession('signed-out')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [publicPage])
+
   async function logout() {
     await fetch('/logout', { method: 'POST' })
     window.location.href = '/login'
@@ -47,7 +72,11 @@ export function NavBar({ breadcrumb, publicPage = false }: { breadcrumb?: string
     </a>
   )
 
-  const accountLinks = publicPage ? publicSignInLink : <>{settingsLink}{logoutBtn}</>
+  const accountLinks = !publicPage || publicSession === 'signed-in'
+    ? <>{settingsLink}{logoutBtn}</>
+    : publicSession === 'signed-out'
+      ? publicSignInLink
+      : null
 
   return (
     <header
