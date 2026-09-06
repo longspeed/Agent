@@ -29,7 +29,8 @@ let ledgerFails = false;
 let mutations = 0;
 try {
   const page = await browser.newPage();
-  page.on('pageerror', error => console.error('pageerror', error.message));
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
   await page.emulateTimezone('Asia/Bangkok');
   await page.setRequestInterception(true);
   page.on('request', request => {
@@ -107,6 +108,7 @@ try {
     await page.setViewport({ width, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   }
+  assert.deepEqual(pageErrors, []);
   console.log('promise ledger: dismissal failure/retry, audit, confirm/due/complete, outage/recovery, responsive checks passed');
 } finally {
   await browser.close();
