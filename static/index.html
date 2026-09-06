@@ -38,15 +38,15 @@
   <section class="pt-20 pb-10 max-w-2xl">
     <div class="inline-flex items-center gap-2 text-xs font-medium px-2.5 py-1 rounded-full mb-6" style="background:var(--accent-dim); color:var(--accent);">
       <span class="w-1.5 h-1.5 rounded-full" style="background:var(--accent);"></span>
-      Gmail follow-through memory
+      Gmail promise ledger
     </div>
     <h1 class="font-display text-5xl leading-[1.05] mb-5" style="letter-spacing:-0.03em;">
-      Never lose a warm<br>reply or promise.
+      Know what you owe.<br>Remember what they owe.
     </h1>
     <p class="text-base leading-[1.7] mb-8" style="color:var(--text-secondary);">
-      Sendkeep connects to Gmail, watches the conversations you already sent, and keeps
-      replies and promised follow-ups visible. First-touch sending is optional; the desk
-      works without a Sheet.
+      Sendkeep watches recent Gmail conversations, extracts promised actions, and keeps
+      the evidence, owner, due date, and next reminder in one ledger. It works without a
+      Sheet and never confirms a promise for you.
     </p>
     <div id="hero-stats" class="flex flex-wrap items-center gap-x-8 gap-y-3 text-sm" style="color:var(--text-muted);">
       <span>Loading live stats…</span>
@@ -58,22 +58,22 @@
       <div class="flex gap-3.5">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">1</div>
         <div>
-          <h3 class="text-sm font-medium mb-1">It finds the thread</h3>
-          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Recent Gmail Sent conversations are discovered even when another tool or a VA sent them.</p>
+          <h3 class="text-sm font-medium mb-1">It watches Gmail</h3>
+          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Recent Sent conversations are discovered inside a bounded window. Nothing is sent automatically.</p>
         </div>
       </div>
       <div class="flex gap-3.5">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">2</div>
         <div>
-          <h3 class="text-sm font-medium mb-1">It finds the next action</h3>
-          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Replies, dates, and promised actions become a queue instead of another inbox search.</p>
+          <h3 class="text-sm font-medium mb-1">It extracts the promise</h3>
+          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">The actor, action, evidence, and detected date stay attached to the source Gmail thread.</p>
         </div>
       </div>
       <div class="flex gap-3.5">
         <div class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-xs font-display" style="background:var(--accent-dim); color:var(--accent);">3</div>
         <div>
           <h3 class="text-sm font-medium mb-1">You close the loop</h3>
-          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">Review, edit, send, or dismiss. The worker keeps watching after the Sheet is gone.</p>
+          <p class="text-xs leading-relaxed" style="color:var(--text-muted);">You confirm, dismiss, or complete each item. Every state change is recorded in the audit history.</p>
         </div>
       </div>
     </div>
@@ -82,36 +82,36 @@
   <section class="pb-14 max-w-4xl" aria-labelledby="pipeline-title">
     <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
       <div>
-        <h2 id="pipeline-title" class="font-display text-2xl" style="letter-spacing:-0.02em;">Conversation pipeline</h2>
-        <p class="text-sm mt-1" style="color:var(--text-secondary);">The work after the send: replies, promises, meetings, and deals.</p>
+        <h2 id="pipeline-title" class="font-display text-2xl" style="letter-spacing:-0.02em;">Promise ledger</h2>
+        <p class="text-sm mt-1" style="color:var(--text-secondary);">What you owe, what others owe you, what is due, and what you completed.</p>
       </div>
-      <a href="/outreach" class="text-sm font-medium" style="color:var(--accent);">Open queue →</a>
+      <a href="/outreach?tab=promises" class="text-sm font-medium" style="color:var(--accent);">Open promise ledger →</a>
     </div>
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <a href="/outreach?tab=inbox" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
-        <div id="pipeline-replies" class="font-display text-2xl">Loading…</div>
-        <div class="text-xs mt-1" style="color:var(--text-secondary);">Needs your reply</div>
+      <a href="/outreach?tab=promises" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
+        <div id="pipeline-you-owe" class="font-display text-2xl">Loading…</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">You owe</div>
       </a>
       <a href="/outreach?tab=promises" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
-        <div id="pipeline-promises" class="font-display text-2xl">Loading…</div>
-        <div class="text-xs mt-1" style="color:var(--text-secondary);">Promises to handle</div>
+        <div id="pipeline-they-owe" class="font-display text-2xl">Loading…</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">They owe you</div>
       </a>
-      <a href="/outreach?tab=threads" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
-        <div id="pipeline-meetings" class="font-display text-2xl" style="color:var(--steel);">Not tracked</div>
-        <div class="text-xs mt-1" style="color:var(--text-secondary);">Meetings confirmed</div>
+      <a href="/outreach?tab=promises" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
+        <div id="pipeline-due" class="font-display text-2xl" style="color:var(--gold);">Loading…</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">Due now</div>
       </a>
-      <a href="/outreach?tab=threads" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
-        <div id="pipeline-deals" class="font-display text-2xl" style="color:var(--green);">Not tracked</div>
-        <div class="text-xs mt-1" style="color:var(--text-secondary);">Deals won</div>
+      <a href="/outreach?tab=promises" class="rounded-xl p-4 card-shadow-hover ease-spring transition-transform duration-200 hover:-translate-y-0.5" style="background:var(--bg-elevated); border:1px solid var(--border);">
+        <div id="pipeline-completed" class="font-display text-2xl" style="color:var(--green);">Loading…</div>
+        <div class="text-xs mt-1" style="color:var(--text-secondary);">Completed</div>
       </a>
     </div>
-    <p class="text-xs mt-3" style="color:var(--text-muted);">Meetings and deals appear only after you confirm them in the queue.</p>
+    <p class="text-xs mt-3" style="color:var(--text-muted);">Completion means you confirmed the action was handled. Sendkeep does not infer revenue.</p>
   </section>
 
   <section class="pb-24">
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
 
-      <a href="/outreach" class="group block rounded-2xl p-6 card-shadow card-shadow-hover ease-spring transition-transform duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2"
+      <a href="/outreach?tab=promises" class="group block rounded-2xl p-6 card-shadow card-shadow-hover ease-spring transition-transform duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2"
          style="background:var(--bg-elevated); border:1px solid var(--border); --tw-ring-color:var(--accent);">
         <div class="flex items-start justify-between mb-5">
           <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:var(--accent-dim);">
@@ -122,16 +122,16 @@
           </div>
           <span class="text-xs font-medium px-2 py-0.5 rounded-full" style="background:var(--green-dim); color:var(--green);">Active</span>
         </div>
-        <h2 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Reply &amp; follow-up desk</h2>
+        <h2 class="font-display text-xl mb-1.5" style="letter-spacing:-0.01em;">Promise ledger</h2>
         <p class="text-sm leading-relaxed mb-5" style="color:var(--text-secondary);">
-          Find the Gmail conversations that need attention, draft the next reply,
-          and keep every promised follow-up visible.
+          See what you owe, what others owe you, what is due now, and what you
+          explicitly completed.
         </p>
         <div id="outreach-stats" class="flex items-center gap-4 text-xs mb-5 pb-5 border-b" style="border-color:var(--border); color:var(--text-muted);">
           <span>Loading…</span>
         </div>
         <div class="flex items-center gap-1.5 text-sm font-medium ease-spring transition-transform duration-200 group-hover:translate-x-1" style="color:var(--accent);">
-          Open queue
+          Open promise ledger
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </div>
       </a>
@@ -155,51 +155,43 @@
         heroEl.innerHTML = notConnected;
         return;
       }
-      const [campaigns, replies, commitments, evidence] = await Promise.all([
+      const [campaigns, ledger] = await Promise.all([
         campaignsRes.json(),
-        fetch('/api/outreach/replies').then(r => r.json()),
-        fetch('/api/outreach/commitments').then(r => r.ok ? r.json() : []),
-        fetch('/api/outreach/evidence').then(r => r.ok ? r.json() : null),
+        fetch('/api/outreach/commitments/ledger').then(r => r.ok ? r.json() : []),
       ]);
-      const pending = campaigns.filter(c => c.status === 'Pending').length;
       const sentOrReplied = campaigns.filter(c => c.status === 'Sent' || c.status === 'Replied').length;
-      const repliedCount = campaigns.filter(c => c.status === 'Replied').length;
-      const needsReview = replies.length;
-      document.getElementById('pipeline-replies').textContent = String(needsReview);
-      document.getElementById('pipeline-promises').textContent = String(Array.isArray(commitments) ? commitments.length : 0);
-      const outcomes = evidence && evidence.outcomes;
-      const confirmedMeetings = Number(outcomes && outcomes.meeting_booked || 0);
-      const confirmedDeals = Number(outcomes && outcomes.deal_won || 0);
-      document.getElementById('pipeline-meetings').textContent = confirmedMeetings > 0
-        ? confirmedMeetings.toLocaleString('en-US')
-        : 'Not tracked';
-      document.getElementById('pipeline-deals').textContent = confirmedDeals > 0
-        ? confirmedDeals.toLocaleString('en-US')
-        : 'Not tracked';
+      const ledgerRows = Array.isArray(ledger) ? ledger : [];
+      const openStates = new Set(['scheduled', 'due']);
+      const scheduledCount = ledgerRows.filter(row => row.status === 'scheduled').length;
+      const dueCount = ledgerRows.filter(row => row.status === 'due').length;
+      const completedCount = ledgerRows.filter(row => row.status === 'completed').length;
+      document.getElementById('pipeline-you-owe').textContent = String(ledgerRows.filter(row => openStates.has(row.status) && row.actor === 'you').length);
+      document.getElementById('pipeline-they-owe').textContent = String(ledgerRows.filter(row => openStates.has(row.status) && row.actor === 'them').length);
+      document.getElementById('pipeline-due').textContent = String(ledgerRows.filter(row => row.status === 'due').length);
+      document.getElementById('pipeline-completed').textContent = String(ledgerRows.filter(row => row.status === 'completed').length);
 
       cardEl.innerHTML = `
-        <span><strong style="color:var(--accent)">${needsReview}</strong> awaiting review</span>
-        <span><strong style="color:var(--text)">${repliedCount}</strong> replies received</span>
-        <span><strong style="color:var(--text)">${pending}</strong> pending</span>
+        <span><strong style="color:var(--accent)">${scheduledCount}</strong> scheduled</span>
+        <span><strong style="color:var(--gold)">${dueCount}</strong> due now</span>
+        <span><strong style="color:var(--green)">${completedCount}</strong> completed</span>
       `;
 
       if (sentOrReplied === 0) {
         heroEl.innerHTML = `<span>No Gmail threads monitored yet — connect Gmail to start.</span>`;
       } else {
-        const replyRate = Math.round((repliedCount / sentOrReplied) * 100);
         heroEl.innerHTML = `
-          <span><strong class="font-display text-lg" style="color:var(--text);">${repliedCount}</strong> replies received</span>
-          <span><strong class="font-display text-lg" style="color:var(--accent);">${replyRate}%</strong> reply rate</span>
+          <span><strong class="font-display text-lg" style="color:var(--accent);">${ledgerRows.filter(row => openStates.has(row.status)).length}</strong> open promises</span>
+          <span><strong class="font-display text-lg" style="color:var(--text);">${ledgerRows.filter(row => row.status === 'completed').length}</strong> completed</span>
           <span><strong class="font-display text-lg" style="color:var(--text);">${sentOrReplied}</strong> threads monitored</span>
         `;
       }
     } catch (e) {
       cardEl.innerHTML = '<span>Stats unavailable</span>';
       heroEl.innerHTML = '<span>Live stats unavailable right now.</span>';
-      document.getElementById('pipeline-replies').textContent = 'Unavailable';
-      document.getElementById('pipeline-promises').textContent = 'Unavailable';
-      document.getElementById('pipeline-meetings').textContent = 'Unavailable';
-      document.getElementById('pipeline-deals').textContent = 'Unavailable';
+      document.getElementById('pipeline-you-owe').textContent = 'Unavailable';
+      document.getElementById('pipeline-they-owe').textContent = 'Unavailable';
+      document.getElementById('pipeline-due').textContent = 'Unavailable';
+      document.getElementById('pipeline-completed').textContent = 'Unavailable';
     }
   }
   loadOutreachStats();

@@ -18,15 +18,15 @@ const RAIL = [
 
 const PENDING = [
   {
-    name: 'Nam Long',
-    meta: 'pessiskibi@…',
+    name: 'Alex Morgan',
+    meta: 'alex@example.com',
     snippet: '"I will send the deck Friday"',
     time: '2m',
     active: true,
     unread: true,
   },
-  { name: 'Ethan R.', meta: 'longspeed2828@…', snippet: '"Let me check with finance."', time: '1h' },
-  { name: 'M. Reyes', meta: 'm.reyes@northwind.co', snippet: '"Can you follow up next week?"', time: '3h' },
+  { name: 'Taylor R.', meta: 'taylor@example.com', snippet: '"I will send the finance approval Monday."', time: '1h' },
+  { name: 'M. Reyes', meta: 'm.reyes@example.com', snippet: '"Can you follow up next week?"', time: '3h' },
 ]
 
 const railItem = (active?: boolean) =>
@@ -106,7 +106,7 @@ export function ProductMockup() {
           {/* Promise card, the differentiator */}
           <div className="md:col-span-5 p-4 flex flex-col">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold">Nam Long</span>
+              <span className="text-[13px] font-semibold">Alex Morgan</span>
               <span className="text-[11px] text-mute">Gmail thread · 2m ago</span>
               <span className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full bg-grass/15 text-grass text-[11px]">
                 <CheckCircle2 size={11} aria-hidden="true" /> Evidence found

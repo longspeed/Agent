@@ -333,10 +333,10 @@ export function GettingStartedPage() {
               />
               <Callout tone="warn">
                 <strong className="text-cream">A CSV export almost always has an empty Status
-                column, and empty means queued.</strong> Import 500 contacts that way and all 500 are
-                lined up to be emailed. Before you connect the sheet, fill the Status column with
+                column, and empty means eligible for preparation.</strong> Imported contacts still
+                require explicit send approval and safety checks. Before connecting, fill Status with
                 anything (<Code>Needs verification</Code> works), then clear it row by row as you
-                approve. The daily cap limits the damage, but it does not prevent it.
+                approve for drafting. A blank cell alone does not send an email.
               </Callout>
               <Callout>
                 Sendkeep never reads the CSV file itself. Leads are read through the Google Sheets
@@ -382,7 +382,7 @@ export function GettingStartedPage() {
                 <strong className="text-cream">Email</strong> and{' '}
                 <strong className="text-cream">Company</strong>, and leave{' '}
                 <strong className="text-cream">Status</strong> blank on anyone you are happy to
-                email. Blank Status means "approved, send this."
+                draft for. Blank Status means eligible for preparation, not permission to send.
               </p>
               <p>
                 Paste them in by hand, or import a CSV as described in step 3. The outreach agent
@@ -392,7 +392,7 @@ export function GettingStartedPage() {
               </p>
               <Callout tone="warn">
                 If you are pasting in a large list, fill the Status column first and clear it as you
-                approve. Every row you leave blank is queued to send.
+                approve for preparation. Review each draft before sending.
               </Callout>
 
               <h3 className="text-cream font-medium pt-2">Option B: let the agent find them</h3>
@@ -424,7 +424,7 @@ export function GettingStartedPage() {
             <Section id="step-6" title="6. Review and approve">
               <p className="text-mute">
                 Only applies to leads the sourcing agent found. If you brought your own list, you
-                already approved them by leaving Status blank, so skip to step 7.
+                made them eligible for preparation by leaving Status blank; review drafts in step 7.
               </p>
               <p>
                 On the <strong className="text-cream">Leads</strong> page you see everything waiting
@@ -477,13 +477,13 @@ export function GettingStartedPage() {
               <p>
                 Click <strong className="text-cream">Check replies</strong> on the Outreach page. The
                 worker watches tracked conversations, including recent Gmail Sent threads discovered
-                even when another tool sent them, strips quoted history, and drafts a reply for each.
+                even when another tool sent them, and checks for new activity and promised actions.
               </p>
               <p>
-                Drafts land in a review queue. You can edit the text and send, or dismiss without
-                sending. Sent replies go out in the original thread, so the conversation stays intact
-                for the person receiving it. Replies and follow-ups never send until you read them;
-                first-touch drafts are a separate optional lane and are manual in the standard deployment.
+                Open the original thread in Gmail to write and reply. In Promises, review the evidence
+                and date before confirming. Confirmed promises remain in Scheduled until due; dismiss
+                one if it no longer applies. Mark a due promise complete only when you handled it.
+                Each transition stays in its audit history. Confirming a promise never sends email.
               </p>
               <p>
                 If a contact stays silent, Sendkeep queues one follow-up after the business-day delay
@@ -500,7 +500,7 @@ export function GettingStartedPage() {
               <Table
                 head={['Status', 'Meaning']}
                 rows={[
-                  [<em className="text-cream">(blank)</em>, <><strong className="text-cream">Queued.</strong> Will be emailed on the next run</>],
+                  [<em className="text-cream">(blank)</em>, <><strong className="text-cream">Eligible for preparation.</strong> Sending still requires explicit approval and safety checks</>],
                   [<Code>Needs verification</Code>, 'Found by the lead agent, waiting for your approval'],
                   [<Code>Ready for review</Code>, 'Same, also accepted by the review queue'],
                   [<Code>Sent</Code>, 'Already emailed. SentAt and ThreadID record when and which thread'],
@@ -511,7 +511,7 @@ export function GettingStartedPage() {
               <Callout tone="warn">
                 <strong className="text-cream">Blank Status plus a sendable EmailConfidence is what
                 makes a row eligible to send.</strong> If you paste in a list of 500 contacts with an
-                empty Status column, all 500 are queued the moment you save. Add a status first, then
+                empty Status column, all 500 become eligible for preparation. Add a status first, then
                 clear it row by row as you approve. Rows you type or import have no confidence stamp,
                 which is fine — only the <Code>unverified</Code> stamp (which the sourcing agent
                 writes on everything it finds) blocks a row.
@@ -575,7 +575,7 @@ export function GettingStartedPage() {
                   ],
                   [
                     'A row was emailed that you did not expect.',
-                    'Check its Status was not blank. Blank means queued. This is the most common surprise.',
+                    'Check its Status and send approval history. Blank Status permits preparation, but sending requires explicit approval and safety checks.',
                   ],
                   [
                     'An email sent but the row still looks unsent.',

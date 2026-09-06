@@ -244,16 +244,18 @@ def test_public_funnel_is_gmail_first_and_has_recoverable_follow_up_state():
     assert "domain auth" in outreach
     assert "approval contract" in outreach
     assert "Nothing is emailed and the sheet is untouched" not in outreach
-    assert "conversation pipeline" in app_home
-    assert "meetings confirmed" in app_home
-    assert "deals won" in app_home
-    assert "confirmedmeetings > 0" in app_home
-    assert "confirmeddeals > 0" in app_home
+    assert "promise ledger" in app_home
+    assert "what you owe" in app_home
+    assert "they owe you" in app_home
+    assert "reply rate" not in app_home
+    assert "meetings confirmed" not in app_home
+    assert "deals won" not in app_home
 
 
-def test_commitment_queue_copy_matches_confirmed_due_lifecycle():
+def test_commitment_queue_copy_matches_scheduled_due_lifecycle():
     outreach = (ROOT / "static" / "outreach.html").read_text(encoding="utf-8")
     assert "Needs confirmation" in outreach
     assert "Due to check" in outreach
-    assert "No promises need attention yet." in outreach
+    assert "Confirmed promises stay visible" in outreach
+    assert "Nothing is due." in outreach
     assert "\n  loadFollowUpStatus();\n" not in outreach

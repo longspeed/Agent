@@ -5,6 +5,9 @@ import base64
 import hashlib
 import os
 import re
+import time
+
+import httpx
 
 from cryptography.fernet import Fernet
 from supabase import create_client
@@ -18,6 +21,10 @@ USAGE_TABLE = "usage_events"
 
 class GoogleIdentityConflict(RuntimeError):
     """An email is already bound to a different immutable Google subject."""
+
+
+class AccountStoreUnavailable(Exception):
+    """A read failed before any account-dependent action could begin."""
 
 
 # Settings a customer may edit about themselves via the API.
@@ -91,8 +98,15 @@ def get_account_by_email(email: str) -> dict | None:
 
 
 def get_account(account_id: str) -> dict | None:
-    result = _get_client().table(ACCOUNTS_TABLE).select("*").eq("id", account_id).execute()
-    return result.data[0] if result.data else None
+    # Retry only this idempotent read, never a whole request or a write/send.
+    for attempt in range(2):
+        try:
+            result = _get_client().table(ACCOUNTS_TABLE).select("*").eq("id", account_id).execute()
+            return result.data[0] if result.data else None
+        except httpx.TransportError as exc:
+            if attempt:
+                raise AccountStoreUnavailable("Account storage is temporarily unavailable") from exc
+            time.sleep(0.1)
 
 
 def get_account_by_google_id(google_id: str) -> dict | None:

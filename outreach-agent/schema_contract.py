@@ -14,6 +14,7 @@ from config import SUPABASE_SECRET_KEY, SUPABASE_URL
 BASELINE_MIGRATION = "20260827000000_sendkeep_baseline"
 OUTBOX_MIGRATION = "20260830000000_notification_outbox"
 ATOMIC_SEND_MIGRATION = "20260901000000_atomic_send_contract"
+PROMISE_LEDGER_MIGRATION = "20260904000000_promise_ledger"
 CONTRACT_RPC = "sendkeep_schema_contract"
 
 
@@ -103,6 +104,10 @@ def _outbox_snapshot(timeout_seconds: float = 15.0) -> dict:
 
 def _atomic_send_snapshot(timeout_seconds: float = 15.0) -> dict:
     return _rpc_snapshot("atomic_send_contract", "atomic send contract", timeout_seconds)
+
+
+def _promise_ledger_snapshot(timeout_seconds: float = 15.0) -> dict:
+    return _rpc_snapshot("promise_ledger_contract", "promise ledger contract", timeout_seconds)
 
 
 def check() -> list[str]:
@@ -204,5 +209,28 @@ def check() -> list[str]:
             warnings.append(
                 f"Atomic send invariant {key!r} is missing. "
                 f"Apply Supabase migration {ATOMIC_SEND_MIGRATION}."
+            )
+    try:
+        promise_ledger = _promise_ledger_snapshot()
+    except Exception as exc:
+        warnings.append(
+            f"Could not verify the promise ledger ({type(exc).__name__}: {exc}). "
+            f"Apply Supabase migration {PROMISE_LEDGER_MIGRATION}."
+        )
+        return warnings
+    if promise_ledger.get("version") != PROMISE_LEDGER_MIGRATION:
+        warnings.append(
+            f"Promise ledger contract version is {promise_ledger.get('version')!r}, "
+            f"expected {PROMISE_LEDGER_MIGRATION}. Apply the current Supabase migration."
+        )
+    for key in (
+        "timezone_column", "events_table", "events_rls", "events_index",
+        "events_unique", "transition_rpc", "due_rpc", "service_role_execute",
+        "client_execute_revoked", "events_service_role_select",
+    ):
+        if not promise_ledger.get(key, False):
+            warnings.append(
+                f"Promise ledger invariant {key!r} is missing. "
+                f"Apply Supabase migration {PROMISE_LEDGER_MIGRATION}."
             )
     return warnings

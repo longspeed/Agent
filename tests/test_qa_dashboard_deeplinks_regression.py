@@ -13,9 +13,12 @@ def test_dashboard_cards_open_the_matching_tab_instead_of_removed_legacy_section
     """
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-    assert 'href="/outreach?tab=inbox"' in html
-    assert 'href="/outreach?tab=promises"' in html
-    assert 'href="/outreach?tab=threads"' in html
+    assert 'href="/outreach?tab=inbox"' not in html
+    assert html.count('href="/outreach?tab=promises"') >= 6
+    assert 'id="pipeline-you-owe"' in html
+    assert 'id="pipeline-they-owe"' in html
+    assert 'id="pipeline-due"' in html
+    assert 'id="pipeline-completed"' in html
     assert "/outreach#reviews-list" not in html
     assert "/outreach#commitments-list" not in html
     assert "/outreach#deal-view" not in html

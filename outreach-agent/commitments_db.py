@@ -7,10 +7,12 @@ from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_SECRET_KEY
 
 TABLE = "commitments"
+EVENTS_TABLE = "commitment_events"
 # The Outreach queue is for candidates needing confirmation or promises that
-# have reached their confirmed due date. Confirmed-but-not-due rows remain
+# have reached their scheduled due date. Scheduled-but-not-due rows remain
 # durable in the table without being rendered as if they still need approval.
 ACTIVE_STATUSES = ("detected", "due")
+LEDGER_STATUSES = ("detected", "scheduled", "due", "completed", "dismissed", "expired")
 
 _client = None
 
@@ -102,6 +104,30 @@ def list_active(account_id):
     )
 
 
+def list_ledger(account_id, limit=200):
+    """Return the durable promise ledger without collapsing lifecycle states."""
+    if not enabled():
+        return []
+    return (
+        _get_client().table(TABLE).select("*")
+        .eq("account_id", account_id)
+        .in_("status", list(LEDGER_STATUSES))
+        .order("updated_at", desc=True).limit(limit).execute().data or []
+    )
+
+
+def list_events(account_id, commitment_ids):
+    """Return account-scoped transition history for the requested promises."""
+    ids = [value for value in commitment_ids if value is not None]
+    if not enabled() or not ids:
+        return []
+    return (
+        _get_client().table(EVENTS_TABLE).select("*")
+        .eq("account_id", account_id).in_("commitment_id", ids)
+        .order("created_at").execute().data or []
+    )
+
+
 def repair_missing_due_date(account_id, commitment_id, due_at, due_text, confidence=None):
     """Fill a date missed by an older extractor without changing workflow state.
 
@@ -128,14 +154,14 @@ def repair_missing_due_date(account_id, commitment_id, due_at, due_text, confide
 
 
 def list_due(account_id, now=None):
-    """Return confirmed promises whose reminder time has arrived."""
+    """Return scheduled promises whose reminder time has arrived."""
     if not enabled():
         return []
     reminder_at = now or _now()
     return (
         _get_client().table(TABLE).select("*")
         .eq("account_id", account_id)
-        .eq("status", "confirmed")
+        .eq("status", "scheduled")
         .lte("reminder_at", reminder_at)
         .order("reminder_at").execute().data
     )
@@ -151,31 +177,39 @@ def get(account_id, commitment_id):
     return result.data[0] if result.data else None
 
 
-def confirm(account_id, commitment_id, due_at=None, estimated_value=None):
-    fields = {
-        "status": "confirmed",
-        "confirmed_at": _now(),
-        "updated_at": _now(),
+def _transition(account_id, commitment_id, to_status, transition_key, **fields):
+    payload = {
+        "p_account_id": account_id,
+        "p_commitment_id": commitment_id,
+        "p_to_status": to_status,
+        "p_transition_key": transition_key,
+        "p_due_at": fields.get("due_at"),
+        "p_reminder_at": fields.get("reminder_at"),
+        "p_timezone": fields.get("timezone_name"),
+        "p_dismissal_reason": fields.get("dismissal_reason"),
     }
-    # The API resolves an omitted due date from the detected candidate before
-    # calling this function. Keep this guard here as well: a future caller
-    # confirming a candidate without an override must never erase a date that
-    # the extractor already found.
-    if due_at is not None:
-        fields["due_at"] = due_at
-        fields["reminder_at"] = due_at
-    if estimated_value is not None:
-        fields["estimated_value"] = estimated_value
-    result = (
-        _get_client().table(TABLE).update(fields)
-        .eq("account_id", account_id).eq("id", commitment_id)
-        .eq("status", "detected").execute()
+    result = _get_client().rpc("transition_commitment_with_event", payload).execute()
+    data = result.data
+    if isinstance(data, list):
+        return data[0] if data else None
+    return data if isinstance(data, dict) else None
+
+
+def confirm(account_id, commitment_id, due_at=None, reminder_at=None, timezone_name="UTC"):
+    """Schedule a detected promise and atomically append its audit event."""
+    return _transition(
+        account_id,
+        commitment_id,
+        "scheduled",
+        f"schedule:{commitment_id}",
+        due_at=due_at,
+        reminder_at=reminder_at or due_at,
+        timezone_name=timezone_name or "UTC",
     )
-    return result.data[0] if result.data else None
 
 
 def complete(account_id, commitment_id):
-    """Mark a confirmed/due promise complete, idempotently.
+    """Mark a scheduled/due promise complete, idempotently.
 
     Completion is an operator statement that the promised action was handled;
     it does not infer a meeting or deal. The UI can then ask for an explicit
@@ -184,17 +218,9 @@ def complete(account_id, commitment_id):
     existing = get(account_id, commitment_id)
     if existing and existing.get("status") == "completed":
         return existing
-    result = (
-        _get_client().table(TABLE).update({
-            "status": "completed", "completed_at": _now(), "updated_at": _now(),
-        })
-        .eq("account_id", account_id).eq("id", commitment_id)
-        .in_("status", ["confirmed", "due", "queued"]).execute()
+    return _transition(
+        account_id, commitment_id, "completed", f"complete:{commitment_id}"
     )
-    if result.data:
-        return result.data[0]
-    existing = get(account_id, commitment_id)
-    return existing if existing and existing.get("status") == "completed" else None
 
 
 def list_completed(account_id, limit=20):
@@ -224,26 +250,26 @@ def summary(account_id):
                 "status,dismissal_reason,estimated_value,due_at,created_at,thread_id,evidence,action_text"
             )
             .eq("account_id", account_id).in_(
-                "status", ["detected", "confirmed", "due", "queued", "completed", "dismissed"]
+                "status", list(LEDGER_STATUSES)
             ).execute().data or []
         )
     except Exception:
         # The value and dismissal-reason columns are optional until their
         # migrations are applied. Keep the promise graph useful on an older
-        # schema, but do not pretend legacy dismissals are confirmed extraction
+        # schema, but do not pretend legacy dismissals are reviewed extraction
         # errors when the reason was never recorded.
         precision_available = False
         rows = (
             _get_client().table(TABLE).select("status")
             .eq("account_id", account_id).in_(
-                "status", ["detected", "confirmed", "due", "queued", "completed", "dismissed"]
+                "status", list(LEDGER_STATUSES)
             ).execute().data or []
         )
-    open_rows = [row for row in rows if row.get("status") in {"detected", "confirmed", "due", "queued"}]
+    open_rows = [row for row in rows if row.get("status") in {"detected", "scheduled", "due"}]
     overdue_rows = [row for row in rows if row.get("status") == "due"]
     overdue_rows.sort(key=lambda row: row.get("due_at") or row.get("created_at") or "")
     values = [float(row.get("estimated_value") or 0) for row in open_rows]
-    decided = [row for row in rows if row.get("status") in {"confirmed", "due", "queued", "completed", "dismissed"}]
+    decided = [row for row in rows if row.get("status") in {"scheduled", "due", "completed", "dismissed"}]
     dismissed_count = sum(
         row.get("status") == "dismissed" and row.get("dismissal_reason") == "incorrect"
         for row in decided
@@ -278,27 +304,14 @@ def summary(account_id):
 def dismiss(account_id, commitment_id, reason="incorrect"):
     if reason not in {"incorrect", "not_applicable"}:
         raise ValueError(f"Unsupported commitment dismissal reason: {reason}")
-    fields = {
-        "status": "dismissed", "dismissal_reason": reason, "updated_at": _now(),
-    }
-    try:
-        result = (
-            _get_client().table(TABLE).update(fields)
-            .eq("account_id", account_id).eq("id", commitment_id)
-            .in_("status", ["detected", "due"]).execute()
-        )
-    except Exception:
-        # Compatibility while the idempotent dismissal-reason migration is
-        # rolling out. The summary deliberately reports precision as
-        # insufficient on that schema instead of guessing from status alone.
-        result = (
-            _get_client().table(TABLE).update({
-                "status": "dismissed", "updated_at": _now(),
-            })
-            .eq("account_id", account_id).eq("id", commitment_id)
-            .in_("status", ["detected", "due"]).execute()
-        )
-    return bool(result.data)
+    result = _transition(
+        account_id,
+        commitment_id,
+        "dismissed",
+        f"dismiss:{commitment_id}:{reason}",
+        dismissal_reason=reason,
+    )
+    return bool(result)
 
 
 def onboarding_precision():
@@ -319,7 +332,7 @@ def onboarding_precision():
         while True:
             query = (
                 _get_client().table(TABLE).select("account_id,status,dismissal_reason")
-                .in_("status", ["confirmed", "due", "queued", "completed", "dismissed"])
+                .in_("status", ["scheduled", "due", "completed", "dismissed"])
             )
             try:
                 query = query.range(start, start + 499)
@@ -379,7 +392,7 @@ def mark_due(account_id, commitment_id):
             "status": "due", "updated_at": _now(),
         })
         .eq("account_id", account_id).eq("id", commitment_id)
-        .eq("status", "confirmed").execute()
+        .eq("status", "scheduled").execute()
     )
     return bool(result.data)
 

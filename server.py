@@ -254,6 +254,15 @@ async def runtime_error_handler(request: Request, exc: RuntimeError):
     return JSONResponse({"detail": str(exc)}, status_code=409)
 
 
+@app.exception_handler(accounts_db.AccountStoreUnavailable)
+async def account_store_unavailable_handler(request: Request, exc):
+    return JSONResponse(
+        {"detail": "Sendkeep could not load your account. Retry shortly; reconnecting Gmail is not required.",
+         "code": "account_store_unavailable", "retryable": True},
+        status_code=503, headers={"Retry-After": "5", "Cache-Control": "private, no-store"},
+    )
+
+
 @app.exception_handler(send_outreach.SendFailure)
 async def send_failure_handler(request: Request, exc: send_outreach.SendFailure):
     status = {
@@ -1748,6 +1757,39 @@ def list_resolved_commitments(request: Request):
     return commitments
 
 
+@app.get("/api/outreach/commitments/ledger")
+def list_commitment_ledger(request: Request):
+    """Return every user-visible promise state with its account-scoped audit trail."""
+    account_id = request.state.account_id
+    ledger = commitments_db.list_ledger(account_id)
+    if not ledger:
+        return []
+    events = commitments_db.list_events(
+        account_id, [commitment.get("id") for commitment in ledger]
+    )
+    events_by_commitment = {}
+    for event in events:
+        events_by_commitment.setdefault(event.get("commitment_id"), []).append(event)
+    for commitment in ledger:
+        try:
+            contact = _tracked_contact(account_id, commitment.get("thread_id"))
+        except Exception:
+            contact = None
+        if contact:
+            commitment.setdefault("contact_name", contact.get("name") or "")
+            commitment.setdefault("contact_email", contact.get("email") or "")
+        commitment["actor"] = (
+            "you" if commitment.get("actor") in {"operator", "you"} else "them"
+        )
+        commitment["gmail_url"] = (
+            "https://mail.google.com/mail/u/0/#all/"
+            + quote(str(commitment.get("thread_id") or ""), safe="")
+            if commitment.get("thread_id") else "https://mail.google.com/mail/u/0/#inbox"
+        )
+        commitment["audit_events"] = events_by_commitment.get(commitment.get("id"), [])
+    return ledger
+
+
 @app.get("/api/outreach/commitments/summary")
 def commitment_summary(request: Request):
     try:
@@ -1771,7 +1813,8 @@ def commitment_summary(request: Request):
 
 class ConfirmCommitmentBody(BaseModel):
     due_at: datetime | None = None
-    estimated_value: float | None = Field(default=None, ge=0, le=100000000)
+    reminder_at: datetime | None = None
+    timezone: str = Field(default="UTC", min_length=1, max_length=64)
 
 
 @app.post("/api/outreach/commitments/{commitment_id}/confirm")
@@ -1800,14 +1843,32 @@ def confirm_commitment(
         )
     if due_at and due_at.tzinfo is None:
         due_at = due_at.replace(tzinfo=timezone.utc)
+    reminder_at = payload.reminder_at or due_at
+    if reminder_at and reminder_at.tzinfo is None:
+        reminder_at = reminder_at.replace(tzinfo=timezone.utc)
+    timezone_name = payload.timezone.strip()
+    if not all(ch.isalnum() or ch in "_+-/" for ch in timezone_name):
+        raise HTTPException(status_code=422, detail="Use a valid timezone name.")
     confirmed = commitments_db.confirm(
         request.state.account_id,
         commitment_id,
         due_at=due_at.isoformat() if isinstance(due_at, datetime) else due_at,
-        estimated_value=payload.estimated_value,
+        reminder_at=(
+            reminder_at.isoformat() if isinstance(reminder_at, datetime) else reminder_at
+        ),
+        timezone_name=timezone_name,
     )
     if not confirmed:
         raise HTTPException(status_code=409, detail="Commitment was already handled")
+    confirmed["actor"] = (
+        "you" if confirmed.get("actor") in {"operator", "you"} else "them"
+    )
+    confirmed["receipt"] = {
+        "status": "scheduled",
+        "reminder_at": confirmed.get("reminder_at"),
+        "timezone": confirmed.get("timezone") or timezone_name,
+        "message": "Promise scheduled. It remains visible in your ledger.",
+    }
     return confirmed
 
 
@@ -1825,6 +1886,14 @@ def complete_commitment(request: Request, commitment_id: int):
     if contact:
         completed.setdefault("contact_name", contact.get("name") or "")
         completed.setdefault("contact_email", contact.get("email") or "")
+    completed["actor"] = (
+        "you" if completed.get("actor") in {"operator", "you"} else "them"
+    )
+    completed["receipt"] = {
+        "status": "completed",
+        "completed_at": completed.get("completed_at"),
+        "message": "Marked complete by you. No revenue outcome was inferred.",
+    }
     return completed
 
 
@@ -1839,7 +1908,18 @@ def dismiss_commitment(request: Request, commitment_id: int):
     reason = "incorrect" if commitment.get("status") == "detected" else "not_applicable"
     if not commitments_db.dismiss(request.state.account_id, commitment_id, reason=reason):
         raise HTTPException(status_code=404, detail="Commitment not found or already handled")
-    return {"ok": True, "reason": reason}
+    return {
+        "ok": True,
+        "reason": reason,
+        "receipt": {
+            "status": "dismissed",
+            "message": (
+                "Incorrect detection dismissed. It remains in the audit history."
+                if reason == "incorrect"
+                else "Promise dismissed. It remains in the audit history."
+            ),
+        },
+    }
 
 
 @app.get("/api/outreach/follow-ups/status")

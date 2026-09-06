@@ -386,21 +386,20 @@ def test_delete_contact_guard_preserves_in_flight_and_uncertain_send_evidence():
     assert lowered.index("status = 'send_uncertain'") < lowered.index("delete from public.reviews")
 
 
-def test_outreach_ui_has_a_gmail_native_revenue_leak_view():
+def test_outreach_ui_has_a_gmail_native_promise_ledger():
     source = (ROOT / "static" / "outreach.html").read_text(encoding="utf-8")
 
-    assert "Revenue leak snapshot" in source
-    assert "Pipeline from your inbox" in source
-    assert "Recover the revenue silence is losing." in source
-    assert "Overdue promises" in source
-    assert "User-entered pipeline value" in source
-    assert "value_provenance === 'user_entered'" in source
-    assert "promise-precision-value" in source
+    assert "Promise ledger" in source
+    assert "What do I owe?" in source
+    assert "What do they owe me?" in source
+    assert "scheduled-you-list" in source
+    assert "scheduled-them-list" in source
+    assert "completed-commitments-list" in source
+    assert "promise-confirmation-receipt" in source
+    assert 'id="revenue-leak-card"' not in source
+    assert 'id="promise-precision-card"' not in source
     assert "Incorrect detection" in source
-    assert "precision_status" in source
-    assert "estimated_value" in source
     assert "/commitments/${commitment.id}/complete" in source
-    assert "Did the promise become revenue?" in source
     assert "resolved-commitments-list" in source
     assert "A derived view of Gmail activity" in source
     assert "Book next meeting" in source
@@ -447,13 +446,13 @@ def test_settings_ui_exposes_per_inbox_checkout():
     assert "Optional first-touch sending pauses" in source
 
 
-def test_public_site_leads_with_revenue_recovery_and_has_no_agency_mailto_cta():
+def test_public_site_leads_with_promise_ledger_and_has_no_agency_mailto_cta():
     hero = (ROOT / "site" / "src" / "components" / "hero.tsx").read_text(encoding="utf-8")
     sections = (ROOT / "site" / "src" / "components" / "sections.tsx").read_text(encoding="utf-8")
     pricing = (ROOT / "site" / "src" / "components" / "pricing.tsx").read_text(encoding="utf-8")
 
-    assert "Recover the revenue" in hero
-    assert "silence is losing." in hero
+    assert "Know what you owe." in hero
+    assert "Remember what they owe." in hero
     assert "VITE_PUBLIC_BOOKING_URL" in sections
     assert "VITE_PUBLIC_BOOKING_URL" in pricing
     assert "$400/mo" not in sections

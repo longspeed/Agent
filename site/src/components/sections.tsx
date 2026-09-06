@@ -367,12 +367,12 @@ export function FinalCta() {
           }}
         />
         <h2 className="relative font-display text-4xl md:text-6xl font-medium tracking-tight leading-[1.05]">
-          Recover the revenue
+          Know what you owe.
           <br />
-          silence is losing.
+          Remember what they owe.
         </h2>
         <p className="relative mt-6 text-sand max-w-md mx-auto text-sm leading-[1.6]">
-          Connect Gmail, see the pipeline your promises put at stake, and keep the next action
+          Connect Gmail, see your promises with their evidence and due dates, and keep the next action
           visible without changing the way you reply.
         </p>
         <div className="relative mt-10 flex flex-wrap items-center justify-center gap-4">

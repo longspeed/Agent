@@ -362,6 +362,12 @@
   .guided-kind{margin-top:1px;padding:4px 7px;border-radius:5px;font:600 10px 'Outfit',sans-serif;letter-spacing:.025em;}
   .guided-kind.reply{background:var(--success-dim);color:var(--success);}
   .guided-kind.promise{background:var(--warning-dim);color:var(--warning);}
+  .promise-ledger-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;}
+  .promise-ledger-section{border:1px solid var(--border);background:var(--bg-floating);border-radius:16px;padding:18px;}
+  .promise-ledger-list{display:grid;gap:12px;margin-top:12px;}
+  .promise-receipt{border:1px solid rgba(57,113,82,.28);background:var(--green-dim);color:var(--green);border-radius:14px;padding:14px 16px;}
+  @media (max-width:900px){.promise-ledger-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+  @media (max-width:520px){.promise-ledger-grid{grid-template-columns:1fr;}}
   .guided-kind.due{background:var(--danger-dim);color:var(--danger);}
   .guided-kind.verify{background:var(--info-dim);color:var(--info);}
   .guided-item-copy{min-width:0;}
@@ -590,16 +596,6 @@
           <article class="inbox-status-card">
             <h3>Reply in Gmail</h3>
             <p>Gmail or Gemini stays your reply surface. Sendkeep remembers promises and follow-ups instead of making you approve the same text twice.</p>
-          </article>
-          <article class="inbox-status-card" id="revenue-leak-card">
-            <h3>Overdue promises</h3>
-            <strong id="revenue-at-stake">No promises overdue</strong>
-            <p id="revenue-at-stake-copy">Counts, people, and evidence appear here. Dollar values appear only when you enter them.</p>
-          </article>
-          <article class="inbox-status-card" id="promise-precision-card" role="status">
-            <h3>Promise precision</h3>
-            <strong id="promise-precision-value">Collecting decisions</strong>
-            <p id="promise-precision-copy">Confirm accurate flags or mark incorrect detections so Sendkeep can measure trust directly.</p>
           </article>
         </div>
         <span id="inbox-count-promises" class="hidden" aria-hidden="true">0</span>
@@ -923,19 +919,51 @@
   </section>
 
   <section id="promises-section">
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex items-start justify-between gap-4 mb-5">
       <div>
         <h2 class="font-display text-xl flex items-center gap-2.5" style="letter-spacing:-0.01em;">
-          Promises you made
-          <span id="commitment-count-badge" class="badge" style="background:var(--gold-dim); color:var(--gold);">0</span>
+          Promise ledger
+          <span id="commitment-count-badge" class="badge" style="background:var(--gold-dim); color:var(--gold);">Loading…</span>
         </h2>
-        <p class="text-xs mt-1" style="color:var(--text-secondary);">Detected from the messages you sent. Confirm or dismiss once; promise tracking never sends an email.</p>
+        <p class="text-xs mt-1 max-w-2xl" style="color:var(--text-secondary);">What you owe, what others owe you, and the next safe action. Every item keeps its Gmail evidence and history.</p>
       </div>
     </div>
-    <div id="commitments-list" class="space-y-4">
-      <div class="rounded-xl p-8 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">Loading…</div>
+    <div id="promise-confirmation-receipt" class="promise-receipt mb-5" role="status" hidden></div>
+    <div id="promise-ledger-summary" class="promise-ledger-grid mb-6" aria-label="Promise ledger summary"></div>
+
+    <div class="grid gap-4 lg:grid-cols-2">
+      <section class="promise-ledger-section" aria-labelledby="detected-promises-title">
+        <h3 id="detected-promises-title" class="font-display text-lg">Needs confirmation</h3>
+        <p class="text-xs mt-1" style="color:var(--text-secondary);">Confirm a real promise or mark an incorrect detection. Nothing schedules itself.</p>
+        <div id="commitments-list" class="promise-ledger-list"><div class="text-sm" style="color:var(--text-muted);">Loading…</div></div>
+      </section>
+      <section class="promise-ledger-section" aria-labelledby="due-promises-title">
+        <h3 id="due-promises-title" class="font-display text-lg">Due</h3>
+        <p class="text-xs mt-1" style="color:var(--text-secondary);">Only you can mark an action complete or dismiss it.</p>
+        <div id="due-commitments-list" class="promise-ledger-list"><div class="text-sm" style="color:var(--text-muted);">Loading…</div></div>
+      </section>
     </div>
-    <div id="resolved-commitments-list" class="space-y-4 mt-6"></div>
+
+    <section class="promise-ledger-section mt-4" aria-labelledby="scheduled-promises-title">
+      <h3 id="scheduled-promises-title" class="font-display text-lg">Scheduled</h3>
+      <p class="text-xs mt-1" style="color:var(--text-secondary);">Confirmed promises stay visible until their reminder becomes due.</p>
+      <div class="grid gap-4 lg:grid-cols-2 mt-4">
+        <div><h4 class="text-sm font-medium">You owe</h4><div id="scheduled-you-list" class="promise-ledger-list"></div></div>
+        <div><h4 class="text-sm font-medium">They owe you</h4><div id="scheduled-them-list" class="promise-ledger-list"></div></div>
+      </div>
+    </section>
+
+    <section class="promise-ledger-section mt-4" aria-labelledby="completed-promises-title">
+      <h3 id="completed-promises-title" class="font-display text-lg">Completed</h3>
+      <p class="text-xs mt-1" style="color:var(--text-secondary);">Actions you explicitly marked handled. Sendkeep does not infer revenue.</p>
+      <div id="completed-commitments-list" class="promise-ledger-list"></div>
+    </section>
+
+    <details class="promise-ledger-section mt-4">
+      <summary class="text-sm font-medium cursor-pointer">Dismissed and expired</summary>
+      <div id="dismissed-commitments-list" class="promise-ledger-list"></div>
+    </details>
+    <div id="resolved-commitments-list" hidden></div>
 
   </section>
 
@@ -1733,6 +1761,7 @@
   let campaignsCache = [];
   let reviewsCache = [];
   let commitmentsCache = [];
+  let commitmentLedgerCache = [];
   let resolvedCommitmentsCache = [];
   let commitmentSummaryCache = { open_count: 0, valued_count: 0, estimated_value: 0, completed_count: 0 };
   let outcomesCache = [];
@@ -1784,7 +1813,7 @@
       if (active) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
-    const guidedTab = ['inbox', 'promises', 'follow-ups'].includes(tab);
+    const guidedTab = ['inbox', 'follow-ups'].includes(tab);
     const guidedShell = document.getElementById('guided-review-shell');
     if (guidedShell) guidedShell.hidden = !guidedTab;
     document.querySelectorAll('[data-outreach-tab-panel]').forEach((panel) => {
@@ -2126,7 +2155,7 @@
           ? 'Gmail connected, discovering'
           : status === 'not_connected'
             ? 'Gmail not connected'
-            : 'Gmail monitoring needs attention';
+            : status === 'unknown' ? 'Account status unavailable' : 'Gmail monitoring needs attention';
     }
     const navState = document.getElementById('nav-monitoring-state');
     const navCopy = document.getElementById('nav-monitoring-copy');
@@ -2139,7 +2168,8 @@
           ? 'Gmail starting'
           : status === 'not_connected'
             ? 'Gmail not connected'
-            : 'Gmail attention';
+            : status === 'unknown' ? 'Status unavailable' : 'Gmail attention';
+      navState.title = monitoringCache.message || navCopy.textContent;
     }
     renderRevenueLeakSummary();
     renderProofLedger();
@@ -3182,6 +3212,136 @@
     }
   }
 
+  function promiseActor(commitment) {
+    return ['operator', 'you'].includes(commitment.actor) ? 'you' : 'them';
+  }
+
+  function promiseOwnerLabel(commitment) {
+    return promiseActor(commitment) === 'you' ? 'You owe' : 'They owe you';
+  }
+
+  function promiseLocalDate(value, timezoneName = '') {
+    if (!value) return 'No date';
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium', timeStyle: 'short',
+        ...(timezoneName ? { timeZone: timezoneName } : {}),
+      }).format(new Date(value));
+    } catch (_) {
+      return fmtDate(value);
+    }
+  }
+
+  function promiseDateInput(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return '';
+    // datetime-local is interpreted in the browser timezone on submission.
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+
+  function showPromiseReceipt(receipt) {
+    const el = document.getElementById('promise-confirmation-receipt');
+    if (!el || !receipt) return;
+    if (receipt.status === 'completed') {
+      const completedAt = receipt.completed_at
+        ? ` · ${promiseLocalDate(receipt.completed_at, receipt.timezone || 'UTC')}`
+        : '';
+      el.innerHTML = `<strong>${esc(receipt.message || 'Promise completed.')}</strong><div class="text-xs mt-1">Completion recorded${esc(completedAt)}. No future reminder is scheduled.</div>`;
+      el.hidden = false;
+      return;
+    }
+    if (receipt.status === 'dismissed') {
+      el.innerHTML = `<strong>${esc(receipt.message || 'Promise dismissed.')}</strong><div class="text-xs mt-1">The state change was recorded. No future reminder is scheduled.</div>`;
+      el.hidden = false;
+      return;
+    }
+    const reminder = receipt.reminder_at
+      ? promiseLocalDate(receipt.reminder_at, receipt.timezone || 'UTC')
+      : 'the due date';
+    el.innerHTML = `<strong>${esc(receipt.message || 'Promise updated.')}</strong><div class="text-xs mt-1">Next reminder: ${esc(reminder)} · ${esc(receipt.timezone || 'UTC')}</div>`;
+    el.hidden = false;
+  }
+
+  function promiseLedgerCard(commitment) {
+    const article = document.createElement('article');
+    article.className = 'rounded-xl p-4';
+    article.style.cssText = 'background:var(--bg-elevated);border:1px solid var(--border);';
+    const status = commitment.status || 'detected';
+    const date = commitment.reminder_at || commitment.due_at;
+    const historyCount = Array.isArray(commitment.audit_events) ? commitment.audit_events.length : 0;
+    article.innerHTML = `
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="text-xs" style="color:var(--text-muted);">${esc(promiseOwnerLabel(commitment))} · ${esc(status.charAt(0).toUpperCase() + status.slice(1))}</div>
+          <strong class="block text-sm mt-1">${esc(commitment.action_text || 'Promised action')}</strong>
+        </div>
+        <a href="${esc(commitment.gmail_url || guidedThreadUrl(commitment))}" target="_blank" rel="noopener noreferrer" class="text-xs font-medium shrink-0" style="color:var(--accent);">Open Gmail →</a>
+      </div>
+      <blockquote class="text-xs mt-3 leading-relaxed" style="color:var(--text-secondary);">“${esc(commitment.evidence || '')}”</blockquote>
+      <div class="text-xs mt-3" style="color:var(--text-muted);">${date ? `${['scheduled', 'due'].includes(status) ? 'Next' : 'Original due date'}: ${esc(promiseLocalDate(date, commitment.timezone || 'UTC'))} · ${esc(commitment.timezone || 'UTC')}` : 'No reminder date'}</div>
+      <details class="mt-3 text-xs promise-audit"><summary>Audit history (${historyCount})</summary>
+        <ol>${(commitment.audit_events || []).map((event) => `<li class="mt-2">${esc(event.from_status || 'Recorded')} → ${esc(event.to_status || 'Recorded')} · ${esc(event.created_at ? promiseLocalDate(event.created_at, commitment.timezone || 'UTC') : 'Time unavailable')} · ${esc(commitment.timezone || 'UTC')}</li>`).join('') || '<li>No audit events available.</li>'}</ol>
+      </details>
+      ${status === 'scheduled' ? '<button type="button" class="ledger-dismiss btn-ghost rounded-lg px-3.5 py-2 text-sm mt-3">Dismiss promise</button><span class="ledger-action-status text-xs" role="status"></span>' : ''}`;
+    article.querySelector('.ledger-dismiss')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const feedback = article.querySelector('.ledger-action-status');
+      button.disabled = true;
+      feedback.textContent = 'Dismissing…';
+      try {
+        const res = await fetch(`/api/outreach/commitments/${commitment.id}/dismiss`, { method: 'POST' });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.detail || 'Could not dismiss promise');
+        showPromiseReceipt(result.receipt || { status: 'dismissed', message: 'Promise dismissed. History retained.' });
+        await loadCommitments();
+      } catch (error) {
+        feedback.textContent = error.message || 'Could not dismiss. Retry shortly.';
+        button.disabled = false;
+      }
+    });
+    return article;
+  }
+
+  function renderLedgerList(id, records, emptyText) {
+    const list = document.getElementById(id);
+    if (!list) return;
+    list.innerHTML = '';
+    if (!records.length) {
+      list.innerHTML = `<div class="text-xs py-2" style="color:var(--text-muted);">${esc(emptyText)}</div>`;
+      return;
+    }
+    records.forEach((record) => list.appendChild(promiseLedgerCard(record)));
+  }
+
+  function renderPromiseLedger() {
+    if (guidedLoadState.promises.status === 'error') {
+      document.getElementById('commitment-count-badge').textContent = 'Unavailable';
+      for (const id of ['promise-ledger-summary', 'scheduled-you-list', 'scheduled-them-list', 'completed-commitments-list', 'dismissed-commitments-list']) {
+        document.getElementById(id).innerHTML = '<p role="alert">Promise history is unavailable. Refresh to retry.</p>';
+      }
+      return;
+    }
+    const rows = commitmentLedgerCache;
+    const scheduled = rows.filter((row) => row.status === 'scheduled');
+    const due = rows.filter((row) => row.status === 'due');
+    const completed = rows.filter((row) => row.status === 'completed');
+    const dismissed = rows.filter((row) => ['dismissed', 'expired'].includes(row.status));
+    const youOwe = rows.filter((row) => ['scheduled', 'due'].includes(row.status) && promiseActor(row) === 'you');
+    const theyOwe = rows.filter((row) => ['scheduled', 'due'].includes(row.status) && promiseActor(row) === 'them');
+    const summary = document.getElementById('promise-ledger-summary');
+    if (summary) summary.innerHTML = [
+      ['What do I owe?', youOwe.length],
+      ['What do they owe me?', theyOwe.length],
+      ['What is due now?', due.length],
+      ['What did I complete?', completed.length],
+    ].map(([label, value]) => `<div class="rounded-xl p-4" style="background:var(--bg-elevated);border:1px solid var(--border);"><strong class="font-display text-2xl">${value}</strong><div class="text-xs mt-1" style="color:var(--text-secondary);">${esc(label)}</div></div>`).join('');
+    renderLedgerList('scheduled-you-list', scheduled.filter((row) => promiseActor(row) === 'you'), 'Nothing scheduled for you.');
+    renderLedgerList('scheduled-them-list', scheduled.filter((row) => promiseActor(row) === 'them'), 'Nothing scheduled for them.');
+    renderLedgerList('completed-commitments-list', completed, 'Nothing completed yet.');
+    renderLedgerList('dismissed-commitments-list', dismissed, 'No dismissed or expired promises.');
+  }
+
   function renderCommitment(commitment) {
     const needsConfirmation = commitment.status === 'detected';
     const isDue = commitment.status === 'due';
@@ -3194,20 +3354,14 @@
     card.innerHTML = `
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div class="min-w-0">
-          <div class="text-xs mb-2" style="color:var(--text-muted);">${commitment.actor === 'operator' ? 'You promised' : esc(commitment.contact_name || 'Contact reply')} · ${esc(due)}</div>
+          <div class="text-xs mb-2" style="color:var(--text-muted);">${esc(promiseOwnerLabel(commitment))} · ${esc(due)}</div>
           <div class="text-sm font-medium">${esc(commitment.action_text || 'Promised action')}</div>
           <div class="text-xs mt-2 leading-relaxed" style="color:var(--text-secondary);">“${esc(commitment.evidence || '')}”</div>
         </div>
         <span class="badge" style="background:${needsConfirmation ? 'var(--gold-dim)' : 'var(--accent-dim)'}; color:${needsConfirmation ? 'var(--gold)' : 'var(--accent)'};">${needsConfirmation ? 'Needs confirmation' : 'Due to check'}</span>
       </div>
       ${needsConfirmation ? `<label class="block mt-4 text-xs" style="color:var(--text-secondary);">${commitment.due_at ? 'Detected date (edit if needed)' : 'Add a date before confirming'}
-        <input class="commitment-due w-full rounded-lg px-3 py-2 text-sm mt-1.5 max-w-xs" type="datetime-local" value="${commitment.due_at ? new Date(commitment.due_at).toISOString().slice(0, 16) : ''}" aria-label="Promise due date" ${commitment.due_at ? '' : 'required'}>
-      </label>
-      <label class="block mt-3 text-xs" style="color:var(--text-secondary);">User-entered pipeline value (optional)
-        <div class="flex items-center gap-2 mt-1.5 max-w-xs">
-          <span style="color:var(--text-muted);">$</span>
-          <input class="commitment-value w-full rounded-lg px-3 py-2 text-sm" type="number" min="0" max="100000000" step="100" placeholder="Leave blank if unknown" value="${commitment.estimated_value ?? ''}" aria-label="User-entered pipeline value">
-        </div>
+        <input class="commitment-due w-full rounded-lg px-3 py-2 text-sm mt-1.5 max-w-xs" type="datetime-local" value="${promiseDateInput(commitment.due_at)}" aria-label="Promise due date" ${commitment.due_at ? '' : 'required'}>
       </label>` : ''}
       <div class="flex flex-wrap items-center justify-end gap-3 mt-4">
         <span class="commitment-status text-xs" style="color:var(--text-muted);"></span>
@@ -3230,33 +3384,37 @@
       renderRevenueLeakSummary();
       loadCommitmentSummary();
       renderGuidedDesk();
-      setTimeout(() => card.remove(), 700);
+      setTimeout(() => {
+        card.remove();
+        loadCommitments();
+      }, 700);
     };
     confirmBtn?.addEventListener('click', async () => {
       confirmBtn.disabled = true;
       dismissBtn.disabled = true;
       status.textContent = 'Confirming…';
       try {
-        const valueInput = card.querySelector('.commitment-value');
         const dueInput = card.querySelector('.commitment-due');
-        const rawValue = valueInput?.value.trim() || '';
         const rawDue = dueInput?.value.trim() || '';
         if (!rawDue) throw new Error('Add a date before confirming this promise');
-        const estimatedValue = rawValue === '' ? null : Number(rawValue);
-        if (estimatedValue !== null && (!Number.isFinite(estimatedValue) || estimatedValue < 0)) {
-          throw new Error('Enter a valid non-negative value or leave it blank');
-        }
+        const dueAt = new Date(rawDue).toISOString();
+        const timezoneName = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
         const res = await fetch(`/api/outreach/commitments/${commitment.id}/confirm`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            due_at: new Date(rawDue).toISOString(),
-            ...(estimatedValue === null ? {} : { estimated_value: estimatedValue }),
+            due_at: dueAt,
+            reminder_at: dueAt,
+            timezone: timezoneName,
           }),
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Could not confirm');
         const confirmed = await res.json();
-        commitment.estimated_value = confirmed.estimated_value ?? estimatedValue;
-        finish('Confirmed ✓', 'var(--green)');
+        showPromiseReceipt(confirmed.receipt || {
+          message: 'Promise scheduled. It remains visible in your ledger.',
+          reminder_at: confirmed.reminder_at || dueAt,
+          timezone: confirmed.timezone || timezoneName,
+        });
+        finish('Scheduled ✓', 'var(--green)');
         updateCommitmentCount(-1);
       } catch (e) {
         confirmBtn.disabled = false;
@@ -3274,8 +3432,11 @@
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Could not complete promise');
         const completed = await res.json();
         resolvedCommitmentsCache = [completed, ...resolvedCommitmentsCache.filter((item) => item.id !== completed.id)];
-        renderResolvedCommitments();
-        finish('Completed — tell us what happened', 'var(--green)');
+        showPromiseReceipt(completed.receipt || {
+          message: 'Marked complete by you. No revenue outcome was inferred.',
+          timezone: completed.timezone || 'UTC',
+        });
+        finish('Completed ✓', 'var(--green)');
         updateCommitmentCount(-1);
       } catch (e) {
         completeBtn.disabled = false;
@@ -3291,6 +3452,13 @@
       try {
         const res = await fetch(`/api/outreach/commitments/${commitment.id}/dismiss`, { method: 'POST' });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Could not dismiss');
+        const dismissed = await res.json();
+        showPromiseReceipt(dismissed.receipt || {
+          status: 'dismissed',
+          message: needsConfirmation
+            ? 'Incorrect detection dismissed. It remains in the audit history.'
+            : 'Promise dismissed. It remains in the audit history.',
+        });
         finish(needsConfirmation ? 'Marked incorrect' : 'Cleared', 'var(--text-muted)');
         updateCommitmentCount(-1);
       } catch (e) {
@@ -3336,40 +3504,52 @@
 
   function updateCommitmentCount(delta) {
     const badge = document.getElementById('commitment-count-badge');
-    const current = Math.max(0, Number(badge.textContent) || 0);
-    badge.textContent = current + delta;
+    const current = Math.max(0, parseInt(badge.textContent, 10) || 0);
+    badge.textContent = `${Math.max(0, current + delta)} need review`;
     updateOutreachTabCounts();
   }
 
   async function loadCommitments() {
     const list = document.getElementById('commitments-list');
+    const dueList = document.getElementById('due-commitments-list');
     guidedLoadState.promises = { status: 'loading', message: '' };
     renderGuidedDesk();
     try {
-      const res = await fetch('/api/outreach/commitments');
-      if (!res.ok) throw new Error('Failed');
-      const commitments = await res.json();
+      const [res, ledgerRes] = await Promise.all([
+        fetch('/api/outreach/commitments'),
+        fetch('/api/outreach/commitments/ledger'),
+      ]);
+      if (!res.ok || !ledgerRes.ok) throw new Error('Failed');
+      const [commitments, ledger] = await Promise.all([res.json(), ledgerRes.json()]);
       commitmentsCache = Array.isArray(commitments) ? commitments : [];
+      commitmentLedgerCache = Array.isArray(ledger) ? ledger : [];
       guidedLoadState.promises = { status: 'success', message: '' };
       applyGuidedDeepLink();
       updateOutreachTabCounts();
       renderExperienceSummary();
       renderConversationPipeline();
       list.innerHTML = '';
-      document.getElementById('commitment-count-badge').textContent = commitments.length;
+      if (dueList) dueList.innerHTML = '';
+      document.getElementById('commitment-count-badge').textContent = `${commitments.length} need review`;
       updateOutreachTabCounts();
-      await loadResolvedCommitments();
-      if (!commitments.length) {
-        list.innerHTML = '<div class="rounded-xl p-6 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--text-muted);">No promises need attention yet.</div>';
-        return;
+      const detected = commitments.filter((commitment) => commitment.status === 'detected');
+      const due = commitments.filter((commitment) => commitment.status === 'due');
+      if (!detected.length) list.innerHTML = '<div class="text-xs py-2" style="color:var(--text-muted);">No promises need confirmation.</div>';
+      else detected.forEach((commitment) => list.appendChild(renderCommitment(commitment)));
+      if (dueList) {
+        if (!due.length) dueList.innerHTML = '<div class="text-xs py-2" style="color:var(--text-muted);">Nothing is due.</div>';
+        else due.forEach((commitment) => dueList.appendChild(renderCommitment(commitment)));
       }
-      commitments.forEach((commitment) => list.appendChild(renderCommitment(commitment)));
+      renderPromiseLedger();
     } catch (e) {
       commitmentsCache = [];
+      commitmentLedgerCache = [];
       guidedLoadState.promises = { status: 'error', message: e.message || 'Could not load promises.' };
       updateOutreachTabCounts();
       renderConversationPipeline();
       list.innerHTML = '<div class="rounded-xl p-6 text-center text-sm" style="background:var(--bg-elevated); border:1px dashed var(--border); color:var(--rust);">Couldn’t load promises. Refresh to try again.</div>';
+      if (dueList) dueList.innerHTML = '<div class="text-xs py-2" style="color:var(--rust);">Due promises are unavailable.</div>';
+      renderPromiseLedger();
     }
   }
 
@@ -3419,7 +3599,7 @@
     guidedLoadState.monitoring = { status: 'loading', message: '' };
     try {
       const res = await fetch('/api/me');
-      if (!res.ok) throw new Error(`Account status unavailable (${res.status})`);
+      if (!res.ok) throw new Error('Sendkeep account status is temporarily unavailable. Refresh to retry; this does not mean Gmail needs reconnecting.');
       const me = await res.json();
       accountContextCache = {
         calendarBookingLink: me.settings?.calendar_booking_link || '',

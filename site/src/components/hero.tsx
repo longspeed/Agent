@@ -123,9 +123,9 @@ export function Hero() {
           transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
           className="font-display text-4xl md:text-7xl font-medium tracking-tight leading-[0.95]"
         >
-          <span className="block">Recover the revenue</span>
+          <span className="block">Know what you owe.</span>
           <span className="animate-shiny block mt-2 pb-2" style={shinyStyle}>
-            silence is losing.
+            Remember what they owe.
           </span>
         </motion.h1>
         <motion.p
@@ -134,10 +134,9 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
           className="mt-8 text-sand max-w-lg text-base leading-[1.6]"
         >
-          Sendkeep is the revenue leak detector for people sending 15-50 emails a day from Gmail. It reads
-          the Sent threads you already started, turns promised actions into accountable pipeline,
-          and keeps one safe follow-up visible. Reply in Gmail or Gemini; Sendkeep keeps the
-          commitment accountable.
+          Sendkeep is a Gmail-native promise ledger for people sending 15-50 emails a day.
+          It watches recent conversations and keeps the owner, action, evidence, due date,
+          and next reminder together. Reply in Gmail or Gemini; confirm and track promises here.
         </motion.p>
         <motion.div
           initial={reduced ? false : { y: 12 }}

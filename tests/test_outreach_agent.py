@@ -2312,7 +2312,7 @@ def test_commitment_extractor_accepts_gmail_iso_timestamp():
 
 
 def test_due_commitments_use_the_atomic_mark_and_alert_transition():
-    due = [{"id": 17, "status": "confirmed", "action_text": "send the deck"}]
+    due = [{"id": 17, "status": "scheduled", "action_text": "send the deck"}]
     marked = []
     errors = []
     with contextlib.ExitStack() as stack:
@@ -2335,13 +2335,21 @@ def test_due_commitments_use_the_atomic_mark_and_alert_transition():
 class _CommitmentsTable:
     def __init__(self, rows):
         self.rows = rows
+        self.events = []
+        self._table = "commitments"
         self._eq = []
         self._in = []
         self._lte = []
         self._values = None
         self._mode = None
 
-    def table(self, name): return self
+    def table(self, name):
+        self._table = name
+        return self
+    def rpc(self, name, payload):
+        self._mode = "rpc"
+        self._values = (name, payload)
+        return self
     def select(self, cols):
         self._mode = "select"
         return self
@@ -2361,8 +2369,36 @@ class _CommitmentsTable:
     def order(self, *args, **kwargs): return self
     def limit(self, *args, **kwargs): return self
     def execute(self):
+        if self._mode == "rpc":
+            name, payload = self._values
+            if name == "mark_commitment_due_with_alert":
+                row = next((item for item in self.rows if item.get("account_id") == payload["p_account_id"] and item.get("id") == payload["p_commitment_id"]), None)
+                if row and row.get("status") == "scheduled":
+                    row["status"] = "due"
+                    return type("R", (), {"data": True})()
+                return type("R", (), {"data": False})()
+            assert name == "transition_commitment_with_event"
+            row = next((item for item in self.rows if item.get("account_id") == payload["p_account_id"] and item.get("id") == payload["p_commitment_id"]), None)
+            if not row:
+                return type("R", (), {"data": None})()
+            key = payload["p_transition_key"]
+            if not any(event["transition_key"] == key for event in self.events):
+                previous = row.get("status")
+                row["status"] = payload["p_to_status"]
+                if payload.get("p_due_at") is not None:
+                    row["due_at"] = payload["p_due_at"]
+                row["reminder_at"] = payload.get("p_reminder_at") or row.get("reminder_at") or row.get("due_at")
+                row["timezone"] = payload.get("p_timezone") or row.get("timezone") or "UTC"
+                if payload["p_to_status"] == "completed":
+                    row["completed_at"] = row.get("completed_at") or "now"
+                if payload["p_to_status"] == "dismissed":
+                    row["dismissal_reason"] = payload.get("p_dismissal_reason")
+                self.events.append({"transition_key": key, "from_status": previous, "to_status": row["status"]})
+            self._eq, self._in, self._lte, self._values, self._mode = [], [], [], None, None
+            return type("R", (), {"data": dict(row)})()
+        source = self.events if self._table == "commitment_events" else self.rows
         matched = [
-            row for row in self.rows
+            row for row in source
             if all(row.get(col) == value for col, value in self._eq)
             and all(row.get(col) in values for col, values in self._in)
             and all(row.get(col) is not None and row.get(col) <= value for col, value in self._lte)
@@ -2382,19 +2418,25 @@ def test_commitment_confirmation_does_not_erase_detected_due_date():
     }])
     with patched(commitments_db, "_get_client", lambda: fake):
         confirmed = commitments_db.confirm("a1", 4)
-    assert confirmed["status"] == "confirmed"
+    assert confirmed["status"] == "scheduled"
     assert confirmed["due_at"] == due
-    assert fake.rows[0]["reminder_at"] is None
+    assert fake.rows[0]["reminder_at"] == due
+    assert fake.events == [{"transition_key": "schedule:4", "from_status": "detected", "to_status": "scheduled"}]
 
 
-def test_commitment_confirmation_can_attach_optional_pipeline_value():
+def test_commitment_confirmation_records_timezone_and_reminder():
     fake = _CommitmentsTable([{
         "id": 5, "account_id": "a1", "status": "detected", "due_at": None,
         "reminder_at": None,
     }])
     with patched(commitments_db, "_get_client", lambda: fake):
-        confirmed = commitments_db.confirm("a1", 5, estimated_value=14000)
-    assert confirmed["estimated_value"] == 14000
+        confirmed = commitments_db.confirm(
+            "a1", 5, due_at="2026-09-10T09:00:00+00:00",
+            reminder_at="2026-09-09T09:00:00+00:00", timezone_name="Asia/Bangkok",
+        )
+    assert confirmed["status"] == "scheduled"
+    assert confirmed["reminder_at"] == "2026-09-09T09:00:00+00:00"
+    assert confirmed["timezone"] == "Asia/Bangkok"
 
 
 def test_commitment_completion_is_idempotent_and_keeps_the_graph_row():
@@ -2413,7 +2455,7 @@ def test_commitment_completion_is_idempotent_and_keeps_the_graph_row():
 
 def test_commitment_summary_separates_open_value_from_completed_value():
     fake = _CommitmentsTable([
-        {"id": 7, "account_id": "a1", "status": "confirmed", "estimated_value": 14000},
+        {"id": 7, "account_id": "a1", "status": "scheduled", "estimated_value": 14000},
         {"id": 8, "account_id": "a1", "status": "due", "estimated_value": None},
         {"id": 9, "account_id": "a1", "status": "completed", "estimated_value": 9000},
     ])
@@ -2499,12 +2541,12 @@ def test_global_promise_precision_does_not_gate_on_three_samples():
     assert result["stop_onboarding"] is False
 
 
-def test_commitment_queue_excludes_confirmed_and_lists_only_due_confirmations():
+def test_commitment_queue_excludes_scheduled_and_lists_only_due_schedules():
     now = "2026-08-21T09:00:00+00:00"
     fake = _CommitmentsTable([
         {"id": 1, "account_id": "a1", "status": "detected", "reminder_at": None},
-        {"id": 2, "account_id": "a1", "status": "confirmed", "reminder_at": "2026-08-20T09:00:00+00:00"},
-        {"id": 3, "account_id": "a1", "status": "confirmed", "reminder_at": "2026-08-22T09:00:00+00:00"},
+        {"id": 2, "account_id": "a1", "status": "scheduled", "reminder_at": "2026-08-20T09:00:00+00:00"},
+        {"id": 3, "account_id": "a1", "status": "scheduled", "reminder_at": "2026-08-22T09:00:00+00:00"},
         {"id": 4, "account_id": "a1", "status": "due", "reminder_at": "2026-08-19T09:00:00+00:00"},
     ])
     with contextlib.ExitStack() as stack:
@@ -6654,6 +6696,22 @@ def _healthy_atomic_send_snapshot():
     }
 
 
+def _healthy_promise_ledger_snapshot():
+    return {
+        "version": accounts_db.schema_contract.PROMISE_LEDGER_MIGRATION,
+        "timezone_column": True,
+        "events_table": True,
+        "events_rls": True,
+        "events_index": True,
+        "events_unique": True,
+        "events_service_role_select": True,
+        "transition_rpc": True,
+        "due_rpc": True,
+        "service_role_execute": True,
+        "client_execute_revoked": True,
+    }
+
+
 def test_schema_check_names_the_missing_column_and_its_consequence():
     """The window this closes: bounce_ack_count is only needed by an account
     already paused for a bad bounce rate, so without a boot-time warning the
@@ -6666,6 +6724,8 @@ def test_schema_check_names_the_missing_column_and_its_consequence():
         accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
     ), patched(
         accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_promise_ledger_snapshot", _healthy_promise_ledger_snapshot,
     ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 1, warnings
@@ -6711,6 +6771,8 @@ def test_schema_check_names_degraded_classification_when_missing():
         accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
     ), patched(
         accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_promise_ledger_snapshot", _healthy_promise_ledger_snapshot,
     ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 1, warnings
@@ -6726,6 +6788,8 @@ def test_schema_check_detects_the_live_row_index_nullability_regression():
         accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
     ), patched(
         accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_promise_ledger_snapshot", _healthy_promise_ledger_snapshot,
     ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 1
@@ -6740,6 +6804,8 @@ def test_schema_check_detects_missing_dedupe_index():
         accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
     ), patched(
         accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_promise_ledger_snapshot", _healthy_promise_ledger_snapshot,
     ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 1
@@ -6758,6 +6824,8 @@ def test_schema_check_detects_missing_rls_and_constraint_controls():
         accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot,
     ), patched(
         accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot,
+    ), patched(
+        accounts_db.schema_contract, "_promise_ledger_snapshot", _healthy_promise_ledger_snapshot,
     ):
         warnings = accounts_db.check_schema()
     assert len(warnings) == 2
@@ -6924,6 +6992,8 @@ def test_schema_check_is_silent_on_a_migrated_database():
         accounts_db.schema_contract, "_outbox_snapshot", _healthy_outbox_snapshot
     ), patched(
         accounts_db.schema_contract, "_atomic_send_snapshot", _healthy_atomic_send_snapshot
+    ), patched(
+        accounts_db.schema_contract, "_promise_ledger_snapshot", _healthy_promise_ledger_snapshot
     ):
         assert accounts_db.check_schema() == []
 

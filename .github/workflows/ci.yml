@@ -85,6 +85,10 @@ jobs:
         run: npm ci
       - name: Run composer race and failure tests
         run: node tests/browser/outreach-composer.spec.mjs
+      - name: Run promise ledger and responsive regressions
+        run: |
+          node tests/browser/promise-ledger.spec.mjs
+          node tests/browser/outreach-responsive.spec.mjs
 
   build-freshness:
     runs-on: ubuntu-latest

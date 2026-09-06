@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(41);
+select plan(55);
 
 select has_table('public', 'accounts', 'accounts exists');
 select has_table('public', 'reviews', 'reviews exists');
@@ -60,6 +60,31 @@ select ok(to_regprocedure('public.apply_stripe_plan_event(uuid,text,text,text,bi
 select ok((public.atomic_send_contract()->>'version') = '20260901000000_atomic_send_contract', 'atomic send contract version is current');
 select ok((public.atomic_send_contract()->>'service_role_execute')::boolean, 'service role can reserve sends');
 select ok((public.atomic_send_contract()->>'client_execute_revoked')::boolean, 'clients cannot reserve sends');
+
+select has_column('public', 'commitments', 'timezone', 'promise timezone is persisted');
+select has_table('public', 'commitment_events', 'promise transition audit exists');
+select ok((select relrowsecurity from pg_class where oid = 'public.commitment_events'::regclass), 'promise event RLS enabled');
+select ok(not has_table_privilege('anon', 'public.commitment_events', 'select'), 'anon cannot read promise events');
+select ok(not has_table_privilege('authenticated', 'public.commitment_events', 'select'), 'authenticated cannot read promise events');
+select ok(has_table_privilege('service_role', 'public.commitment_events', 'select'), 'service role can read promise events');
+select has_index('public', 'commitment_events', 'commitment_events_account_commitment_idx', 'promise event lookup index exists');
+select ok(exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.commitment_events'::regclass
+      and conname = 'commitment_events_account_id_commitment_id_transition_key_key'
+), 'promise transitions are idempotent per account');
+select ok(exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.commitments'::regclass
+      and conname = 'commitments_status_check'
+      and pg_get_constraintdef(oid) ilike '%scheduled%'
+      and pg_get_constraintdef(oid) not ilike '%confirmed%'
+), 'promise lifecycle uses the scheduled state');
+select ok(to_regprocedure('public.transition_commitment_with_event(uuid,bigint,text,text,timestamp with time zone,timestamp with time zone,text,text)') is not null, 'promise transition RPC exists');
+select ok(to_regprocedure('public.mark_commitment_due_with_alert(uuid,bigint)') is not null, 'atomic due transition RPC exists');
+select ok((public.promise_ledger_contract()->>'version') = '20260904000000_promise_ledger', 'promise ledger contract version is current');
+select ok((public.promise_ledger_contract()->>'service_role_execute')::boolean, 'service role can transition promises');
+select ok((public.promise_ledger_contract()->>'client_execute_revoked')::boolean, 'clients cannot transition promises');
 
 select * from finish();
 rollback;
