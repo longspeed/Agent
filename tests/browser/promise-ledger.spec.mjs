@@ -29,6 +29,7 @@ let ledgerFails = false;
 let mutations = 0;
 try {
   const page = await browser.newPage();
+  page.on('pageerror', error => console.error('pageerror', error.message));
   await page.emulateTimezone('Asia/Bangkok');
   await page.setRequestInterception(true);
   page.on('request', request => {
@@ -82,6 +83,8 @@ try {
   row.status = 'due'; // Worker transition simulated, not time travel in production.
   await page.reload({ waitUntil: 'networkidle0' });
   await page.waitForSelector('#due-commitments-list .commitment-complete', { visible: true });
+  // Reload restores scroll position. Move the control clear of the sticky header.
+  await page.$eval('#due-commitments-list .commitment-complete', el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
   await page.locator('#due-commitments-list .commitment-complete').click();
   await page.waitForFunction(() => document.querySelector('#completed-commitments-list')?.textContent.includes('Send the example deck')).catch(async error => {
     console.error({ row, mutations, ui: await page.$eval('#tab-promises-panel', el => el.textContent) });
